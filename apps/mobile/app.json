@@ -1,21 +1,21 @@
 {
   "expo": {
-    "name": "Auto Marketplace",
-    "slug": "auto-marketplace",
+    "name": "Gettitonline",
+    "slug": "gettitonline",
     "version": "1.0.0",
     "orientation": "portrait",
     "icon": "./assets/icon.png",
     "userInterfaceStyle": "automatic",
     "newArchEnabled": true,
-    "scheme": "auto-marketplace",
+    "scheme": "gettitonline",
     "splash": {
       "image": "./assets/splash-icon.png",
       "resizeMode": "contain",
-      "backgroundColor": "#2563EB"
+      "backgroundColor": "#0795F9"
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.automarketplace.app",
+      "bundleIdentifier": "com.gettitonline.app",
       "config": {
         "usesNonExemptEncryption": false
       }
@@ -23,10 +23,10 @@
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
-        "backgroundColor": "#2563EB"
+        "backgroundColor": "#0795F9"
       },
       "edgeToEdgeEnabled": true,
-      "package": "com.automarketplace.app"
+      "package": "com.gettitonline.app"
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -36,7 +36,7 @@
       [
         "expo-image-picker",
         {
-          "photosPermission": "Allow Auto Marketplace to access your photos to upload product images."
+          "photosPermission": "Allow Gettitonline to access your photos to upload product images."
         }
       ]
     ],

@@ -41,31 +41,50 @@ import { ROUTES } from "@/lib/constants";
 import { useQuery } from "convex/react";
 import { api } from "../../../../../convex/_generated/api";
 import { cn } from "@/lib/utils";
-
-const navigation = [
-  { name: "Home", href: ROUTES.HOME },
-  { name: "Browse", href: ROUTES.BROWSE },
-  { name: "Sell", href: ROUTES.SELL },
-];
+import { useGuestCart } from "@/providers/GuestCartProvider";
+import {
+  canAccessSellerSurface,
+  canManageCatalog,
+  canManageListings,
+} from "@/lib/roles";
 
 export function Header() {
   const pathname = usePathname();
   const { isSignedIn, user, clerkUser, signOut } = useAuth();
+  const { summary: guestCartSummary } = useGuestCart();
 
   // Get cart count
-  const cartCount = useQuery(
+  const signedInCartCount = useQuery(
     api.cart.getCartCount,
     user?._id ? { userId: user._id } : "skip"
   );
+  const cartCount = isSignedIn
+    ? signedInCartCount ?? 0
+    : guestCartSummary.itemCount;
 
   // Get unread notifications count
   const unreadCount = useQuery(
     api.notifications.getUnreadCount,
     user?._id ? { userId: user._id } : "skip"
   );
+  const vendorProfile = useQuery(
+    api.vendors.getMyVendorProfile,
+    user?._id ? { ownerUserId: user._id } : "skip"
+  );
 
-  const isAdmin = user?.role === "admin";
-  const isModerator = user?.role === "moderator";
+  const canAccessAdminDashboard =
+    user?.role === "admin" || user?.role === "moderator";
+  const hasCatalogAccess = canManageCatalog(user?.role);
+  const hasListingAccess = canManageListings(
+    user?.role,
+    vendorProfile?.status ?? null
+  );
+  const canAccessSell = canAccessSellerSurface(user?.role);
+  const navigation = [
+    { name: "Home", href: ROUTES.HOME },
+    { name: "Browse", href: ROUTES.BROWSE },
+    ...(isSignedIn && canAccessSell ? [{ name: "Sell", href: ROUTES.SELL }] : []),
+  ];
 
   return (
     <header className="sticky top-0 z-50 w-full border-b bg-background/95 backdrop-blur supports-[backdrop-filter]:bg-background/60">
@@ -73,13 +92,13 @@ export function Header() {
         {/* Logo */}
         <div className="flex items-center gap-6">
           <Link href={ROUTES.HOME} className="flex items-center gap-2">
-            <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
+            <div className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/20 bg-primary shadow-[0_10px_30px_rgba(7,149,249,0.22)]">
               <span className="text-lg font-bold text-primary-foreground">
-                A
+                G
               </span>
             </div>
-            <span className="hidden font-bold sm:inline-block">
-              Auto Marketplace
+            <span className="hidden font-semibold tracking-[0.08em] sm:inline-block">
+              Gettitonline
             </span>
           </Link>
 
@@ -108,42 +127,42 @@ export function Header() {
             <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
             <Input
               type="search"
-              placeholder="Search products..."
-              className="w-full pl-10"
+              placeholder="Search Gettitonline"
+              className="w-full border-primary/15 bg-card/90 pl-10"
             />
           </div>
         </div>
 
         {/* Right Side Actions */}
         <div className="flex items-center gap-2">
+          <Button variant="ghost" size="icon" asChild className="relative">
+            <Link href={ROUTES.CART}>
+              <ShoppingCart className="h-5 w-5" />
+              {cartCount > 0 && (
+                <Badge
+                  variant="destructive"
+                  className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-xs"
+                >
+                  {cartCount > 99 ? "99+" : cartCount}
+                </Badge>
+              )}
+            </Link>
+          </Button>
+
           {isSignedIn ? (
             <>
-              {/* Create Listing Button (Desktop) */}
-              <Button
-                asChild
-                size="sm"
-                className="hidden gap-2 md:inline-flex"
-              >
-                <Link href={ROUTES.CREATE_PRODUCT}>
-                  <Plus className="h-4 w-4" />
-                  Sell
-                </Link>
-              </Button>
-
-              {/* Cart */}
-              <Button variant="ghost" size="icon" asChild className="relative">
-                <Link href={ROUTES.CART}>
-                  <ShoppingCart className="h-5 w-5" />
-                  {cartCount && cartCount > 0 && (
-                    <Badge
-                      variant="destructive"
-                      className="absolute -right-1 -top-1 h-5 w-5 rounded-full p-0 text-xs"
-                    >
-                      {cartCount > 99 ? "99+" : cartCount}
-                    </Badge>
-                  )}
-                </Link>
-              </Button>
+              {hasListingAccess && (
+                <Button
+                  asChild
+                  size="sm"
+                  className="hidden gap-2 md:inline-flex"
+                >
+                  <Link href={ROUTES.CREATE_PRODUCT}>
+                    <Plus className="h-4 w-4" />
+                    Add Listing
+                  </Link>
+                </Button>
+              )}
 
               {/* Notifications */}
               <Button variant="ghost" size="icon" asChild className="relative">
@@ -191,7 +210,7 @@ export function Header() {
                     </div>
                   </DropdownMenuLabel>
                   <DropdownMenuSeparator />
-                  {(isAdmin || isModerator) && (
+                  {canAccessAdminDashboard && (
                     <>
                       <DropdownMenuItem asChild>
                         <Link href={ROUTES.ADMIN_DASHBOARD}>
@@ -214,12 +233,14 @@ export function Header() {
                       Orders
                     </Link>
                   </DropdownMenuItem>
-                  <DropdownMenuItem asChild>
-                    <Link href={ROUTES.SELL}>
-                      <Plus className="mr-2 h-4 w-4" />
-                      My Listings
-                    </Link>
-                  </DropdownMenuItem>
+                  {canAccessSell && (
+                    <DropdownMenuItem asChild>
+                      <Link href={ROUTES.SELL}>
+                        <Plus className="mr-2 h-4 w-4" />
+                        Sell
+                      </Link>
+                    </DropdownMenuItem>
+                  )}
                   <DropdownMenuItem asChild>
                     <Link href={ROUTES.FAVORITES}>
                       <Heart className="mr-2 h-4 w-4" />
@@ -280,8 +301,8 @@ export function Header() {
                   <Search className="absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-muted-foreground" />
                   <Input
                     type="search"
-                    placeholder="Search products..."
-                    className="w-full pl-10"
+                    placeholder="Search Gettitonline"
+                    className="w-full border-primary/15 bg-card/90 pl-10"
                   />
                 </div>
 

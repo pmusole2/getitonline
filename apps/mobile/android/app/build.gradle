@@ -87,9 +87,9 @@ android {
     buildToolsVersion rootProject.ext.buildToolsVersion
     compileSdk rootProject.ext.compileSdkVersion
 
-    namespace 'com.automarketplace.app'
+    namespace 'com.gettitonline.app'
     defaultConfig {
-        applicationId 'com.automarketplace.app'
+        applicationId 'com.gettitonline.app'
         minSdkVersion rootProject.ext.minSdkVersion
         targetSdkVersion rootProject.ext.targetSdkVersion
         versionCode 1

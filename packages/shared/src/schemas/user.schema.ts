@@ -1,7 +1,12 @@
 import { z } from "zod";
 
 // User roles
-export const UserRoleSchema = z.enum(["user", "moderator", "admin"]);
+export const UserRoleSchema = z.enum([
+  "user",
+  "catalog_manager",
+  "moderator",
+  "admin",
+]);
 export type UserRole = z.infer<typeof UserRoleSchema>;
 
 // Address schema

@@ -1,8 +1,8 @@
-# Auto Marketplace - MVP Implementation Plan
+# Gettitonline - MVP Implementation Plan
 
 ## Project Overview
 
-A mobile-first marketplace application where users can list and purchase items (auto parts, accessories, tech products, etc.) with an escrow-based payment system and AI-powered features.
+A mobile-first marketplace application where users can list and purchase items (products, accessories, tech products, etc.) with an escrow-based payment system and AI-powered features.
 
 **Currency:** ZMW (Zambian Kwacha)
 **Target Market:** Zambia (initial launch)

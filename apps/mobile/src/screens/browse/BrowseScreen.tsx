@@ -10,6 +10,8 @@ import type { RootStackParamList, CategoryTreeItem } from '../../types';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CategoryChipSkeleton } from '../../components/ui/Skeleton';
 import { TabHeader } from '../../components/ui/Header';
+import { useAppAuth } from '../../context/AuthProvider';
+import { useGuestCart } from '../../context/GuestCartProvider';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -96,9 +98,16 @@ function AnimatedCategoryCard({ category, index, onPress, onSubcategoryPress }: 
 export default function BrowseScreen() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
+  const { user } = useAppAuth();
+  const { summary: guestCartSummary } = useGuestCart();
   const [searchQuery, setSearchQuery] = useState('');
 
   const categories = useQuery(api.categories.getCategoriesTree);
+  const cart = useQuery(
+    api.cart.getCart,
+    user ? { userId: user._id } : 'skip'
+  );
+  const cartCount = user ? cart?.itemCount || 0 : guestCartSummary.itemCount;
 
   const handleSearch = () => {
     if (searchQuery.trim()) {
@@ -129,10 +138,12 @@ export default function BrowseScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      {/* Custom Futuristic Header */}
       <TabHeader
         title="Browse"
-        subtitle="Find auto parts by category"
+        subtitle="Explore products by category"
+        showCart
+        cartCount={cartCount}
+        onCartPress={() => navigation.navigate('Cart')}
         showAIAssistant
       />
 
@@ -158,7 +169,7 @@ export default function BrowseScreen() {
         >
           <Icon name="tag-check" size={20} color={theme.colors.primary} />
           <Text variant="labelMedium" style={{ color: theme.colors.primary, marginLeft: 6 }}>
-            New Parts
+            New Arrivals
           </Text>
         </Pressable>
         <Pressable

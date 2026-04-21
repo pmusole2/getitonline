@@ -4,6 +4,30 @@ require File.join(File.dirname(`node --print "require.resolve('react-native/pack
 require 'json'
 podfile_properties = JSON.parse(File.read(File.join(__dir__, 'Podfile.properties.json'))) rescue {}
 
+def patch_expo_constants_ios_script!
+  candidate_paths = [
+    File.expand_path('../node_modules/expo-constants/scripts/get-app-config-ios.sh', __dir__),
+    File.expand_path('../../../node_modules/expo-constants/scripts/get-app-config-ios.sh', __dir__),
+  ]
+  script_path = candidate_paths.find { |path| File.exist?(path) }
+  return unless script_path
+
+  script = File.read(script_path)
+  patched_script = script
+    .gsub(
+      'PROJECT_DIR_BASENAME=$(basename $PROJECT_DIR)',
+      'PROJECT_DIR_BASENAME=$(basename "$PROJECT_DIR")'
+    )
+    .gsub(
+      "if [ \"$BUNDLE_FORMAT\" == \"shallow\" ]; then\n  RESOURCE_DEST=\"$DEST/$RESOURCE_BUNDLE_NAME\"",
+      "if [ \"$BUNDLE_FORMAT\" == \"shallow\" ]; then\n  RESOURCE_DEST=\"$DEST/$RESOURCE_BUNDLE_NAME\"\n  mkdir -p \"$RESOURCE_DEST\""
+    )
+
+  return if patched_script == script
+
+  File.write(script_path, patched_script)
+end
+
 def ccache_enabled?(podfile_properties)
   # Environment variable takes precedence
   return ENV['USE_CCACHE'] == '1' if ENV['USE_CCACHE']
@@ -19,8 +43,9 @@ ENV['RCT_USE_PREBUILT_RNCORE'] ||= '1' if podfile_properties['ios.buildReactNati
 platform :ios, podfile_properties['ios.deploymentTarget'] || '15.1'
 
 prepare_react_native_project!
+patch_expo_constants_ios_script!
 
-target 'AutoMarketplace' do
+target 'Gettitonline' do
   use_expo_modules!
 
   if ENV['EXPO_USE_COMMUNITY_AUTOLINKING'] == '1'
@@ -56,5 +81,17 @@ target 'AutoMarketplace' do
       :mac_catalyst_enabled => false,
       :ccache_enabled => ccache_enabled?(podfile_properties),
     )
+
+    installer.pods_project.targets.each do |pod_target|
+      next unless pod_target.name == 'EXConstants'
+
+      pod_target.shell_script_build_phases.each do |phase|
+        next unless phase.name == '[CP-User] Generate app.config for prebuilt Constants.manifest'
+
+        phase.shell_script = 'bash -l -c "\"$PODS_TARGET_SRCROOT/../scripts/get-app-config-ios.sh\""'
+      end
+    end
+
+    installer.pods_project.save
   end
 end

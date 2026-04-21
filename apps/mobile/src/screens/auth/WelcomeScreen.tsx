@@ -1,5 +1,5 @@
 import React from 'react';
-import { View, StyleSheet, Image } from 'react-native';
+import { View, StyleSheet } from 'react-native';
 import { Button, Text, useTheme } from 'react-native-paper';
 import type { MD3Theme } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
@@ -16,13 +16,13 @@ export default function WelcomeScreen({ navigation }: Props) {
       <View style={styles.content}>
         <View style={styles.logoContainer}>
           <View style={[styles.logoPlaceholder, { backgroundColor: theme.colors.primaryContainer }]}>
-            <Text style={[styles.logoText, { color: theme.colors.primary }]}>AM</Text>
+            <Text style={[styles.logoText, { color: theme.colors.primary }]}>G</Text>
           </View>
           <Text variant="headlineLarge" style={[styles.title, { color: theme.colors.onSurface }]}>
-            Auto Marketplace
+            Gettitonline
           </Text>
           <Text variant="bodyLarge" style={[styles.subtitle, { color: theme.colors.onSurfaceVariant }]}>
-            Buy and sell auto parts, accessories, and more in Zambia
+            Shop fashion, electronics, essentials, and trusted finds across Zambia
           </Text>
         </View>
 
@@ -35,14 +35,14 @@ export default function WelcomeScreen({ navigation }: Props) {
           />
           <FeatureItem
             icon="message-text"
-            title="Direct Chat"
-            description="Communicate directly with sellers"
+            title="Trusted Storefront"
+            description="Shop with the official Gettitonline store"
             theme={theme}
           />
           <FeatureItem
             icon="star"
-            title="Verified Sellers"
-            description="Trusted community of sellers"
+            title="Easy Discovery"
+            description="Find trending products and everyday essentials"
             theme={theme}
           />
         </View>

@@ -391,7 +391,7 @@ Both parties are encouraged to use this as a learning experience for future tran
 Thank you for your patience during this process.
 
 Best regards,
-Auto Marketplace Support`;
+Gettitonline Support`;
     }
 
     return `Dear Buyer and Seller,
@@ -403,6 +403,6 @@ The refund will be processed within 3-5 business days.
 Thank you for your patience during this process.
 
 Best regards,
-Auto Marketplace Support`;
+Gettitonline Support`;
   }
 }

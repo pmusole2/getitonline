@@ -51,9 +51,10 @@ import {
   AlertTriangle,
 } from "lucide-react";
 import { ROUTES, ZAMBIAN_PROVINCES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { useGuestCart } from "@/providers/GuestCartProvider";
 
 // Platform fee percentage
 const PLATFORM_FEE_PERCENTAGE = 0.05;
@@ -69,6 +70,11 @@ interface ShippingAddress {
 export default function CheckoutPage() {
   const router = useRouter();
   const { user, isSignedIn, isLoading: authLoading } = useAuth();
+  const {
+    isHydrated: guestCartHydrated,
+    isMerging: guestCartMerging,
+    hasPendingMerge,
+  } = useGuestCart();
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"wallet">("wallet");
@@ -240,7 +246,12 @@ export default function CheckoutPage() {
   };
 
   // Loading state
-  if (authLoading || (isSignedIn && cart === undefined)) {
+  if (
+    !guestCartHydrated ||
+    authLoading ||
+    (isSignedIn &&
+      (cart === undefined || guestCartMerging || hasPendingMerge))
+  ) {
     return <CheckoutSkeleton />;
   }
 
@@ -254,7 +265,13 @@ export default function CheckoutPage() {
           Please sign in to complete your purchase
         </p>
         <Button asChild className="mt-6">
-          <Link href={ROUTES.SIGN_IN}>Sign In</Link>
+          <Link
+            href={`${ROUTES.SIGN_IN}?redirect_url=${encodeURIComponent(
+              ROUTES.CHECKOUT
+            )}`}
+          >
+            Sign In
+          </Link>
         </Button>
       </div>
     );
@@ -411,8 +428,8 @@ export default function CheckoutPage() {
               <CardTitle>Order Items</CardTitle>
               <CardDescription>
                 {cartBySeller?.length === 1
-                  ? "Your items from 1 seller"
-                  : `Your items from ${cartBySeller?.length || 0} sellers`}
+                  ? "Your items from 1 store"
+                  : `Your items from ${cartBySeller?.length || 0} stores`}
               </CardDescription>
             </CardHeader>
             <CardContent>

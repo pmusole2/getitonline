@@ -1,5 +1,11 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import {
+  aiModerationStatusValidator,
+  productStatusValidator,
+  userRoleValidator,
+  vendorStatusValidator,
+} from "./lib/platform";
 
 export default defineSchema({
   // Users table
@@ -10,7 +16,7 @@ export default defineSchema({
     lastName: v.string(),
     phone: v.optional(v.string()),
     avatar: v.optional(v.string()),
-    role: v.union(v.literal("user"), v.literal("moderator"), v.literal("admin")),
+    role: userRoleValidator,
     interests: v.optional(v.array(v.id("categories"))),
     address: v.optional(
       v.object({
@@ -59,6 +65,7 @@ export default defineSchema({
   // Products table
   products: defineTable({
     sellerId: v.id("users"),
+    managedByUserId: v.optional(v.id("users")),
     title: v.string(),
     description: v.string(),
     price: v.number(), // in ZMW
@@ -95,17 +102,20 @@ export default defineSchema({
         estimatedDays: v.string(),
       })
     ),
-    status: v.union(
-      v.literal("draft"),
-      v.literal("active"),
-      v.literal("sold"),
-      v.literal("suspended")
-    ),
+    status: productStatusValidator,
+    submittedAt: v.optional(v.number()),
+    reviewedAt: v.optional(v.number()),
+    reviewedByUserId: v.optional(v.id("users")),
+    reviewNotes: v.optional(v.string()),
+    aiModerationStatus: v.optional(aiModerationStatusValidator),
+    aiModerationSummary: v.optional(v.string()),
+    aiModerationFlags: v.optional(v.array(v.string())),
     views: v.number(),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
     .index("by_seller", ["sellerId"])
+    .index("by_manager", ["managedByUserId"])
     .index("by_category", ["categoryId"])
     .index("by_subcategory", ["subcategoryId"])
     .index("by_status", ["status"])
@@ -115,6 +125,48 @@ export default defineSchema({
       searchField: "title",
       filterFields: ["categoryId", "subcategoryId", "status", "condition"],
     }),
+
+  // Singleton platform settings
+  platformSettings: defineTable({
+    key: v.literal("singleton"),
+    companySellerUserId: v.id("users"),
+    companyDisplayName: v.string(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  }).index("by_key", ["key"]),
+
+  vendorProfiles: defineTable({
+    ownerUserId: v.id("users"),
+    storeName: v.string(),
+    slug: v.string(),
+    description: v.string(),
+    logoUrl: v.optional(v.string()),
+    bannerUrl: v.optional(v.string()),
+    contactEmail: v.string(),
+    contactPhone: v.optional(v.string()),
+    address: v.object({
+      street: v.string(),
+      city: v.string(),
+      province: v.string(),
+      country: v.string(),
+    }),
+    socialLinks: v.optional(
+      v.object({
+        website: v.optional(v.string()),
+        instagram: v.optional(v.string()),
+        facebook: v.optional(v.string()),
+      })
+    ),
+    status: vendorStatusValidator,
+    reviewNotes: v.optional(v.string()),
+    reviewedByUserId: v.optional(v.id("users")),
+    reviewedAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_owner", ["ownerUserId"])
+    .index("by_slug", ["slug"])
+    .index("by_status", ["status"]),
 
   // Cart items table
   cartItems: defineTable({

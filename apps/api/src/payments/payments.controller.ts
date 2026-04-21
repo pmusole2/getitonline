@@ -138,7 +138,7 @@ export class PaymentsController {
       // Call Lenco API
       const callbackUrl =
         dto.callbackUrl ||
-        `${process.env.APP_URL || 'https://auto-marketplace.app'}/payment/callback`;
+        `${process.env.APP_URL || 'https://gettitonline.com'}/payment/callback`;
 
       const lencoResponse = await this.lencoService.collectCard({
         amount: dto.amount,

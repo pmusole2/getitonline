@@ -1,4 +1,11 @@
-import { IsString, IsNumber, IsEnum, IsOptional, IsNotEmpty, Min } from 'class-validator';
+import {
+  IsString,
+  IsNumber,
+  IsEnum,
+  IsOptional,
+  IsNotEmpty,
+  Min,
+} from 'class-validator';
 
 // Payment method types
 export enum PaymentMethod {

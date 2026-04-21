@@ -42,7 +42,7 @@ export const MessageWithSenderSchema = MessageSchema.extend({
       firstName: z.string(),
       lastName: z.string(),
       avatar: z.string().optional().nullable(),
-      role: z.enum(["user", "moderator", "admin"]),
+      role: z.enum(["user", "catalog_manager", "moderator", "admin"]),
     })
     .nullable(),
 });

@@ -5,8 +5,18 @@ export const ProductConditionSchema = z.enum(["new", "like_new", "good", "fair"]
 export type ProductCondition = z.infer<typeof ProductConditionSchema>;
 
 // Product status
-export const ProductStatusSchema = z.enum(["draft", "active", "sold", "suspended"]);
+export const ProductStatusSchema = z.enum([
+  "draft",
+  "pending_review",
+  "changes_requested",
+  "active",
+  "sold",
+  "suspended",
+]);
 export type ProductStatus = z.infer<typeof ProductStatusSchema>;
+
+export const AiModerationStatusSchema = z.enum(["clear", "flagged", "error"]);
+export type AiModerationStatus = z.infer<typeof AiModerationStatusSchema>;
 
 // Product specification
 export const SpecificationSchema = z.object({
@@ -59,7 +69,7 @@ export const CreateProductSchema = z.object({
   shippingOptions: z
     .array(ShippingOptionSchema)
     .min(1, "At least one shipping option is required"),
-  status: z.enum(["draft", "active"]).optional().default("active"),
+  status: z.enum(["draft", "pending_review"]).optional().default("draft"),
 });
 export type CreateProduct = z.infer<typeof CreateProductSchema>;
 
@@ -87,6 +97,7 @@ export type SearchProducts = z.infer<typeof SearchProductsSchema>;
 export const ProductSchema = z.object({
   _id: z.string(),
   sellerId: z.string(),
+  managedByUserId: z.string().optional().nullable(),
   title: z.string(),
   description: z.string(),
   price: z.number(),
@@ -101,6 +112,13 @@ export const ProductSchema = z.object({
   location: ProductLocationSchema.optional().nullable(),
   shippingOptions: z.array(ShippingOptionSchema),
   status: ProductStatusSchema,
+  submittedAt: z.number().optional().nullable(),
+  reviewedAt: z.number().optional().nullable(),
+  reviewedByUserId: z.string().optional().nullable(),
+  reviewNotes: z.string().optional().nullable(),
+  aiModerationStatus: AiModerationStatusSchema.optional().nullable(),
+  aiModerationSummary: z.string().optional().nullable(),
+  aiModerationFlags: z.array(z.string()).optional().nullable(),
   views: z.number(),
   createdAt: z.number(),
   updatedAt: z.number(),

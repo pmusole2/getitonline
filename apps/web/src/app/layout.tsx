@@ -1,28 +1,36 @@
 import type { Metadata } from "next";
-import { Inter } from "next/font/google";
+import { Lato, Libre_Baskerville } from "next/font/google";
 import "./globals.css";
 import { Providers } from "@/providers";
 
-const inter = Inter({
-  variable: "--font-inter",
+const lato = Lato({
+  variable: "--font-lato",
+  weight: ["400", "700", "900"],
+  subsets: ["latin"],
+});
+
+const libreBaskerville = Libre_Baskerville({
+  variable: "--font-libre-baskerville",
+  weight: ["400", "700"],
   subsets: ["latin"],
 });
 
 export const metadata: Metadata = {
   title: {
-    default: "Auto Marketplace",
-    template: "%s | Auto Marketplace",
+    default: "Gettitonline",
+    template: "%s | Gettitonline",
   },
   description:
-    "A trusted marketplace for auto parts, accessories, tech products, and more. Shop with escrow protection in Zambia.",
+    "Shop fashion, electronics, essentials, and trending finds on Gettitonline, Zambia's trusted online marketplace.",
   keywords: [
-    "auto parts",
-    "car accessories",
+    "online store",
+    "shopping",
+    "ecommerce",
     "marketplace",
     "Zambia",
-    "escrow",
-    "buy",
-    "sell",
+    "fashion",
+    "electronics",
+    "trusted sellers",
   ],
 };
 
@@ -33,7 +41,9 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
-      <body className={`${inter.variable} font-sans antialiased`}>
+      <body
+        className={`${lato.variable} ${libreBaskerville.variable} font-sans antialiased`}
+      >
         <Providers>{children}</Providers>
       </body>
     </html>

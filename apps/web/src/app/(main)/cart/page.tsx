@@ -38,7 +38,6 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import {
-  ShoppingCart,
   Trash2,
   Plus,
   Minus,
@@ -48,13 +47,46 @@ import {
   Truck,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
+import { useGuestCart } from "@/providers/GuestCartProvider";
+
+interface CartLineItem {
+  key: string;
+  cartItemId?: Id<"cartItems">;
+  productId: string;
+  quantity: number;
+  selectedShipping: { name: string; price: number };
+  product: {
+    _id: string;
+    title: string;
+    price: number;
+    images: string[];
+    quantity: number;
+    sellerName: string;
+    shippingOptions?: Array<{
+      name: string;
+      price: number;
+      estimatedDays?: string;
+    }>;
+  };
+}
 
 export default function CartPage() {
   const router = useRouter();
   const { user, isSignedIn, isLoading: authLoading } = useAuth();
+  const {
+    items: guestCartItems,
+    summary: guestCartSummary,
+    isHydrated: guestCartHydrated,
+    isMerging: guestCartMerging,
+    hasPendingMerge,
+    updateQuantity: updateGuestQuantity,
+    updateShipping: updateGuestShipping,
+    removeItem: removeGuestItem,
+    clear: clearGuestCart,
+  } = useGuestCart();
   const [removingItems, setRemovingItems] = useState<Set<string>>(new Set());
 
   // Get cart data
@@ -75,15 +107,60 @@ export default function CartPage() {
   const removeFromCart = useMutation(api.cart.removeFromCart);
   const clearCart = useMutation(api.cart.clearCart);
 
-  const handleQuantityChange = async (
-    cartItemId: Id<"cartItems">,
-    newQuantity: number
-  ) => {
-    if (!user) return;
+  const cartItems: CartLineItem[] = isSignedIn
+    ? ((cart?.items ?? []) as Array<{
+        _id: string;
+        productId: string;
+        quantity: number;
+        selectedShipping: { name: string; price: number };
+        product: {
+          _id: string;
+          title: string;
+          price: number;
+          images: string[];
+          quantity: number;
+          sellerName: string;
+          shippingOptions?: Array<{
+            name: string;
+            price: number;
+            estimatedDays?: string;
+          }>;
+        };
+      }>).map((item) => ({
+        key: item._id,
+        cartItemId: item._id as Id<"cartItems">,
+        productId: item.productId,
+        quantity: item.quantity,
+        selectedShipping: item.selectedShipping,
+        product: item.product,
+      }))
+    : guestCartItems.map((item) => ({
+        key: item.productId,
+        productId: item.productId,
+        quantity: item.quantity,
+        selectedShipping: item.selectedShipping,
+        product: item.product,
+      }));
+  const cartSummary = isSignedIn
+    ? {
+        subtotal: cart?.subtotal ?? 0,
+        shippingTotal: cart?.shippingTotal ?? 0,
+        total: cart?.total ?? 0,
+        itemCount: cart?.itemCount ?? 0,
+      }
+    : guestCartSummary;
+
+  const handleQuantityChange = async (item: CartLineItem, newQuantity: number) => {
+    if (!isSignedIn) {
+      updateGuestQuantity(item.productId, newQuantity);
+      return;
+    }
+
+    if (!user || !item.cartItemId) return;
 
     try {
       await updateQuantity({
-        cartItemId,
+        cartItemId: item.cartItemId,
         userId: user._id,
         quantity: newQuantity,
       });
@@ -94,54 +171,81 @@ export default function CartPage() {
   };
 
   const handleShippingChange = async (
-    cartItemId: Id<"cartItems">,
+    item: CartLineItem,
     shippingName: string,
     shippingPrice: number
   ) => {
-    if (!user) return;
+    if (!isSignedIn) {
+      updateGuestShipping(item.productId, {
+        name: shippingName,
+        price: shippingPrice,
+      });
+      return;
+    }
+
+    if (!user || !item.cartItemId) return;
 
     try {
       await updateShipping({
-        cartItemId,
+        cartItemId: item.cartItemId,
         userId: user._id,
         selectedShipping: { name: shippingName, price: shippingPrice },
       });
-    } catch (error) {
+    } catch {
       toast.error("Failed to update shipping option");
     }
   };
 
-  const handleRemoveItem = async (cartItemId: Id<"cartItems">) => {
-    if (!user) return;
+  const handleRemoveItem = async (item: CartLineItem) => {
+    if (!isSignedIn) {
+      removeGuestItem(item.productId);
+      toast.success("Item removed from cart");
+      return;
+    }
 
-    setRemovingItems((prev) => new Set(prev).add(cartItemId));
+    if (!user || !item.cartItemId) return;
+
+    setRemovingItems((prev) => new Set(prev).add(item.key));
 
     try {
-      await removeFromCart({ cartItemId, userId: user._id });
+      await removeFromCart({ cartItemId: item.cartItemId, userId: user._id });
       toast.success("Item removed from cart");
-    } catch (error) {
+    } catch {
       toast.error("Failed to remove item");
     } finally {
       setRemovingItems((prev) => {
         const next = new Set(prev);
-        next.delete(cartItemId);
+        next.delete(item.key);
         return next;
       });
     }
   };
 
   const handleClearCart = async () => {
+    if (!isSignedIn) {
+      clearGuestCart();
+      toast.success("Cart cleared");
+      return;
+    }
+
     if (!user) return;
 
     try {
       await clearCart({ userId: user._id });
       toast.success("Cart cleared");
-    } catch (error) {
+    } catch {
       toast.error("Failed to clear cart");
     }
   };
 
   const handleProceedToCheckout = () => {
+    if (!isSignedIn) {
+      router.push(
+        `${ROUTES.SIGN_IN}?redirect_url=${encodeURIComponent(ROUTES.CHECKOUT)}`
+      );
+      return;
+    }
+
     if (validation && !validation.isValid) {
       toast.error("Please resolve cart issues before checkout");
       return;
@@ -150,28 +254,17 @@ export default function CartPage() {
   };
 
   // Loading state
-  if (authLoading || (isSignedIn && cart === undefined)) {
+  if (
+    !guestCartHydrated ||
+    authLoading ||
+    (isSignedIn &&
+      (cart === undefined || guestCartMerging || hasPendingMerge))
+  ) {
     return <CartSkeleton />;
   }
 
-  // Not signed in
-  if (!isSignedIn) {
-    return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <ShoppingCart className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Your Cart</h1>
-        <p className="mt-2 text-muted-foreground">
-          Please sign in to view your cart
-        </p>
-        <Button asChild className="mt-6">
-          <Link href={ROUTES.SIGN_IN}>Sign In</Link>
-        </Button>
-      </div>
-    );
-  }
-
   // Empty cart
-  if (!cart || cart.items.length === 0) {
+  if (cartItems.length === 0) {
     return (
       <div className="container flex flex-col items-center justify-center py-16">
         <ShoppingBag className="h-16 w-16 text-muted-foreground" />
@@ -203,7 +296,7 @@ export default function CartPage() {
 
       <div className="flex items-center justify-between mb-6">
         <h1 className="text-2xl font-bold">
-          Shopping Cart ({cart.itemCount} {cart.itemCount === 1 ? "item" : "items"})
+          Shopping Cart ({cartSummary.itemCount} {cartSummary.itemCount === 1 ? "item" : "items"})
         </h1>
         <AlertDialog>
           <AlertDialogTrigger asChild>
@@ -229,7 +322,7 @@ export default function CartPage() {
       </div>
 
       {/* Validation Issues */}
-      {validation && !validation.isValid && (
+      {isSignedIn && validation && !validation.isValid && (
         <Alert variant="destructive" className="mb-6">
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription>
@@ -246,8 +339,8 @@ export default function CartPage() {
       <div className="grid gap-6 lg:grid-cols-3">
         {/* Cart Items */}
         <div className="lg:col-span-2 space-y-4">
-          {cart.items.map((item) => (
-            <Card key={item._id} className={removingItems.has(item._id) ? "opacity-50" : ""}>
+          {cartItems.map((item) => (
+            <Card key={item.key} className={removingItems.has(item.key) ? "opacity-50" : ""}>
               <CardContent className="p-4">
                 <div className="flex gap-4">
                   {/* Product Image */}
@@ -270,7 +363,7 @@ export default function CartPage() {
                       {item.product.title}
                     </Link>
                     <p className="text-sm text-muted-foreground mt-1">
-                      Sold by {item.product.sellerName}
+                      Store: {item.product.sellerName}
                     </p>
                     <p className="font-semibold text-primary mt-2">
                       {formatZMW(item.product.price)}
@@ -287,7 +380,7 @@ export default function CartPage() {
                             );
                             if (option) {
                               handleShippingChange(
-                                item._id as Id<"cartItems">,
+                                item,
                                 option.name,
                                 option.price
                               );
@@ -318,13 +411,10 @@ export default function CartPage() {
                         variant="outline"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() =>
-                          handleQuantityChange(
-                            item._id as Id<"cartItems">,
-                            item.quantity - 1
-                          )
-                        }
-                        disabled={item.quantity <= 1}
+                          onClick={() =>
+                            handleQuantityChange(item, item.quantity - 1)
+                          }
+                          disabled={item.quantity <= 1}
                       >
                         <Minus className="h-3 w-3" />
                       </Button>
@@ -333,13 +423,10 @@ export default function CartPage() {
                         variant="outline"
                         size="icon"
                         className="h-8 w-8"
-                        onClick={() =>
-                          handleQuantityChange(
-                            item._id as Id<"cartItems">,
-                            item.quantity + 1
-                          )
-                        }
-                        disabled={item.quantity >= item.product.quantity}
+                          onClick={() =>
+                            handleQuantityChange(item, item.quantity + 1)
+                          }
+                          disabled={item.quantity >= item.product.quantity}
                       >
                         <Plus className="h-3 w-3" />
                       </Button>
@@ -360,8 +447,8 @@ export default function CartPage() {
                       variant="ghost"
                       size="sm"
                       className="text-destructive h-8"
-                      onClick={() => handleRemoveItem(item._id as Id<"cartItems">)}
-                      disabled={removingItems.has(item._id)}
+                      onClick={() => handleRemoveItem(item)}
+                      disabled={removingItems.has(item.key)}
                     >
                       <Trash2 className="h-4 w-4 mr-1" />
                       Remove
@@ -382,18 +469,18 @@ export default function CartPage() {
             <CardContent className="space-y-4">
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Subtotal</span>
-                <span>{formatZMW(cart.subtotal)}</span>
+                <span>{formatZMW(cartSummary.subtotal)}</span>
               </div>
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Shipping</span>
                 <span>
-                  {cart.shippingTotal > 0 ? formatZMW(cart.shippingTotal) : "Free"}
+                  {cartSummary.shippingTotal > 0 ? formatZMW(cartSummary.shippingTotal) : "Free"}
                 </span>
               </div>
               <Separator />
               <div className="flex justify-between font-semibold text-lg">
                 <span>Total</span>
-                <span className="text-primary">{formatZMW(cart.total)}</span>
+                <span className="text-primary">{formatZMW(cartSummary.total)}</span>
               </div>
 
               {/* Escrow Notice */}
@@ -416,9 +503,9 @@ export default function CartPage() {
                 className="w-full"
                 size="lg"
                 onClick={handleProceedToCheckout}
-                disabled={validation && !validation.isValid}
+                disabled={Boolean(isSignedIn && validation && !validation.isValid)}
               >
-                Proceed to Checkout
+                {isSignedIn ? "Proceed to Checkout" : "Sign In to Checkout"}
               </Button>
             </CardFooter>
           </Card>

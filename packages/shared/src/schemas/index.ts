@@ -4,6 +4,9 @@ export * from "./user.schema";
 // Product schemas
 export * from "./product.schema";
 
+// Vendor schemas
+export * from "./vendor.schema";
+
 // Category schemas
 export * from "./category.schema";
 

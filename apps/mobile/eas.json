@@ -19,6 +19,25 @@
         "EXPO_PUBLIC_APP_ENV": "preview"
       }
     },
+    "internal-test": {
+      "distribution": "internal",
+      "channel": "internal-test",
+      "environment": "production",
+      "android": {
+        "buildType": "apk"
+      },
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production"
+      }
+    },
+    "internal-test-ios": {
+      "autoIncrement": true,
+      "channel": "internal-test",
+      "environment": "production",
+      "env": {
+        "EXPO_PUBLIC_APP_ENV": "production"
+      }
+    },
     "production": {
       "autoIncrement": true,
       "channel": "production",
@@ -29,7 +48,9 @@
   },
   "submit": {
     "production": {
-      "ios": {}
+      "ios": {
+        "ascAppId": "6762499208"
+      }
     }
   }
 }

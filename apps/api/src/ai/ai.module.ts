@@ -5,6 +5,7 @@ import { RecommendationsService } from './services/recommendations.service';
 import { MessageRephraseService } from './services/message-rephrase.service';
 import { DisputeAnalysisService } from './services/dispute-analysis.service';
 import { ChatService } from './services/chat.service';
+import { ListingModerationService } from './services/listing-moderation.service';
 import { ConvexModule } from '../convex/convex.module';
 
 @Module({
@@ -16,6 +17,7 @@ import { ConvexModule } from '../convex/convex.module';
     MessageRephraseService,
     DisputeAnalysisService,
     ChatService,
+    ListingModerationService,
   ],
   exports: [
     AiService,
@@ -23,6 +25,7 @@ import { ConvexModule } from '../convex/convex.module';
     MessageRephraseService,
     DisputeAnalysisService,
     ChatService,
+    ListingModerationService,
   ],
 })
 export class AiModule {}

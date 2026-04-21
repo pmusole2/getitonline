@@ -7,8 +7,6 @@ import { Chip, IconButton, Surface, Text, TextInput, useTheme } from 'react-nati
 import Animated, {
   FadeIn,
   FadeOut,
-  SlideInDown,
-  SlideOutDown,
   useAnimatedStyle,
   useSharedValue,
   withSpring,
@@ -109,7 +107,7 @@ export function AIAssistantModal({
   const [isTyping, setIsTyping] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
   const [suggestions, setSuggestions] = useState<string[]>([
-    'Find parts for my car',
+    'Find trending products',
     'Track my order',
     'How does escrow work?',
     'Help with dispute',
@@ -117,7 +115,7 @@ export function AIAssistantModal({
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
-      content: "Hi! I'm your AI shopping assistant. I can help you find auto parts, compare prices, track orders, and more. How can I help you today?",
+      content: "Hi! I'm your AI shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?",
       isUser: false,
       timestamp: new Date(),
     },
@@ -141,7 +139,7 @@ export function AIAssistantModal({
     try {
       // For now, use default suggestions - can be replaced with API call
       const screenSuggestions: Record<string, string[]> = {
-        Home: ['Find auto parts', 'Show popular items', 'Track my order', 'Help with purchase'],
+        Home: ['Find trending products', 'Show popular items', 'Track my order', 'Help with purchase'],
         Browse: ['Filter by price', 'Show new arrivals', 'Find items near me', 'Compare products'],
         ProductDetail: ['Is this compatible?', 'Shipping options?', 'Ask about condition', 'More photos'],
         Cart: ['Checkout help', 'Change shipping', 'Apply discount', 'Save for later'],
@@ -257,7 +255,7 @@ export function AIAssistantModal({
     setMessages([
       {
         id: '1',
-        content: "Hi! I'm your AI shopping assistant. I can help you find auto parts, compare prices, track orders, and more. How can I help you today?",
+        content: "Hi! I'm your AI shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?",
         isUser: false,
         timestamp: new Date(),
       },
@@ -272,8 +270,8 @@ export function AIAssistantModal({
         <Pressable style={styles.modalBackdrop} onPress={onClose} />
 
         <Animated.View
-          entering={SlideInDown.springify().damping(18)}
-          exiting={SlideOutDown.springify().damping(18)}
+          entering={FadeIn.duration(180)}
+          exiting={FadeOut.duration(140)}
           style={[styles.modalContent, { backgroundColor: theme.colors.surface }]}
         >
           {/* Header */}

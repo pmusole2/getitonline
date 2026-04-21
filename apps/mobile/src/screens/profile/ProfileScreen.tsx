@@ -18,6 +18,7 @@ import { api } from '../../../../../convex/_generated/api';
 import { TabHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import type { RootStackParamList } from '../../types';
+import { canManageCatalog } from '../../utils/roles';
 
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
 
@@ -93,6 +94,7 @@ export default function ProfileScreen() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user, signOut } = useAppAuth();
+  const hasCatalogAccess = canManageCatalog(user?.role);
 
   const favorites = useQuery(
     api.favorites.getUserFavorites,
@@ -232,7 +234,15 @@ export default function ProfileScreen() {
             <View style={[styles.verifiedBadge, { backgroundColor: theme.colors.primaryContainer }]}>
               <Icon name="shield-check" size={14} color={theme.colors.primary} />
               <Text variant="labelSmall" style={{ color: theme.colors.primary, marginLeft: 4, fontWeight: '600' }}>
-                Verified Seller
+                Verified Account
+              </Text>
+            </View>
+          )}
+          {hasCatalogAccess && (
+            <View style={[styles.verifiedBadge, { backgroundColor: theme.colors.secondaryContainer, marginTop: 8 }]}>
+              <Icon name="store-cog-outline" size={14} color={theme.colors.secondary} />
+              <Text variant="labelSmall" style={{ color: theme.colors.secondary, marginLeft: 4, fontWeight: '600' }}>
+                {user.role === 'admin' ? 'Administrator' : 'Catalog Manager'}
               </Text>
             </View>
           )}
@@ -331,24 +341,36 @@ export default function ProfileScreen() {
           </Surface>
         </Animated.View>
 
-        {/* Role Badge for Admin/Moderator */}
+        {/* Role Badge */}
         {user.role !== 'user' && (
           <Animated.View entering={FadeInDown.delay(250).duration(400)}>
             <Surface style={[styles.roleCard, { backgroundColor: theme.colors.secondaryContainer }]} elevation={0}>
               <View style={styles.roleContent}>
                 <View style={[styles.roleIcon, { backgroundColor: theme.colors.secondary + '30' }]}>
                   <Icon
-                    name={user.role === 'admin' ? 'shield-crown' : 'shield-account'}
+                    name={
+                      user.role === 'admin'
+                        ? 'shield-crown'
+                        : user.role === 'catalog_manager'
+                          ? 'store-cog-outline'
+                          : 'shield-account'
+                    }
                     size={24}
                     color={theme.colors.secondary}
                   />
                 </View>
                 <View style={styles.roleText}>
                   <Text variant="titleMedium" style={{ color: theme.colors.onSecondaryContainer, fontWeight: '600' }}>
-                    {user.role === 'admin' ? 'Administrator' : 'Moderator'}
+                    {user.role === 'admin'
+                      ? 'Administrator'
+                      : user.role === 'catalog_manager'
+                        ? 'Catalog Manager'
+                        : 'Moderator'}
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.8 }}>
-                    You have elevated privileges
+                    {user.role === 'catalog_manager'
+                      ? 'You can manage the company catalog'
+                      : 'You have elevated privileges'}
                   </Text>
                 </View>
               </View>
@@ -369,7 +391,7 @@ export default function ProfileScreen() {
           </Pressable>
 
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 16, textAlign: 'center' }}>
-            Auto Marketplace v1.0.0
+            Gettitonline v1.0.0
           </Text>
         </Animated.View>
       </ScrollView>

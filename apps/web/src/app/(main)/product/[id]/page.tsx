@@ -39,34 +39,33 @@ import {
   Star,
   ChevronLeft,
   ChevronRight,
-  Truck,
   Package,
 } from "lucide-react";
 import { ROUTES, CONDITION_DISPLAY_NAMES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { ProductGrid } from "@/components/product/ProductGrid";
 import { formatDistanceToNow } from "date-fns";
+import { useGuestCart } from "@/providers/GuestCartProvider";
+import { canManageCatalog } from "@/lib/roles";
 
 export default function ProductDetailPage() {
   const params = useParams();
   const router = useRouter();
   const productId = params.id as Id<"products">;
   const { user, isSignedIn } = useAuth();
+  const { addItem: addGuestCartItem } = useGuestCart();
 
   const [selectedImage, setSelectedImage] = useState(0);
   const [selectedShipping, setSelectedShipping] = useState<string>("");
   const [quantity, setQuantity] = useState(1);
 
   // Get product details
-  const product = useQuery(api.products.getProduct, { productId });
-
-  // Get seller info
-  const seller = useQuery(
-    api.users.getUser,
-    product?.sellerId ? { userId: product.sellerId } : "skip"
-  );
+  const product = useQuery(api.products.getProduct, {
+    productId,
+    viewerUserId: user?._id,
+  });
 
   // Check if favorited
   const isFavorited = useQuery(
@@ -87,7 +86,12 @@ export default function ProductDetailPage() {
   // Mutations
   const toggleFavorite = useMutation(api.favorites.toggleFavorite);
   const addToCart = useMutation(api.cart.addToCart);
-  const incrementViews = useMutation(api.products.incrementViews);
+  const managesCurrentStoreProduct = Boolean(
+    canManageCatalog(user?.role) && product?.seller?.isCompanyStore
+  );
+  const isOwnProduct = Boolean(
+    user?._id === product?.sellerId || managesCurrentStoreProduct
+  );
 
   // Increment views on mount
   // useEffect(() => {
@@ -107,20 +111,19 @@ export default function ProductDetailPage() {
       toast.success(
         isFavorited ? "Removed from favorites" : "Added to favorites"
       );
-    } catch (error) {
+    } catch {
       toast.error("Failed to update favorites");
     }
   };
 
   const handleAddToCart = async () => {
-    if (!isSignedIn || !user || !product) {
-      toast.error("Please sign in to add to cart");
-      return;
+    if (!product) {
+      return false;
     }
 
     if (!selectedShipping && product.shippingOptions?.length) {
       toast.error("Please select a shipping option");
-      return;
+      return false;
     }
 
     const shipping = product.shippingOptions?.find(
@@ -128,24 +131,52 @@ export default function ProductDetailPage() {
     ) || { name: "Standard", price: 0 };
 
     try {
-      await addToCart({
-        userId: user._id,
-        productId: product._id,
-        quantity,
-        selectedShipping: {
-          name: shipping.name,
-          price: shipping.price,
-        },
-      });
+      if (isSignedIn && user) {
+        await addToCart({
+          userId: user._id,
+          productId: product._id,
+          quantity,
+          selectedShipping: {
+            name: shipping.name,
+            price: shipping.price,
+          },
+        });
+      } else {
+        addGuestCartItem({
+          productId: product._id,
+          quantity,
+          selectedShipping: {
+            name: shipping.name,
+            price: shipping.price,
+          },
+          product: {
+            _id: product._id,
+            sellerId: product.sellerId,
+            sellerName: product.seller?.displayName || "Gettitonline",
+            title: product.title,
+            price: product.price,
+            images: product.images,
+            quantity: product.quantity,
+            status: product.status,
+            shippingOptions: product.shippingOptions ?? [],
+          },
+          addedAt: Date.now(),
+        });
+      }
+
       toast.success("Added to cart!");
-    } catch (error) {
+      return true;
+    } catch {
       toast.error("Failed to add to cart");
+      return false;
     }
   };
 
   const handleBuyNow = async () => {
-    await handleAddToCart();
-    router.push(ROUTES.CART);
+    const addedToCart = await handleAddToCart();
+    if (addedToCart) {
+      router.push(ROUTES.CART);
+    }
   };
 
   if (product === undefined) {
@@ -272,17 +303,19 @@ export default function ProductDetailPage() {
               <h1 className="text-2xl font-bold lg:text-3xl">{product.title}</h1>
             </div>
             <div className="flex gap-2">
-              <Button
-                variant="outline"
-                size="icon"
-                onClick={handleFavoriteClick}
-              >
-                <Heart
-                  className={`h-5 w-5 ${
-                    isFavorited ? "fill-red-500 text-red-500" : ""
-                  }`}
-                />
-              </Button>
+              {!isOwnProduct && (
+                <Button
+                  variant="outline"
+                  size="icon"
+                  onClick={handleFavoriteClick}
+                >
+                  <Heart
+                    className={`h-5 w-5 ${
+                      isFavorited ? "fill-red-500 text-red-500" : ""
+                    }`}
+                  />
+                </Button>
+              )}
               <Button variant="outline" size="icon">
                 <Share2 className="h-5 w-5" />
               </Button>
@@ -374,20 +407,28 @@ export default function ProductDetailPage() {
           </div>
 
           {/* Action Buttons */}
-          <div className="mt-6 flex gap-3">
-            <Button size="lg" className="flex-1 gap-2" onClick={handleAddToCart}>
-              <ShoppingCart className="h-5 w-5" />
-              Add to Cart
-            </Button>
-            <Button
-              size="lg"
-              variant="secondary"
-              className="flex-1"
-              onClick={handleBuyNow}
-            >
-              Buy Now
-            </Button>
-          </div>
+          {!isOwnProduct ? (
+            <div className="mt-6 flex gap-3">
+              <Button size="lg" className="flex-1 gap-2" onClick={handleAddToCart}>
+                <ShoppingCart className="h-5 w-5" />
+                Add to Cart
+              </Button>
+              <Button
+                size="lg"
+                variant="secondary"
+                className="flex-1"
+                onClick={handleBuyNow}
+              >
+                Buy Now
+              </Button>
+            </div>
+          ) : (
+            <Card className="mt-6 border-dashed">
+              <CardContent className="p-4 text-sm text-muted-foreground">
+                Catalog managers can edit this store item from the catalog dashboard instead of purchasing it.
+              </CardContent>
+            </Card>
+          )}
 
           {/* Escrow Info */}
           <Card className="mt-6 bg-green-50 dark:bg-green-950/20">
@@ -407,49 +448,57 @@ export default function ProductDetailPage() {
 
           <Separator className="my-6" />
 
-          {/* Seller Card */}
+          {/* Store Card */}
           <Card>
             <CardHeader className="pb-3">
-              <CardTitle className="text-base">Seller</CardTitle>
+              <CardTitle className="text-base">Store</CardTitle>
             </CardHeader>
             <CardContent>
-              {seller ? (
+              {product.seller ? (
                 <div className="flex items-center gap-4">
                   <Avatar className="h-12 w-12">
-                    <AvatarImage src={seller.avatar} />
+                    <AvatarImage src={product.seller.avatar} />
                     <AvatarFallback>
-                      {seller.firstName?.[0]}
-                      {seller.lastName?.[0]}
+                      {product.seller.displayName?.[0] || product.seller.firstName?.[0]}
                     </AvatarFallback>
                   </Avatar>
                   <div className="flex-1">
                     <Link
-                      href={ROUTES.SELLER(seller._id)}
+                      href={ROUTES.SELLER(product.seller._id)}
                       className="font-medium hover:underline"
                     >
-                      {seller.firstName} {seller.lastName}
+                      {product.seller.displayName || product.seller.firstName}
                     </Link>
-                    {seller.rating && (
+                    <p className="text-sm text-muted-foreground">
+                      {product.seller.isCompanyStore
+                        ? "Official Gettitonline store"
+                        : "Approved vendor storefront"}
+                    </p>
+                    {product.seller.rating && (
                       <div className="flex items-center gap-1 text-sm text-muted-foreground">
                         <Star className="h-4 w-4 fill-yellow-400 text-yellow-400" />
-                        {seller.rating.toFixed(1)}
+                        {product.seller.rating.toFixed(1)}
                       </div>
                     )}
                   </div>
                   <Button variant="outline" size="sm" asChild>
-                    <Link href={ROUTES.SELLER(seller._id)}>View Profile</Link>
+                    <Link href={ROUTES.SELLER(product.seller._id)}>
+                      Visit Store
+                    </Link>
                   </Button>
                 </div>
               ) : (
                 <Skeleton className="h-12 w-full" />
               )}
 
-              <Button className="mt-4 w-full gap-2" variant="outline" asChild>
-                <Link href={`${ROUTES.MESSAGES}?product=${product._id}`}>
-                  <MessageSquare className="h-4 w-4" />
-                  Contact Seller
-                </Link>
-              </Button>
+              {!isOwnProduct && (
+                <Button className="mt-4 w-full gap-2" variant="outline" asChild>
+                  <Link href={`${ROUTES.MESSAGES}?product=${product._id}`}>
+                    <MessageSquare className="h-4 w-4" />
+                    Contact Store
+                  </Link>
+                </Button>
+              )}
             </CardContent>
           </Card>
         </div>

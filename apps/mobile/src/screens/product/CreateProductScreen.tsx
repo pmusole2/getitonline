@@ -13,6 +13,7 @@ import { MotiView } from 'moti';
 import { calculateDisplayPrice, PLATFORM_FEE_PERCENTAGE } from '../../hooks/useOrderTotal';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { StackHeader } from '../../components/ui/Header';
+import { canManageCatalog, canManageListings } from '../../utils/roles';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'CreateProduct'>;
 
@@ -33,6 +34,13 @@ const CONDITIONS: ConditionOption[] = [
 export default function CreateProductScreen({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
+  const storefront = useQuery(api.platform.getStorefront);
+  const vendorProfile = useQuery(
+    api.vendors.getMyVendorProfile,
+    user?._id ? { ownerUserId: user._id } : 'skip'
+  );
+  const hasListingAccess = canManageListings(user?.role, vendorProfile?.status ?? null);
+  const isCompanyCatalogManager = canManageCatalog(user?.role);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
@@ -61,8 +69,18 @@ export default function CreateProductScreen({ navigation }: Props) {
   const selectedCategory = categories?.find((c) => c._id === categoryId);
 
   const handleSubmit = async () => {
-    if (!user) {
-      Alert.alert('Error', 'You must be logged in to create a listing');
+    if (!user || !hasListingAccess) {
+      Alert.alert('Error', 'Only approved vendors and catalog staff can create listings');
+      return;
+    }
+
+    if (isCompanyCatalogManager && storefront && !storefront.isConfigured) {
+      Alert.alert(
+        'Company storefront not configured',
+        user.role === 'admin'
+          ? 'Go back to the Sell tab and configure the company storefront before creating listings.'
+          : 'An administrator must configure the company storefront before catalog staff can create listings.'
+      );
       return;
     }
 
@@ -84,7 +102,7 @@ export default function CreateProductScreen({ navigation }: Props) {
       const imageUrls = getImageUrls();
 
       await createProduct({
-        sellerId: user._id,
+        actorUserId: user._id,
         categoryId: categoryId as Id<'categories'>,
         title: title.trim(),
         description: description.trim(),
@@ -98,13 +116,23 @@ export default function CreateProductScreen({ navigation }: Props) {
           estimatedDays: '3-5 days',
         }],
         location: location.trim() ? { city: location.trim(), province: '' } : undefined,
+        status: 'pending_review',
       });
 
-      Alert.alert('Success', 'Your listing has been created!', [
+      Alert.alert('Success', 'Your listing has been submitted for review.', [
         { text: 'OK', onPress: () => navigation.goBack() },
       ]);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to create listing';
+      if (errorMessage.includes('Company seller account is not configured')) {
+        Alert.alert(
+          'Company storefront not configured',
+          user.role === 'admin'
+            ? 'Go back to the Sell tab and configure the company storefront before creating listings.'
+            : 'An administrator must configure the company storefront before catalog staff can create listings.'
+        );
+        return;
+      }
       Alert.alert('Error', errorMessage);
     } finally {
       setLoading(false);
@@ -119,12 +147,80 @@ export default function CreateProductScreen({ navigation }: Props) {
 
   const isValid = title.trim() && description.trim() && price && categoryId && !isUploading;
 
+  if (user && hasListingAccess && isCompanyCatalogManager && storefront === undefined) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader
+          title="Create Listing"
+          subtitle="Preparing company catalog tools"
+          onBackPress={() => navigation.goBack()}
+          variant="gradient"
+        />
+        <View style={styles.emptyState}>
+          <ActivityIndicator size="large" color={theme.colors.primary} />
+        </View>
+      </View>
+    );
+  }
+
+  if (user && !hasListingAccess) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader
+          title="Listing Access"
+          subtitle="Vendor approval required"
+          onBackPress={() => navigation.goBack()}
+          variant="gradient"
+        />
+        <View style={styles.emptyState}>
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
+            Listing access is restricted
+          </Text>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
+            You need an approved vendor application before adding listings.
+          </Text>
+        </View>
+      </View>
+    );
+  }
+
+  if (user && hasListingAccess && isCompanyCatalogManager && storefront && !storefront.isConfigured) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader
+          title="Company Storefront Required"
+          subtitle="Complete setup before adding listings"
+          onBackPress={() => navigation.goBack()}
+          variant="gradient"
+        />
+        <View style={styles.emptyState}>
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, textAlign: 'center' }}>
+            Company catalog setup is incomplete
+          </Text>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
+            {user.role === 'admin'
+              ? 'Go back to the Sell tab and choose the company seller account before creating listings.'
+              : 'An administrator must configure the company storefront before catalog staff can create listings.'}
+          </Text>
+          <Button mode="contained" onPress={() => navigation.goBack()} style={styles.setupButton}>
+            Back to Sell
+          </Button>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      {/* Custom Futuristic Header */}
       <StackHeader
         title="Create Listing"
-        subtitle="Sell your auto parts"
+        subtitle="Add inventory to the Gettitonline store"
         onBackPress={() => navigation.goBack()}
         variant="gradient"
         showAIIndicator
@@ -637,6 +733,12 @@ const styles = StyleSheet.create({
   container: {
     flex: 1,
   },
+  emptyState: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: 24,
+  },
   scrollContent: {
     padding: 16,
     paddingBottom: 40,
@@ -789,6 +891,9 @@ const styles = StyleSheet.create({
   },
   submitContainer: {
     marginTop: 8,
+  },
+  setupButton: {
+    marginTop: 20,
   },
   submitButton: {
     borderRadius: 16,

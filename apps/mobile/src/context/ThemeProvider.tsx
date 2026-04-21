@@ -23,7 +23,7 @@ interface ThemeContextType {
 // CONSTANTS
 // ============================================================================
 
-const THEME_STORAGE_KEY = '@auto_marketplace_theme';
+const THEME_STORAGE_KEY = '@gettitonline_theme';
 
 // ============================================================================
 // CONTEXT
@@ -158,4 +158,3 @@ export function useAppTheme(): ThemeContextType {
   }
   return context;
 }
-

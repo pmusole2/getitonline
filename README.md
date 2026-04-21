@@ -1,6 +1,6 @@
-# Auto Marketplace
+# Gettitonline
 
-Auto Marketplace is a monorepo for an escrow-based marketplace focused on mobile-first beta delivery.
+Gettitonline is a monorepo for an escrow-based marketplace focused on mobile-first beta delivery.
 
 ## What is in this repo
 

@@ -1,9 +1,12 @@
 import React from 'react';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
+import { useQuery } from 'convex/react';
 import type { RootStackParamList } from '../types';
 import { useAppAuth } from '../context/AuthProvider';
+import { api } from '../../../../convex/_generated/api';
 
 import { AuthNavigator } from './AuthNavigator';
+import { GuestTabNavigator } from './GuestTabNavigator';
 import { MainTabNavigator } from './MainTabNavigator';
 import ProductDetailScreen from '../screens/product/ProductDetailScreen';
 import CreateProductScreen from '../screens/product/CreateProductScreen';
@@ -25,11 +28,17 @@ import CheckoutScreen from '../screens/cart/CheckoutScreen';
 import NotificationsScreen from '../screens/notifications/NotificationsScreen';
 import WalletScreen from '../screens/wallet/WalletScreen';
 import LoadingScreen from '../screens/LoadingScreen';
+import { canManageCatalog, canManageListings } from '../utils/roles';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function RootNavigator() {
-  const { isLoading, isSignedIn } = useAppAuth();
+  const { isLoading, isSignedIn, user } = useAppAuth();
+  const vendorProfile = useQuery(
+    api.vendors.getMyVendorProfile,
+    user?._id ? { ownerUserId: user._id } : 'skip'
+  );
+  const hasListingAccess = canManageListings(user?.role, vendorProfile?.status ?? null);
 
   if (isLoading) {
     return <LoadingScreen />;
@@ -48,35 +57,69 @@ export function RootNavigator() {
         fullScreenGestureEnabled: true,
       }}
     >
-      {isSignedIn ? (
+      <Stack.Screen
+        name="Main"
+        component={isSignedIn ? MainTabNavigator : GuestTabNavigator}
+      />
+      <Stack.Screen
+        name="ProductDetail"
+        component={ProductDetailScreen}
+        options={{
+          animation: 'slide_from_bottom',
+        }}
+      />
+      <Stack.Screen
+        name="SellerProfile"
+        component={SellerProfileScreen}
+      />
+      <Stack.Screen
+        name="Search"
+        component={SearchScreen}
+        options={{
+          animation: 'fade',
+        }}
+      />
+      <Stack.Screen
+        name="CategoryProducts"
+        component={CategoryProductsScreen}
+      />
+      <Stack.Screen
+        name="Cart"
+        component={CartScreen}
+        options={{
+          animation: 'slide_from_right',
+        }}
+      />
+      <Stack.Screen
+        name="Auth"
+        component={AuthNavigator}
+        options={{
+          animation: 'slide_from_bottom',
+          gestureDirection: 'vertical',
+        }}
+      />
+      {isSignedIn && (
         <>
-          <Stack.Screen
-            name="Main"
-            component={MainTabNavigator}
-          />
-          <Stack.Screen
-            name="ProductDetail"
-            component={ProductDetailScreen}
-            options={{
-              animation: 'slide_from_bottom',
-            }}
-          />
-          <Stack.Screen
-            name="CreateProduct"
-            component={CreateProductScreen}
-            options={{
-              animation: 'slide_from_bottom',
-              gestureDirection: 'vertical',
-            }}
-          />
-          <Stack.Screen
-            name="EditProduct"
-            component={EditProductScreen}
-            options={{
-              animation: 'slide_from_bottom',
-              gestureDirection: 'vertical',
-            }}
-          />
+          {hasListingAccess && (
+            <>
+              <Stack.Screen
+                name="CreateProduct"
+                component={CreateProductScreen}
+                options={{
+                  animation: 'slide_from_bottom',
+                  gestureDirection: 'vertical',
+                }}
+              />
+              <Stack.Screen
+                name="EditProduct"
+                component={EditProductScreen}
+                options={{
+                  animation: 'slide_from_bottom',
+                  gestureDirection: 'vertical',
+                }}
+              />
+            </>
+          )}
           <Stack.Screen
             name="OrderDetail"
             component={OrderDetailScreen}
@@ -98,21 +141,6 @@ export function RootNavigator() {
             component={ChatScreen}
           />
           <Stack.Screen
-            name="SellerProfile"
-            component={SellerProfileScreen}
-          />
-          <Stack.Screen
-            name="Search"
-            component={SearchScreen}
-            options={{
-              animation: 'fade',
-            }}
-          />
-          <Stack.Screen
-            name="CategoryProducts"
-            component={CategoryProductsScreen}
-          />
-          <Stack.Screen
             name="Settings"
             component={SettingsScreen}
           />
@@ -122,13 +150,6 @@ export function RootNavigator() {
             options={{
               animation: 'slide_from_bottom',
               gestureDirection: 'vertical',
-            }}
-          />
-          <Stack.Screen
-            name="Cart"
-            component={CartScreen}
-            options={{
-              animation: 'slide_from_right',
             }}
           />
           <Stack.Screen
@@ -164,11 +185,6 @@ export function RootNavigator() {
             }}
           />
         </>
-      ) : (
-        <Stack.Screen
-          name="Auth"
-          component={AuthNavigator}
-        />
       )}
     </Stack.Navigator>
   );

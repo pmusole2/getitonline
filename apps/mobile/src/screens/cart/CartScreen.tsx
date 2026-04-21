@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import type { GuestCartItem } from '@gettitonline/shared';
+import React from 'react';
 import { View, StyleSheet, ScrollView, Alert, Pressable, Image } from 'react-native';
 import {
   Text,
@@ -20,6 +21,7 @@ import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList, Id } from '../../types';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useGuestCart } from '../../context/GuestCartProvider';
 import { formatPrice } from '../../theme';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -45,10 +47,36 @@ interface CartItem {
   };
 }
 
+interface CartLineItem {
+  key: string;
+  cartItemId?: Id<'cartItems'>;
+  productId: string;
+  quantity: number;
+  selectedShipping: { name: string; price: number };
+  product: {
+    _id: string;
+    title: string;
+    price: number;
+    images: string[];
+    quantity: number;
+    status: string;
+    sellerId: string;
+    sellerName: string;
+  };
+}
+
 export default function CartScreen({ navigation }: Props) {
   const theme = useTheme();
-  const { user } = useAppAuth();
-  const [loading, setLoading] = useState(false);
+  const { user, setPostAuthDestination } = useAppAuth();
+  const {
+    items: guestCartItems,
+    summary: guestCartSummary,
+    isHydrated: guestCartHydrated,
+    updateQuantity: updateGuestQuantity,
+    removeItem: removeGuestItem,
+    clear: clearGuestCart,
+    hasPendingMerge,
+  } = useGuestCart();
 
   const cart = useQuery(
     api.cart.getCart,
@@ -59,12 +87,57 @@ export default function CartScreen({ navigation }: Props) {
   const removeFromCart = useMutation(api.cart.removeFromCart);
   const clearCart = useMutation(api.cart.clearCart);
 
-  const handleQuantityChange = async (itemId: Id<'cartItems'>, newQuantity: number) => {
-    if (!user || newQuantity < 1) return;
+  const activeItems: CartLineItem[] = user
+    ? ((cart?.items as CartItem[] | undefined) ?? []).map((item) => ({
+        key: item._id,
+        cartItemId: item._id,
+        productId: item.product._id,
+        quantity: item.quantity,
+        selectedShipping: item.selectedShipping,
+        product: {
+          _id: item.product._id,
+          title: item.product.title,
+          price: item.product.price,
+          images: item.product.images,
+          quantity: item.product.quantity,
+          status: item.product.status,
+          sellerId: item.product.sellerId,
+          sellerName: item.product.sellerName,
+        },
+      }))
+    : guestCartItems.map((item: GuestCartItem) => ({
+        key: item.productId,
+        productId: item.productId,
+        quantity: item.quantity,
+        selectedShipping: item.selectedShipping,
+        product: item.product,
+      }));
+
+  const itemCount = user ? cart?.items?.length || 0 : guestCartSummary.itemCount;
+  const subtotal = calculateDisplayPrice(
+    user ? cart?.subtotal || 0 : guestCartSummary.subtotal
+  );
+  const shippingTotal = user ? cart?.shippingTotal || 0 : guestCartSummary.shippingTotal;
+  const total = subtotal + shippingTotal;
+
+  const handleQuantityChange = async (
+    item: CartLineItem,
+    newQuantity: number
+  ) => {
+    if (newQuantity < 1) return;
+
+    if (!user) {
+      updateGuestQuantity(item.productId, newQuantity);
+      return;
+    }
+
+    if (!item.cartItemId) {
+      return;
+    }
 
     try {
       await updateQuantity({
-        cartItemId: itemId,
+        cartItemId: item.cartItemId,
         userId: user._id,
         quantity: newQuantity,
       });
@@ -74,11 +147,18 @@ export default function CartScreen({ navigation }: Props) {
     }
   };
 
-  const handleRemoveItem = async (itemId: Id<'cartItems'>) => {
-    if (!user) return;
+  const handleRemoveItem = async (item: CartLineItem) => {
+    if (!user) {
+      removeGuestItem(item.productId);
+      return;
+    }
+
+    if (!item.cartItemId) {
+      return;
+    }
 
     try {
-      await removeFromCart({ cartItemId: itemId, userId: user._id });
+      await removeFromCart({ cartItemId: item.cartItemId, userId: user._id });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to remove item';
       Alert.alert('Error', errorMessage);
@@ -86,6 +166,11 @@ export default function CartScreen({ navigation }: Props) {
   };
 
   const handleClearCart = () => {
+    if (!user) {
+      clearGuestCart();
+      return;
+    }
+
     Alert.alert(
       'Clear Cart',
       'Are you sure you want to remove all items from your cart?',
@@ -109,14 +194,17 @@ export default function CartScreen({ navigation }: Props) {
   };
 
   const handleCheckout = () => {
+    if (!user) {
+      setPostAuthDestination('Checkout');
+      navigation.navigate('Auth');
+      return;
+    }
+
     navigation.navigate('Checkout');
   };
 
-  // Get item count for header
-  const itemCount = cart?.items?.length || 0;
-
   // Loading state
-  if (cart === undefined) {
+  if (!guestCartHydrated || hasPendingMerge || (user && cart === undefined)) {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         {/* Header shown even during loading */}
@@ -143,7 +231,7 @@ export default function CartScreen({ navigation }: Props) {
   }
 
   // Empty cart state
-  if (!cart || cart.items.length === 0) {
+  if (activeItems.length === 0) {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         {/* Header shown even when empty */}
@@ -170,7 +258,7 @@ export default function CartScreen({ navigation }: Props) {
           variant="bodyMedium"
           style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
         >
-          Add auto parts to your cart to get started
+          Add products to your cart to get started
         </Text>
         <Button
           mode="contained"
@@ -185,19 +273,12 @@ export default function CartScreen({ navigation }: Props) {
     );
   }
 
-  const cartItems = cart.items as CartItem[];
-  // Apply markup to subtotal (5% service fee is baked into prices)
-  const baseSubtotal = cart.subtotal;
-  const subtotal = calculateDisplayPrice(baseSubtotal);
-  const shippingTotal = cart.shippingTotal;
-  const total = subtotal + shippingTotal;
-
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       {/* Custom Futuristic Header */}
       <StackHeader
         title="Shopping Cart"
-        subtitle={`${cartItems.length} ${cartItems.length === 1 ? 'item' : 'items'}`}
+        subtitle={`${itemCount} ${itemCount === 1 ? 'item' : 'items'}`}
         onBackPress={() => navigation.goBack()}
         rightActions={[{ icon: 'delete-outline', onPress: handleClearCart }]}
         variant="gradient"
@@ -206,9 +287,9 @@ export default function CartScreen({ navigation }: Props) {
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* Cart Items */}
         <View style={styles.itemsContainer}>
-          {cartItems.map((item: CartItem, index: number) => (
+          {activeItems.map((item: CartLineItem, index: number) => (
             <Animated.View
-              key={item._id}
+              key={item.key}
               entering={FadeInDown.delay(index * 80).duration(400)}
               exiting={FadeOutLeft.duration(300)}
               layout={Layout.springify()}
@@ -238,7 +319,7 @@ export default function CartScreen({ navigation }: Props) {
                       {item.product.title}
                     </Text>
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-                      Sold by {item.product.sellerName}
+                      Store: {item.product.sellerName}
                     </Text>
                     <Text variant="titleMedium" style={{ color: theme.colors.primary, marginTop: 4, fontWeight: '700' }}>
                       {formatPrice(calculateDisplayPrice(item.product.price))}
@@ -250,7 +331,7 @@ export default function CartScreen({ navigation }: Props) {
                         <IconButton
                           icon="minus"
                           size={18}
-                          onPress={() => handleQuantityChange(item._id, item.quantity - 1)}
+                          onPress={() => handleQuantityChange(item, item.quantity - 1)}
                           disabled={item.quantity <= 1}
                         />
                         <Text variant="titleMedium" style={{ color: theme.colors.onSurface, minWidth: 24, textAlign: 'center' }}>
@@ -259,7 +340,7 @@ export default function CartScreen({ navigation }: Props) {
                         <IconButton
                           icon="plus"
                           size={18}
-                          onPress={() => handleQuantityChange(item._id, item.quantity + 1)}
+                          onPress={() => handleQuantityChange(item, item.quantity + 1)}
                           disabled={item.quantity >= item.product.quantity}
                         />
                       </View>
@@ -267,7 +348,7 @@ export default function CartScreen({ navigation }: Props) {
                         icon="delete-outline"
                         size={22}
                         iconColor={theme.colors.error}
-                        onPress={() => handleRemoveItem(item._id)}
+                        onPress={() => handleRemoveItem(item)}
                       />
                     </View>
                   </View>
@@ -286,7 +367,7 @@ export default function CartScreen({ navigation }: Props) {
         </View>
 
         {/* AI Recommendation */}
-        <Animated.View entering={FadeInDown.delay(cartItems.length * 80 + 100).duration(400)}>
+        <Animated.View entering={FadeInDown.delay(activeItems.length * 80 + 100).duration(400)}>
           <Surface style={[styles.aiCard, { backgroundColor: theme.colors.tertiaryContainer }]} elevation={0}>
             <View style={styles.aiContent}>
               <Icon name="creation" size={24} color={theme.colors.tertiary} />
@@ -304,7 +385,7 @@ export default function CartScreen({ navigation }: Props) {
         </Animated.View>
 
         {/* Order Summary */}
-        <Animated.View entering={FadeInDown.delay(cartItems.length * 80 + 200).duration(400)}>
+        <Animated.View entering={FadeInDown.delay(activeItems.length * 80 + 200).duration(400)}>
           <Surface style={[styles.summaryCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
             <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600', marginBottom: 16 }}>
               Order Summary
@@ -338,7 +419,7 @@ export default function CartScreen({ navigation }: Props) {
         </Animated.View>
 
         {/* Secure Checkout Info */}
-        <Animated.View entering={FadeInDown.delay(cartItems.length * 80 + 300).duration(400)} style={styles.securityInfo}>
+        <Animated.View entering={FadeInDown.delay(activeItems.length * 80 + 300).duration(400)} style={styles.securityInfo}>
           <Icon name="shield-check" size={16} color={theme.colors.primary} />
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 6 }}>
             Secure escrow payment protection
@@ -364,12 +445,11 @@ export default function CartScreen({ navigation }: Props) {
         <Button
           mode="contained"
           onPress={handleCheckout}
-          loading={loading}
           style={styles.checkoutButton}
           contentStyle={styles.checkoutContent}
           icon="lock"
         >
-          Secure Checkout
+          {user ? 'Secure Checkout' : 'Sign In to Checkout'}
         </Button>
       </Animated.View>
     </View>

@@ -53,7 +53,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { format } from "date-fns";
@@ -127,7 +127,7 @@ export default function OrderDetailPage() {
 
     try {
       await completeOrder({ orderId: order._id, buyerId: user._id });
-      toast.success("Order completed! Payment released to seller.");
+      toast.success("Order completed! Payment released to the store.");
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : "Failed to complete order";
       toast.error(errorMessage);
@@ -309,7 +309,7 @@ export default function OrderDetailPage() {
             <CardHeader>
               <CardTitle>Order Items</CardTitle>
               <CardDescription>
-                {order.items.length} {order.items.length === 1 ? "item" : "items"} from{" "}
+                {order.items.length} {order.items.length === 1 ? "item" : "items"} from store{" "}
                 {order.seller?.firstName} {order.seller?.lastName}
               </CardDescription>
             </CardHeader>
@@ -461,7 +461,7 @@ export default function OrderDetailPage() {
                     <AlertDialogHeader>
                       <AlertDialogTitle>Complete this order?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        This will release the payment ({formatZMW(order.sellerPayout)}) to the seller.
+                        This will release the payment ({formatZMW(order.sellerPayout)}) to the store.
                         Only complete the order if you&apos;re satisfied with your purchase.
                         This action cannot be undone.
                       </AlertDialogDescription>
@@ -486,11 +486,11 @@ export default function OrderDetailPage() {
                 </Button>
               )}
 
-              {/* Contact Seller */}
+              {/* Contact Store */}
               <Button variant="outline" className="w-full" asChild>
                 <Link href={`${ROUTES.MESSAGES}?user=${order.sellerId}`}>
                   <MessageSquare className="mr-2 h-4 w-4" />
-                  Contact Seller
+                  Contact Store
                 </Link>
               </Button>
 
@@ -534,7 +534,7 @@ export default function OrderDetailPage() {
                   </p>
                   <p className="text-sm text-green-700 dark:text-green-500">
                     {formatZMW(order.totalAmount)} is held in escrow and will be
-                    released to the seller once you complete the order.
+                    released to the store once you complete the order.
                   </p>
                 </div>
               </CardContent>

@@ -1,5 +1,30 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { getSellerDisplayInfo } from "./lib/platform";
+
+const DEFAULT_SHIPPING = { name: "Free Delivery", price: 0 };
+
+function resolveSelectedShipping(
+  product: {
+    shippingOptions?: Array<{ name: string; price: number }> | undefined;
+  },
+  selectedShipping?: { name: string; price: number }
+) {
+  const matchedShipping = product.shippingOptions?.find(
+    (option) => option.name === selectedShipping?.name
+  );
+
+  if (matchedShipping) {
+    return { name: matchedShipping.name, price: matchedShipping.price };
+  }
+
+  const fallbackShipping = product.shippingOptions?.[0];
+  if (fallbackShipping) {
+    return { name: fallbackShipping.name, price: fallbackShipping.price };
+  }
+
+  return DEFAULT_SHIPPING;
+}
 
 // Get user's cart with product details
 export const getCart = query({
@@ -15,20 +40,16 @@ export const getCart = query({
         const product = await ctx.db.get(item.productId);
         if (!product) return null;
 
-        const seller = await ctx.db.get(product.sellerId);
+        const sellerInfo = await getSellerDisplayInfo(ctx, product.sellerId);
 
-        // Use product's current shipping options instead of stored selectedShipping
-        // This ensures cart reflects any updates the seller made to shipping
-        const currentShipping = product.shippingOptions?.[0] || { name: 'Free Delivery', price: 0 };
-        const actualShipping = {
-          name: currentShipping.name,
-          price: currentShipping.price,
-        };
+        const resolvedShipping = resolveSelectedShipping(
+          product,
+          item.selectedShipping
+        );
 
         return {
           ...item,
-          // Override stored shipping with product's current shipping
-          selectedShipping: actualShipping,
+          selectedShipping: resolvedShipping,
           product: {
             _id: product._id,
             title: product.title,
@@ -37,9 +58,7 @@ export const getCart = query({
             quantity: product.quantity,
             status: product.status,
             sellerId: product.sellerId,
-            sellerName: seller
-              ? `${seller.firstName} ${seller.lastName}`
-              : "Unknown",
+            sellerName: sellerInfo.displayName,
             shippingOptions: product.shippingOptions,
           },
         };
@@ -125,6 +144,120 @@ export const addToCart = mutation({
       createdAt: Date.now(),
       updatedAt: Date.now(),
     });
+  },
+});
+
+// Merge locally persisted guest cart items into a signed-in user's cart
+export const mergeGuestCart = mutation({
+  args: {
+    userId: v.id("users"),
+    items: v.array(
+      v.object({
+        productId: v.id("products"),
+        quantity: v.number(),
+        selectedShipping: v.object({
+          name: v.string(),
+          price: v.number(),
+        }),
+        product: v.object({
+          _id: v.string(),
+          sellerId: v.string(),
+          sellerName: v.string(),
+          title: v.string(),
+          price: v.number(),
+          images: v.array(v.string()),
+          quantity: v.number(),
+          status: v.string(),
+          shippingOptions: v.array(
+            v.object({
+              name: v.string(),
+              price: v.number(),
+              estimatedDays: v.string(),
+            })
+          ),
+        }),
+        addedAt: v.number(),
+      })
+    ),
+  },
+  handler: async (ctx, args) => {
+    const skipped: Array<{
+      productId: string;
+      reason: "product_missing" | "inactive" | "seller_owned" | "out_of_stock";
+    }> = [];
+    let mergedCount = 0;
+
+    for (const item of args.items) {
+      const product = await ctx.db.get(item.productId);
+
+      if (!product) {
+        skipped.push({
+          productId: item.productId,
+          reason: "product_missing",
+        });
+        continue;
+      }
+
+      if (product.status !== "active") {
+        skipped.push({
+          productId: item.productId,
+          reason: "inactive",
+        });
+        continue;
+      }
+
+      if (product.sellerId === args.userId) {
+        skipped.push({
+          productId: item.productId,
+          reason: "seller_owned",
+        });
+        continue;
+      }
+
+      if (product.quantity <= 0) {
+        skipped.push({
+          productId: item.productId,
+          reason: "out_of_stock",
+        });
+        continue;
+      }
+
+      const selectedShipping = resolveSelectedShipping(
+        product,
+        item.selectedShipping
+      );
+
+      const existingItem = await ctx.db
+        .query("cartItems")
+        .withIndex("by_user_product", (q) =>
+          q.eq("userId", args.userId).eq("productId", item.productId)
+        )
+        .first();
+
+      if (existingItem) {
+        await ctx.db.patch(existingItem._id, {
+          quantity: Math.min(
+            existingItem.quantity + item.quantity,
+            product.quantity
+          ),
+          selectedShipping,
+          updatedAt: Date.now(),
+        });
+      } else {
+        await ctx.db.insert("cartItems", {
+          userId: args.userId,
+          productId: item.productId,
+          quantity: Math.min(item.quantity, product.quantity),
+          selectedShipping,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        });
+      }
+
+      mergedCount += 1;
+    }
+
+    return { mergedCount, skipped };
   },
 });
 
@@ -307,14 +440,16 @@ export const getCartBySeller = query({
 
       const sellerId = product.sellerId;
 
-      // Use product's current shipping options
-      const currentShipping = product.shippingOptions?.[0] || { name: 'Free Delivery', price: 0 };
+      const resolvedShipping = resolveSelectedShipping(
+        product,
+        item.selectedShipping
+      );
 
       if (!sellerGroups[sellerId]) {
-        const seller = await ctx.db.get(sellerId);
+        const sellerInfo = await getSellerDisplayInfo(ctx, sellerId);
         sellerGroups[sellerId] = {
           sellerId,
-          sellerName: seller ? `${seller.firstName} ${seller.lastName}` : "Unknown",
+          sellerName: sellerInfo.displayName,
           items: [],
           subtotal: 0,
           shippingTotal: 0,
@@ -323,7 +458,7 @@ export const getCartBySeller = query({
 
       sellerGroups[sellerId].items.push({
         ...item,
-        selectedShipping: { name: currentShipping.name, price: currentShipping.price },
+        selectedShipping: resolvedShipping,
         product: {
           _id: product._id,
           title: product.title,
@@ -333,7 +468,7 @@ export const getCartBySeller = query({
         },
       });
       sellerGroups[sellerId].subtotal += product.price * item.quantity;
-      sellerGroups[sellerId].shippingTotal += currentShipping.price;
+      sellerGroups[sellerId].shippingTotal += resolvedShipping.price;
     }
 
     return Object.values(sellerGroups);

@@ -12,6 +12,7 @@ import { AnimatedProductCard, ProductGrid } from '../../components/ui/AnimatedPr
 import { TabHeader } from '../../components/ui/Header';
 import { CategoryChipSkeleton, ListSkeleton } from '../../components/ui/Skeleton';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useGuestCart } from '../../context/GuestCartProvider';
 import { useAIRecommendations } from '../../hooks/useAIRecommendations';
 import type { CategoryTreeItem, RootStackParamList } from '../../types';
 
@@ -25,6 +26,7 @@ export default function HomeScreen() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
+  const { summary: guestCartSummary } = useGuestCart();
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
   const [aiModalVisible, setAIModalVisible] = useState(false);
@@ -45,7 +47,7 @@ export default function HomeScreen() {
     api.cart.getCart,
     user ? { userId: user._id } : 'skip'
   );
-  const cartCount = cart?.itemCount || 0;
+  const cartCount = user ? cart?.itemCount || 0 : guestCartSummary.itemCount;
 
   // Get notification count
   const notifications = useQuery(
@@ -81,6 +83,11 @@ export default function HomeScreen() {
   };
 
   const handleNotificationPress = () => {
+    if (!user) {
+      navigation.navigate('Auth');
+      return;
+    }
+
     navigation.navigate('Notifications');
   };
 
@@ -101,7 +108,7 @@ export default function HomeScreen() {
         showCart
         cartCount={cartCount}
         onCartPress={handleCartPress}
-        showNotifications
+        showNotifications={!!user}
         notificationCount={unreadCount}
         onNotificationPress={handleNotificationPress}
         showAIAssistant
@@ -116,7 +123,7 @@ export default function HomeScreen() {
         {/* Search Bar */}
         <Animated.View entering={FadeInDown.delay(100).duration(400)} style={styles.searchContainer}>
           <Searchbar
-            placeholder="Search auto parts, accessories..."
+            placeholder="Search fashion, electronics, essentials..."
             value={searchQuery}
             onChangeText={setSearchQuery}
             onSubmitEditing={handleSearch}

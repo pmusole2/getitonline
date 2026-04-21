@@ -4,7 +4,7 @@
 
 ### 1. **Webhook Signature Validation Failure**
 **Symptom:** Logs showed "⚠️ Invalid webhook signature" for multiple events
-**Problem:** 
+**Problem:**
 - Signature verification was happening BEFORE event filtering
 - Non-relevant events were still going through signature validation
 - When signature failed, it threw an error, stopping webhook processing
@@ -39,7 +39,7 @@ This shows:
 
 ## Fixes Applied
 
-### 1. **Event Filtering Before Signature Verification** 
+### 1. **Event Filtering Before Signature Verification**
 **File:** `apps/api/src/payments/payments.controller.ts`
 
 ```typescript
@@ -104,7 +104,7 @@ if (event === 'collection.successful') {
 ```typescript
 verifyWebhookSignature(payload: string, signature: string): boolean {
   // ... validation checks ...
-  
+
   const isValid = signature === expectedSignature;
 
   if (!isValid) {
@@ -249,4 +249,3 @@ curl -X POST http://localhost:3001/api/v1/payments/webhook \
 2. If signature still fails, check the diagnostic logs for details
 3. Verify LENCO_WEBHOOK_SECRET is correct
 4. Contact Lenco support if signature algorithm differs from SHA512
-

@@ -37,7 +37,7 @@ import {
   History,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { formatDistanceToNow, format } from "date-fns";
 

@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { userRoleValidator } from "./lib/platform";
 
 // Create or update user from Clerk webhook
 export const upsertUser = mutation({
@@ -115,7 +116,7 @@ export const updateUserRole = mutation({
   args: {
     adminId: v.id("users"),
     targetUserId: v.id("users"),
-    newRole: v.union(v.literal("user"), v.literal("moderator"), v.literal("admin")),
+    newRole: userRoleValidator,
   },
   handler: async (ctx, args) => {
     const admin = await ctx.db.get(args.adminId);
@@ -185,7 +186,7 @@ export const getAllUsers = query({
 // Get users by role
 export const getUsersByRole = query({
   args: {
-    role: v.union(v.literal("user"), v.literal("moderator"), v.literal("admin")),
+    role: userRoleValidator,
   },
   handler: async (ctx, args) => {
     return await ctx.db

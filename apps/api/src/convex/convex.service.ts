@@ -193,6 +193,16 @@ export class ConvexService implements OnModuleInit {
     return await this.query<any[]>('products:getProductsBySeller', { sellerId: userId });
   }
 
+  async storeListingModerationResult(data: {
+    productId: string;
+    reviewerId: string;
+    status: 'clear' | 'flagged' | 'error';
+    summary: string;
+    flags: string[];
+  }) {
+    return await this.mutation('products:storeListingModerationResult', data);
+  }
+
   // Get marketplace stats
   async getMarketplaceStats() {
     const [products, categories] = await Promise.all([

@@ -18,6 +18,8 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { MotiView } from 'moti';
 import { StackHeader } from '../../components/ui/Header';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { useAppAuth } from '../../context/AuthProvider';
+import { canManageCatalog } from '../../utils/roles';
 
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - 48) / 2;
@@ -90,6 +92,8 @@ function AnimatedProductCard({ product, index, onPress }: ProductCardProps) {
 export default function CategoryProductsScreen({ route, navigation }: Props) {
   const theme = useTheme();
   const { categoryId, categoryName } = route.params;
+  const { user } = useAppAuth();
+  const hasCatalogAccess = canManageCatalog(user?.role);
   const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
 
   const category = useQuery(api.categories.getCategoryWithSubcategories, {
@@ -201,17 +205,21 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
             No products found
           </Text>
           <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
-            Be the first to list something in this category!
+            {hasCatalogAccess
+              ? 'No catalog items are live in this category yet.'
+              : 'No products are available in this category right now.'}
           </Text>
-          <Pressable
-            style={[styles.emptyButton, { backgroundColor: theme.colors.primary }]}
-            onPress={() => navigation.navigate('CreateProduct')}
-          >
-            <Icon name="plus" size={20} color={theme.colors.onPrimary} />
-            <Text style={{ color: theme.colors.onPrimary, fontWeight: '600', marginLeft: 8 }}>
-              Create Listing
-            </Text>
-          </Pressable>
+          {hasCatalogAccess && (
+            <Pressable
+              style={[styles.emptyButton, { backgroundColor: theme.colors.primary }]}
+              onPress={() => navigation.navigate('CreateProduct')}
+            >
+              <Icon name="plus" size={20} color={theme.colors.onPrimary} />
+              <Text style={{ color: theme.colors.onPrimary, fontWeight: '600', marginLeft: 8 }}>
+                Add Listing
+              </Text>
+            </Pressable>
+          )}
         </Animated.View>
       ) : (
         <FlatList

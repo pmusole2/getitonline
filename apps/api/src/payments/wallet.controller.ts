@@ -437,7 +437,7 @@ export class WalletController {
           narration: 'Wallet top-up',
           email: dto.email,
           callbackUrl: `${
-            process.env.APP_URL || 'https://auto-marketplace.app'
+            process.env.APP_URL || 'https://gettitonline.com'
           }/wallet/top-up/callback`,
         });
 

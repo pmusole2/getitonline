@@ -1,4 +1,4 @@
-# Auto Marketplace Mobile
+# Gettitonline Mobile
 
 Expo / React Native app for the iOS beta and TestFlight distribution.
 

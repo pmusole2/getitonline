@@ -5,7 +5,7 @@ const footerLinks = {
   marketplace: [
     { name: "Browse", href: ROUTES.BROWSE },
     { name: "Categories", href: ROUTES.BROWSE },
-    { name: "Sell", href: ROUTES.SELL },
+    { name: "Our Store", href: ROUTES.BROWSE },
     { name: "How It Works", href: "#" },
   ],
   support: [
@@ -30,16 +30,17 @@ export function Footer() {
           {/* Brand */}
           <div className="col-span-2 md:col-span-1">
             <Link href={ROUTES.HOME} className="flex items-center gap-2">
-              <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
+              <div className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/20 bg-primary shadow-[0_10px_30px_rgba(7,149,249,0.22)]">
                 <span className="text-lg font-bold text-primary-foreground">
-                  A
+                  G
                 </span>
               </div>
-              <span className="font-bold">Auto Marketplace</span>
+              <span className="font-semibold tracking-[0.08em]">Gettitonline</span>
             </Link>
             <p className="mt-4 text-sm text-muted-foreground">
-              Zambia&apos;s trusted marketplace for auto parts, accessories, and
-              more. Shop with confidence using our secure escrow system.
+              Zambia&apos;s online destination for fashion, electronics, lifestyle
+              essentials, backed by the official Gettitonline storefront and
+              secure escrow checkout.
             </p>
           </div>
 
@@ -98,7 +99,7 @@ export function Footer() {
         {/* Bottom */}
         <div className="mt-12 flex flex-col items-center justify-between gap-4 border-t pt-8 md:flex-row">
           <p className="text-sm text-muted-foreground">
-            &copy; {new Date().getFullYear()} Auto Marketplace. All rights
+            &copy; {new Date().getFullYear()} Gettitonline. All rights
             reserved.
           </p>
           <div className="flex items-center gap-4">

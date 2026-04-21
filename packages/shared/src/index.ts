@@ -1,11 +1,12 @@
 // Schemas
 export * from "./schemas";
+export * from "./guest-cart";
 
 // Utils
 export * from "./utils";
 
 // Constants
-export const APP_NAME = "Auto Marketplace";
+export const APP_NAME = "Gettitonline";
 export const DEFAULT_CURRENCY = "ZMW";
 export const DEFAULT_COUNTRY = "Zambia";
 

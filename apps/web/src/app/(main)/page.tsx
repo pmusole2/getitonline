@@ -7,7 +7,7 @@ import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useQuery } from "convex/react";
 import {
   ArrowRight,
@@ -54,7 +54,7 @@ const features = [
   {
     icon: Sparkles,
     title: "AI Powered",
-    description: "Smart recommendations and dispute resolution",
+    description: "Smarter discovery and guided support across every order",
   },
 ];
 
@@ -98,7 +98,7 @@ const testimonials = [
     role: "Buyer",
     location: "Lusaka",
     avatar: "",
-    content: "Found exactly the brake pads I needed for my Honda at half the price of dealerships. The escrow system gave me peace of mind!",
+    content: "I ordered home essentials and a new pair of sneakers in one checkout. The escrow flow made the whole experience feel safe and polished.",
     rating: 5,
   },
   {
@@ -106,7 +106,7 @@ const testimonials = [
     role: "Seller",
     location: "Ndola",
     avatar: "",
-    content: "I've sold over 200 auto parts through this platform. The payment protection means I always get paid for legitimate orders.",
+    content: "My storefront started with accessories and now I sell across fashion and electronics. The secure payout flow gives me confidence every time.",
     rating: 5,
   },
   {
@@ -114,7 +114,7 @@ const testimonials = [
     role: "Buyer",
     location: "Kitwe",
     avatar: "",
-    content: "The AI chatbot helped me find compatible parts for my car. Customer service resolved my one issue within hours!",
+    content: "I found a gift, a phone accessory, and a few beauty items without hopping between stores. Support was fast when I needed help.",
     rating: 5,
   },
 ];
@@ -155,17 +155,18 @@ export default function HomePage() {
           <div className="mx-auto max-w-4xl text-center">
             <Badge variant="secondary" className="mb-4 px-4 py-1.5">
               <Sparkles className="mr-1 h-3 w-3" />
-              Zambia&apos;s #1 Trusted Marketplace
+              Zambia&apos;s trusted online store
             </Badge>
             <h1 className="mb-6 text-4xl font-bold tracking-tight sm:text-5xl lg:text-6xl">
-              Buy & Sell with{" "}
+              Shop with{" "}
               <span className="bg-gradient-to-r from-primary to-primary/60 bg-clip-text text-transparent">
                 Complete Confidence
               </span>
             </h1>
             <p className="mb-8 text-lg text-muted-foreground lg:text-xl max-w-2xl mx-auto">
-              Auto parts, accessories, tech products, and more. Shop safely with
-              our secure escrow payment system that protects both buyers and sellers.
+              Fashion, electronics, lifestyle essentials, and everyday finds in one
+              secure storefront. Shop confidently with escrow that protects you
+              until delivery is confirmed.
             </p>
 
             {/* Search Bar */}
@@ -188,7 +189,7 @@ export default function HomePage() {
             {/* Quick Links */}
             <div className="mt-6 flex flex-wrap items-center justify-center gap-2">
               <span className="text-sm text-muted-foreground">Popular:</span>
-              {["Brake Pads", "Phone Accessories", "Engine Oil", "Car Seats"].map(
+              {["Sneakers", "Phone Accessories", "Kitchen Essentials", "Beauty Picks"].map(
                 (term) => (
                   <Button key={term} variant="link" size="sm" asChild>
                     <Link href={`${ROUTES.SEARCH}?q=${encodeURIComponent(term)}`}>
@@ -207,7 +208,7 @@ export default function HomePage() {
               </div>
               <div className="flex items-center gap-2">
                 <CheckCircle className="h-4 w-4 text-green-600" />
-                <span>Verified Sellers</span>
+                <span>Official Storefront</span>
               </div>
               <div className="flex items-center gap-2">
                 <HeadphonesIcon className="h-4 w-4 text-green-600" />
@@ -244,8 +245,8 @@ export default function HomePage() {
               Trade with Confidence
             </h2>
             <p className="text-lg text-muted-foreground">
-              We&apos;ve built the most secure marketplace in Zambia with features
-              designed to protect every transaction.
+              Gettitonline blends trusted storefronts, protected payments, and
+              cleaner discovery so every order feels simple and secure.
             </p>
           </div>
 
@@ -308,7 +309,7 @@ export default function HomePage() {
                 Browse Categories
               </h2>
               <p className="text-muted-foreground">
-                Find what you need in our wide selection
+                Explore what&apos;s trending across our storefronts
               </p>
             </div>
             <Button variant="ghost" asChild>
@@ -366,7 +367,7 @@ export default function HomePage() {
                 Recently Listed
               </h2>
               <p className="text-muted-foreground">
-                Fresh products just added to the marketplace
+                Fresh arrivals just added to Gettitonline
               </p>
             </div>
             <Button variant="ghost" asChild>
@@ -484,26 +485,26 @@ export default function HomePage() {
         </div>
       </section>
 
-      {/* CTA Section - Sellers */}
+      {/* CTA Section - Store */}
       <section className="py-16 lg:py-24">
         <div className="container">
           <Card className="overflow-hidden border-0 bg-gradient-to-br from-primary to-primary/80">
             <CardContent className="grid gap-8 p-8 lg:grid-cols-2 lg:p-12 items-center">
               <div className="text-primary-foreground">
-                <Badge variant="secondary" className="mb-4">For Sellers</Badge>
+                <Badge variant="secondary" className="mb-4">Why Shoppers Choose Us</Badge>
                 <h2 className="mb-4 text-3xl font-bold lg:text-4xl">
-                  Turn Your Products Into Profits
+                  Everything You Need in One Trusted Store
                 </h2>
                 <p className="mb-6 text-primary-foreground/80 text-lg">
-                  Join thousands of successful sellers on Zambia&apos;s most trusted marketplace.
-                  List your products, reach more buyers, and get paid securely.
+                  Discover curated products, secure checkout, and responsive
+                  support from the official Gettitonline storefront.
                 </p>
                 <ul className="mb-8 space-y-3">
                   {[
-                    "No listing fees - only pay when you sell",
-                    "Secure escrow protects your payments",
+                    "Official Gettitonline inventory",
+                    "Secure escrow protects every order",
                     "Built-in shipping and tracking",
-                    "AI-powered pricing recommendations",
+                    "Helpful AI shopping assistance",
                   ].map((item) => (
                     <li key={item} className="flex items-center gap-2">
                       <CheckCircle className="h-5 w-5 text-green-300" />
@@ -512,8 +513,8 @@ export default function HomePage() {
                   ))}
                 </ul>
                 <Button size="lg" variant="secondary" asChild>
-                  <Link href={ROUTES.CREATE_LISTING}>
-                    Start Selling Today
+                  <Link href={ROUTES.BROWSE}>
+                    Start Shopping
                     <ArrowRight className="ml-2 h-4 w-4" />
                   </Link>
                 </Button>
@@ -526,19 +527,19 @@ export default function HomePage() {
                     <CardContent className="p-6 text-primary-foreground">
                       <div className="text-center mb-4">
                         <div className="text-4xl font-bold">K12,500</div>
-                        <div className="text-primary-foreground/70">Avg. Monthly Earnings</div>
+                        <div className="text-primary-foreground/70">Popular Weekly Picks</div>
                       </div>
                       <div className="space-y-3 text-sm">
                         <div className="flex justify-between">
-                          <span className="text-primary-foreground/70">Products Sold</span>
+                          <span className="text-primary-foreground/70">Items Curated</span>
                           <span className="font-medium">42</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-primary-foreground/70">Success Rate</span>
+                          <span className="text-primary-foreground/70">Delivery Success</span>
                           <span className="font-medium">98%</span>
                         </div>
                         <div className="flex justify-between">
-                          <span className="text-primary-foreground/70">Reviews</span>
+                          <span className="text-primary-foreground/70">Customer Rating</span>
                           <span className="font-medium flex items-center gap-1">
                             4.9 <Star className="h-3 w-3 fill-yellow-400 text-yellow-400" />
                           </span>
@@ -561,7 +562,7 @@ export default function HomePage() {
               Ready to Get Started?
             </h2>
             <p className="mb-8 text-lg text-muted-foreground">
-              Join thousands of buyers and sellers on Zambia&apos;s most trusted marketplace.
+              Join shoppers across Zambia using Gettitonline to discover and buy with confidence.
             </p>
             <div className="flex flex-col sm:flex-row gap-4 justify-center">
               <Button size="lg" asChild>
@@ -571,8 +572,8 @@ export default function HomePage() {
                 </Link>
               </Button>
               <Button size="lg" variant="outline" asChild>
-                <Link href={ROUTES.CREATE_LISTING}>
-                  Sell Your Products
+                <Link href={ROUTES.SEARCH}>
+                  Explore Categories
                 </Link>
               </Button>
             </div>

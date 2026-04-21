@@ -4,6 +4,7 @@ import { Id } from "../../../../convex/_generated/dataModel";
 export type {
   User,
   Product,
+  VendorProfile,
   Order,
   CartItem,
   Category,
@@ -12,7 +13,7 @@ export type {
   Message,
   Notification,
   Review,
-} from "@auto-marketplace/shared";
+} from "@gettitonline/shared";
 
 // Convex ID types
 export type UserId = Id<"users">;
@@ -26,10 +27,22 @@ export type TransactionId = Id<"transactions">;
 export type ConversationId = Id<"conversations">;
 
 // User roles
-export type UserRole = "user" | "moderator" | "admin";
+export type UserRole = "user" | "catalog_manager" | "moderator" | "admin";
+
+export type VendorStatus =
+  | "pending"
+  | "approved"
+  | "changes_requested"
+  | "suspended";
 
 // Product status
-export type ProductStatus = "draft" | "active" | "sold" | "suspended";
+export type ProductStatus =
+  | "draft"
+  | "pending_review"
+  | "changes_requested"
+  | "active"
+  | "sold"
+  | "suspended";
 
 // Product condition
 export type ProductCondition = "new" | "like_new" | "good" | "fair";

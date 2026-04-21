@@ -29,8 +29,10 @@ async function bootstrap() {
 
   // Swagger documentation
   const config = new DocumentBuilder()
-    .setTitle('Auto Marketplace API')
-    .setDescription('API for AI integrations and webhooks')
+    .setTitle('Gettitonline API')
+    .setDescription(
+      'API for Gettitonline storefront experiences, AI integrations, and webhooks',
+    )
     .setVersion('1.0')
     .addTag('AI', 'AI-powered features')
     .addTag('Health', 'Health check endpoints')

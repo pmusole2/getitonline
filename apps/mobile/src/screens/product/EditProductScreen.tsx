@@ -30,7 +30,9 @@ import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { calculateDisplayPrice, PLATFORM_FEE_PERCENTAGE } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
-import type { Category, Id, ProductCondition, ProductStatus, RootStackParamList } from '../../types';
+import type { Category, Id, ProductCondition, RootStackParamList } from '../../types';
+import { canManageCatalog } from '../../utils/roles';
+import { canManageListings } from '../../utils/roles';
 
 const { width: SCREEN_WIDTH } = Dimensions.get('window');
 
@@ -80,8 +82,8 @@ function ConditionButton({ condition, isSelected, onPress, theme }: ConditionBut
 }
 
 interface StatusToggleProps {
-  status: ProductStatus;
-  onStatusChange: (status: ProductStatus) => void;
+  status: 'draft' | 'pending_review';
+  onStatusChange: (status: 'draft' | 'pending_review') => void;
   theme: MD3Theme;
 }
 
@@ -89,27 +91,27 @@ function StatusToggle({ status, onStatusChange, theme }: StatusToggleProps) {
   return (
     <View style={styles.statusContainer}>
       <Pressable
-        onPress={() => onStatusChange('active')}
+        onPress={() => onStatusChange('pending_review')}
         style={[
           styles.statusButton,
-          status === 'active' && styles.statusButtonActive,
+          status === 'pending_review' && styles.statusButtonActive,
           {
-            backgroundColor: status === 'active' ? '#10B981' : theme.colors.surfaceVariant,
+            backgroundColor: status === 'pending_review' ? '#10B981' : theme.colors.surfaceVariant,
           },
         ]}
       >
         <Icon
           name="check-circle"
           size={18}
-          color={status === 'active' ? '#FFFFFF' : theme.colors.onSurfaceVariant}
+          color={status === 'pending_review' ? '#FFFFFF' : theme.colors.onSurfaceVariant}
         />
         <Text
           style={[
             styles.statusButtonText,
-            { color: status === 'active' ? '#FFFFFF' : theme.colors.onSurfaceVariant },
+            { color: status === 'pending_review' ? '#FFFFFF' : theme.colors.onSurfaceVariant },
           ]}
         >
-          Active
+          Submit for Review
         </Text>
       </Pressable>
       <Pressable
@@ -144,13 +146,18 @@ export default function EditProductScreen({ route, navigation }: Props) {
   const theme = useTheme() as MD3Theme;
   const { productId } = route.params;
   const { user } = useAppAuth();
+  const vendorProfile = useQuery(
+    api.vendors.getMyVendorProfile,
+    user?._id ? { ownerUserId: user._id } : 'skip'
+  );
+  const hasListingAccess = canManageListings(user?.role, vendorProfile?.status ?? null);
 
   const [title, setTitle] = useState('');
   const [description, setDescription] = useState('');
   const [price, setPrice] = useState('');
   const [quantity, setQuantity] = useState('1');
   const [condition, setCondition] = useState<ProductCondition>('good');
-  const [status, setStatus] = useState<ProductStatus>('active');
+  const [status, setStatus] = useState<'draft' | 'pending_review'>('draft');
   const [categoryId, setCategoryId] = useState<string | null>(null);
   const [location, setLocation] = useState('');
   const [loading, setLoading] = useState(false);
@@ -159,7 +166,10 @@ export default function EditProductScreen({ route, navigation }: Props) {
   const [deliveryType, setDeliveryType] = useState<'free' | 'paid'>('free');
   const [deliveryFee, setDeliveryFee] = useState('');
 
-  const product = useQuery(api.products.getProduct, { productId: productId as Id<'products'> });
+  const product = useQuery(api.products.getProduct, {
+    productId: productId as Id<'products'>,
+    viewerUserId: user?._id,
+  });
   const categories = useQuery(api.categories.getCategoriesTree);
   const updateProduct = useMutation(api.products.updateProduct);
   const deleteProduct = useMutation(api.products.deleteProduct);
@@ -171,7 +181,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
       setPrice(product.price.toString());
       setQuantity((product.quantity || 1).toString());
       setCondition(product.condition);
-      setStatus(product.status);
+      setStatus(product.status === 'draft' ? 'draft' : 'pending_review');
       setCategoryId(product.categoryId);
       if (product.location) {
         if (typeof product.location === 'string') {
@@ -224,7 +234,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
     try {
       await updateProduct({
         productId: product._id,
-        sellerId: user._id,
+        actorUserId: user._id,
         title: title.trim(),
         description: description.trim(),
         price: priceNum,
@@ -260,7 +270,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
     try {
       await deleteProduct({
         productId: product._id,
-        sellerId: user._id,
+        actorUserId: user._id,
       });
 
       Alert.alert('Deleted', 'Your listing has been removed', [
@@ -273,6 +283,24 @@ export default function EditProductScreen({ route, navigation }: Props) {
       setLoading(false);
     }
   };
+
+  // Loading State
+  if (user && !hasListingAccess) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader title="Listing Access" onBackPress={() => navigation.goBack()} />
+        <View style={styles.loadingContainer}>
+          <Icon name="lock-outline" size={64} color={theme.colors.onSurfaceVariant} />
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
+            Listing access is restricted
+          </Text>
+          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+            Only approved vendors and catalog staff can edit listings.
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   // Loading State
   if (product === undefined) {

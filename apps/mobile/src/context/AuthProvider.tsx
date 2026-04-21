@@ -17,6 +17,10 @@ interface AuthContextType {
   isSignedIn: boolean;
   user: User | null;
   clerkUser: ClerkUserType | null;
+  postAuthDestination: 'Cart' | 'Checkout' | null;
+  setPostAuthDestination: React.Dispatch<
+    React.SetStateAction<'Cart' | 'Checkout' | null>
+  >;
   signOut: () => Promise<void>;
 }
 
@@ -26,6 +30,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { isLoaded, isSignedIn, signOut: clerkSignOut } = useAuth();
   const { user: clerkUser } = useUser();
   const [isInitialized, setIsInitialized] = useState(false);
+  const [fallbackUser, setFallbackUser] = useState<User | null>(null);
+  const [postAuthDestination, setPostAuthDestination] = useState<
+    'Cart' | 'Checkout' | null
+  >(null);
 
   // Query user from Convex
   const convexUser = useQuery(
@@ -36,29 +44,81 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   // Mutation to upsert user
   const upsertUser = useMutation(api.users.upsertUser);
 
+  useEffect(() => {
+    if (convexUser) {
+      setFallbackUser(null);
+    }
+  }, [convexUser]);
+
   // Sync Clerk user with Convex
   useEffect(() => {
+    let isCancelled = false;
+
     async function syncUser() {
-      if (!isLoaded || !isSignedIn || !clerkUser) {
-        setIsInitialized(true);
+      if (!isLoaded) {
         return;
       }
 
+      if (!isSignedIn || !clerkUser) {
+        if (!isCancelled) {
+          setFallbackUser(null);
+          setIsInitialized(true);
+        }
+        return;
+      }
+
+      if (!isCancelled) {
+        setIsInitialized(false);
+      }
+
       try {
-        await upsertUser({
+        const userId = await upsertUser({
           clerkId: clerkUser.id,
           email: clerkUser.primaryEmailAddress?.emailAddress || '',
           firstName: clerkUser.firstName || '',
           lastName: clerkUser.lastName || '',
           avatar: clerkUser.imageUrl,
         });
+
+        if (!isCancelled) {
+          const now = Date.now();
+
+          setFallbackUser((currentUser) => ({
+            _id: userId,
+            _creationTime: currentUser?._creationTime ?? now,
+            clerkId: clerkUser.id,
+            email: clerkUser.primaryEmailAddress?.emailAddress || '',
+            firstName: clerkUser.firstName || '',
+            lastName: clerkUser.lastName || '',
+            avatar: clerkUser.imageUrl,
+            role: currentUser?.role ?? 'user',
+            totalSales: currentUser?.totalSales ?? 0,
+            totalPurchases: currentUser?.totalPurchases ?? 0,
+            isVerified: currentUser?.isVerified ?? false,
+            isBanned: currentUser?.isBanned ?? false,
+            createdAt: currentUser?.createdAt ?? now,
+            updatedAt: now,
+            phone: currentUser?.phone,
+            interests: currentUser?.interests,
+            address: currentUser?.address,
+            preferences: currentUser?.preferences,
+            rating: currentUser?.rating,
+          }));
+        }
       } catch (error) {
         console.error('Failed to sync user with Convex:', error);
+      } finally {
+        if (!isCancelled) {
+          setIsInitialized(true);
+        }
       }
-      setIsInitialized(true);
     }
 
-    syncUser();
+    void syncUser();
+
+    return () => {
+      isCancelled = true;
+    };
   }, [isLoaded, isSignedIn, clerkUser, upsertUser]);
 
   const handleSignOut = async () => {
@@ -69,7 +129,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
   };
 
-  const isLoading = !isLoaded || !isInitialized || (isSignedIn && convexUser === undefined);
+  const user = convexUser ?? fallbackUser;
+  const isLoading =
+    !isLoaded || !isInitialized || (Boolean(isSignedIn) && !user);
 
   const clerkUserData: ClerkUserType | null = clerkUser ? {
     id: clerkUser.id,
@@ -84,8 +146,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       value={{
         isLoading,
         isSignedIn: isSignedIn ?? false,
-        user: convexUser ?? null,
+        user,
         clerkUser: clerkUserData,
+        postAuthDestination,
+        setPostAuthDestination,
         signOut: handleSignOut,
       }}
     >

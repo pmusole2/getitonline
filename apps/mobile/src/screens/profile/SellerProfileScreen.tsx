@@ -1,10 +1,11 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from 'convex/react';
 import React from 'react';
-import { ActivityIndicator, Dimensions, FlatList, StyleSheet, View } from 'react-native';
-import { Avatar, Card, Text, useTheme } from 'react-native-paper';
+import { ActivityIndicator, Dimensions, FlatList, Image, StyleSheet, View } from 'react-native';
+import { Avatar, Card, Chip, Text, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { useAppAuth } from '../../context/AuthProvider';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
 import type { Id, Product, ReviewWithReviewer, RootStackParamList } from '../../types';
@@ -16,11 +17,17 @@ type Props = NativeStackScreenProps<RootStackParamList, 'SellerProfile'>;
 
 export default function SellerProfileScreen({ route, navigation }: Props) {
   const theme = useTheme();
+  const { user } = useAppAuth();
   const { sellerId } = route.params;
 
-  const seller = useQuery(api.users.getUser, { userId: sellerId as Id<'users'> });
+  const storefront = useQuery(api.vendors.getVendorStorefront, {
+    sellerId: sellerId as Id<'users'>,
+    viewerUserId: user?._id,
+  });
   const products = useQuery(api.products.getProductsBySeller, {
     sellerId: sellerId as Id<'users'>,
+    status: 'active',
+    viewerUserId: user?._id,
   });
   const reviews = useQuery(api.reviews.getSellerReviews, {
     sellerId: sellerId as Id<'users'>,
@@ -30,43 +37,23 @@ export default function SellerProfileScreen({ route, navigation }: Props) {
     navigation.navigate('ProductDetail', { productId });
   };
 
-  if (seller === undefined) {
+  if (storefront === undefined || products === undefined || reviews === undefined) {
     return (
       <View style={[styles.container, styles.centered, { backgroundColor: theme.colors.background }]}>
-        <ActivityIndicator size="large" />
+        <ActivityIndicator size="large" color={theme.colors.primary} />
       </View>
     );
   }
 
-  if (seller === null) {
+  if (storefront === null) {
     return (
       <View style={[styles.container, styles.centered, { backgroundColor: theme.colors.background }]}>
         <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
-          Seller not found
+          Store not found
         </Text>
       </View>
     );
   }
-
-  const renderProduct = ({ item }: { item: Product }) => (
-    <Card
-      style={[styles.productCard, { backgroundColor: theme.colors.surface }]}
-      onPress={() => handleProductPress(item._id)}
-    >
-      <Card.Cover
-        source={{ uri: item.images[0] || 'https://via.placeholder.com/150' }}
-        style={styles.productImage}
-      />
-      <Card.Content style={styles.productContent}>
-        <Text variant="bodyMedium" numberOfLines={2} style={{ color: theme.colors.onSurface }}>
-          {item.title}
-        </Text>
-        <Text variant="titleMedium" style={{ color: theme.colors.primary, marginTop: 4 }}>
-          {formatPrice(calculateDisplayPrice(item.price))}
-        </Text>
-      </Card.Content>
-    </Card>
-  );
 
   const renderReview = ({ item }: { item: ReviewWithReviewer }) => (
     <Card style={[styles.reviewCard, { backgroundColor: theme.colors.surface }]}>
@@ -95,44 +82,82 @@ export default function SellerProfileScreen({ route, navigation }: Props) {
             {new Date(item.createdAt).toLocaleDateString()}
           </Text>
         </View>
-        {item.comment && (
+        {item.comment ? (
           <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
             {item.comment}
           </Text>
-        )}
+        ) : null}
       </Card.Content>
     </Card>
   );
 
   const ListHeader = () => (
     <>
-      {/* Seller Header */}
+      {storefront.bannerUrl ? (
+        <Image source={{ uri: storefront.bannerUrl }} style={styles.banner} resizeMode="cover" />
+      ) : null}
+
       <View style={styles.header}>
-        <Avatar.Text
-          size={80}
-          label={`${seller.firstName[0]}${seller.lastName[0]}`}
-          style={{ backgroundColor: theme.colors.primary }}
-        />
+        {storefront.logoUrl ? (
+          <Avatar.Image size={80} source={{ uri: storefront.logoUrl }} />
+        ) : (
+          <Avatar.Text
+            size={80}
+            label={storefront.displayName[0] || 'G'}
+            style={{ backgroundColor: theme.colors.primary }}
+          />
+        )}
+
         <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
-          {seller.firstName} {seller.lastName}
+          {storefront.displayName}
         </Text>
 
-        {seller.isVerified && (
-          <View style={styles.verifiedBadge}>
-            <Icon name="check-decagram" size={16} color={theme.colors.primary} />
-            <Text variant="labelSmall" style={{ color: theme.colors.primary, marginLeft: 4 }}>
-              Verified Seller
+        <Chip
+          icon={storefront.isCompanyStore ? 'storefront-outline' : 'check-decagram'}
+          style={[styles.storeChip, { backgroundColor: theme.colors.primaryContainer }]}
+          textStyle={{ color: theme.colors.primary }}
+        >
+          {storefront.isCompanyStore ? 'Official Store' : 'Approved Vendor'}
+        </Chip>
+
+        <Text
+          variant="bodyMedium"
+          style={{ color: theme.colors.onSurfaceVariant, marginTop: 12, textAlign: 'center', lineHeight: 22 }}
+        >
+          {storefront.description}
+        </Text>
+
+        <View style={styles.metaWrap}>
+          <View style={styles.metaItem}>
+            <Icon name="email-outline" size={16} color={theme.colors.onSurfaceVariant} />
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+              {storefront.contactEmail}
             </Text>
           </View>
-        )}
+          {storefront.contactPhone ? (
+            <View style={styles.metaItem}>
+              <Icon name="phone-outline" size={16} color={theme.colors.onSurfaceVariant} />
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                {storefront.contactPhone}
+              </Text>
+            </View>
+          ) : null}
+          {storefront.address ? (
+            <View style={styles.metaItem}>
+              <Icon name="map-marker-outline" size={16} color={theme.colors.onSurfaceVariant} />
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                {storefront.address.city}, {storefront.address.province}
+              </Text>
+            </View>
+          ) : null}
+        </View>
       </View>
 
-      {/* Stats */}
       <Card style={[styles.statsCard, { backgroundColor: theme.colors.surface }]}>
         <Card.Content style={styles.statsContent}>
           <View style={styles.statItem}>
             <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>
-              {seller.totalSales}
+              {storefront.totalSales}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
               Sales
@@ -143,17 +168,17 @@ export default function SellerProfileScreen({ route, navigation }: Props) {
             <View style={styles.ratingRow}>
               <Icon name="star" size={20} color="#F59E0B" />
               <Text variant="headlineSmall" style={{ color: theme.colors.primary, marginLeft: 4 }}>
-                {seller.rating?.toFixed(1) || 'N/A'}
+                {storefront.rating?.toFixed(1) || 'N/A'}
               </Text>
             </View>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-              {reviews?.length || 0} reviews
+              {reviews.length} reviews
             </Text>
           </View>
           <View style={[styles.statDivider, { backgroundColor: theme.colors.outline }]} />
           <View style={styles.statItem}>
             <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>
-              {products?.length || 0}
+              {products.length}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
               Listings
@@ -162,14 +187,13 @@ export default function SellerProfileScreen({ route, navigation }: Props) {
         </Card.Content>
       </Card>
 
-      {/* Products Section */}
       <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-        Products ({products?.length || 0})
+        Storefront Items ({products.length})
       </Text>
 
-      {products && products.length > 0 && (
+      {products.length > 0 ? (
         <View style={styles.productsGrid}>
-          {products.map((product) => (
+          {products.map((product: Product) => (
             <Card
               key={product._id}
               style={[styles.productCard, { backgroundColor: theme.colors.surface }]}
@@ -190,18 +214,23 @@ export default function SellerProfileScreen({ route, navigation }: Props) {
             </Card>
           ))}
         </View>
+      ) : (
+        <View style={styles.emptyProductState}>
+          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+            No active listings are available from this store yet.
+          </Text>
+        </View>
       )}
 
-      {/* Reviews Section */}
       <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
-        Reviews ({reviews?.length || 0})
+        Reviews ({reviews.length})
       </Text>
     </>
   );
 
   return (
     <FlatList
-      data={reviews || []}
+      data={reviews}
       renderItem={renderReview}
       keyExtractor={(item) => item._id}
       ListHeaderComponent={ListHeader}
@@ -229,14 +258,28 @@ const styles = StyleSheet.create({
   listContent: {
     paddingBottom: 32,
   },
+  banner: {
+    width: '100%',
+    height: 180,
+  },
   header: {
     alignItems: 'center',
-    padding: 24,
+    paddingHorizontal: 24,
+    paddingTop: 24,
+    paddingBottom: 20,
   },
-  verifiedBadge: {
+  storeChip: {
+    marginTop: 12,
+  },
+  metaWrap: {
+    marginTop: 16,
+    alignItems: 'center',
+    gap: 8,
+  },
+  metaItem: {
     flexDirection: 'row',
     alignItems: 'center',
-    marginTop: 8,
+    gap: 6,
   },
   statsCard: {
     marginHorizontal: 16,
@@ -298,6 +341,13 @@ const styles = StyleSheet.create({
   },
   emptyState: {
     padding: 32,
+    alignItems: 'center',
+  },
+  emptyProductState: {
+    marginHorizontal: 16,
+    marginBottom: 24,
+    padding: 20,
+    borderRadius: 12,
     alignItems: 'center',
   },
 });

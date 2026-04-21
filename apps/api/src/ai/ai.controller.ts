@@ -4,10 +4,12 @@ import { RecommendationsService } from './services/recommendations.service';
 import { MessageRephraseService } from './services/message-rephrase.service';
 import { DisputeAnalysisService } from './services/dispute-analysis.service';
 import { ChatService } from './services/chat.service';
+import { ListingModerationService } from './services/listing-moderation.service';
 import { GetRecommendationsDto, GetSimilarProductsDto, RecommendationsResponseDto } from './dto/recommendations.dto';
 import { RephraseMessageDto, RephraseResponseDto } from './dto/message-rephrase.dto';
 import { AnalyzeDisputeDto, GenerateResolutionMessageDto, DisputeAnalysisResponseDto } from './dto/dispute-analysis.dto';
 import { ChatRequestDto, ChatResponseDto, SuggestResponsesDto, QuickActionsDto } from './dto/chat.dto';
+import { ListingModerationResponseDto, ModerateListingDto } from './dto/listing-moderation.dto';
 import { ConvexService } from '../convex/convex.service';
 
 @ApiTags('AI')
@@ -18,8 +20,52 @@ export class AiController {
     private readonly messageRephraseService: MessageRephraseService,
     private readonly disputeAnalysisService: DisputeAnalysisService,
     private readonly chatService: ChatService,
+    private readonly listingModerationService: ListingModerationService,
     private readonly convexService: ConvexService,
   ) {}
+
+  @Post('moderate-listing')
+  @ApiOperation({ summary: 'Run advisory AI moderation on a listing and store the result' })
+  @ApiResponse({ status: 200, type: ListingModerationResponseDto })
+  async moderateListing(
+    @Body() dto: ModerateListingDto,
+  ): Promise<ListingModerationResponseDto> {
+    try {
+      const reviewer = await this.convexService.getUser(dto.reviewerId);
+      if (!reviewer) {
+        throw new HttpException('Reviewer not found', HttpStatus.NOT_FOUND);
+      }
+
+      if (reviewer.role !== 'admin' && reviewer.role !== 'moderator') {
+        throw new HttpException('Only staff reviewers can run AI moderation', HttpStatus.FORBIDDEN);
+      }
+
+      const result = await this.listingModerationService.moderateListing({
+        title: dto.title,
+        description: dto.description,
+        price: dto.price,
+        quantity: dto.quantity,
+        imageUrls: dto.imageUrls,
+        categoryName: dto.categoryName,
+      });
+
+      await this.convexService.storeListingModerationResult({
+        productId: dto.productId,
+        reviewerId: dto.reviewerId,
+        status: result.status,
+        summary: result.summary,
+        flags: result.flags,
+      });
+
+      return result;
+    } catch (error) {
+      if (error instanceof HttpException) throw error;
+      throw new HttpException(
+        'Failed to moderate listing',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
 
   @Post('recommendations')
   @ApiOperation({ summary: 'Get personalized product recommendations for a user' })

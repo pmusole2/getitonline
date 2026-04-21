@@ -19,6 +19,8 @@ import BrowseScreen from '../screens/browse/BrowseScreen';
 import SellScreen from '../screens/product/SellScreen';
 import OrdersScreen from '../screens/orders/OrdersScreen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
+import { useAppAuth } from '../context/AuthProvider';
+import { canAccessSellerSurface } from '../utils/roles';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -148,6 +150,8 @@ function CustomTabBarBackground({ isDark }: CustomTabBarBackgroundProps) {
 export function MainTabNavigator() {
   const theme = useTheme();
   const isDark = theme.dark;
+  const { user } = useAppAuth();
+  const canAccessSell = canAccessSellerSurface(user?.role);
 
   return (
     <Tab.Navigator
@@ -214,11 +218,13 @@ export function MainTabNavigator() {
         component={BrowseScreen}
         options={{ title: 'Browse' }}
       />
-      <Tab.Screen
-        name="Sell"
-        component={SellScreen}
-        options={{ title: '' }}
-      />
+      {canAccessSell && (
+        <Tab.Screen
+          name="Sell"
+          component={SellScreen}
+          options={{ title: '' }}
+        />
+      )}
       <Tab.Screen
         name="Orders"
         component={OrdersScreen}

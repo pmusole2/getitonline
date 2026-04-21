@@ -50,6 +50,7 @@ import {
   validateProductImageFiles,
 } from "@/lib/product-image-upload";
 import { toast } from "sonner";
+import { canManageListings } from "@/lib/roles";
 
 interface ShippingOption {
   name: string;
@@ -74,6 +75,14 @@ interface UploadedProductImage {
 export default function CreateListingPage() {
   const router = useRouter();
   const { user, isSignedIn, isLoading: authLoading } = useAuth();
+  const vendorProfile = useQuery(
+    api.vendors.getMyVendorProfile,
+    user?._id ? { ownerUserId: user._id } : "skip"
+  );
+  const hasListingAccess = canManageListings(
+    user?.role,
+    vendorProfile?.status ?? null
+  );
   const convex = useConvex();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
@@ -90,7 +99,7 @@ export default function CreateListingPage() {
     quantity: "1",
     city: "",
     province: "",
-    status: "active" as "draft" | "active",
+    status: "pending_review" as "draft" | "pending_review",
   });
   const [images, setImages] = useState<UploadedProductImage[]>([]);
   const [shippingOptions, setShippingOptions] = useState<ShippingOption[]>([
@@ -183,7 +192,7 @@ export default function CreateListingPage() {
         .map((image) => image.url as string);
 
       const productId = await createProduct({
-        sellerId: user._id,
+        actorUserId: user._id,
         title: formData.title.trim(),
         description: formData.description.trim(),
         price: parseFloat(formData.price),
@@ -208,13 +217,13 @@ export default function CreateListingPage() {
         shippingOptions: shippingOptions.filter(
           (opt) => opt.name.trim() && opt.estimatedDays.trim()
         ),
-        status: asDraft ? "draft" : "active",
+        status: asDraft ? "draft" : "pending_review",
       });
 
       toast.success(
         asDraft
           ? "Listing saved as draft"
-          : "Your listing is now live!"
+          : "Listing submitted for review"
       );
 
       router.push(ROUTES.PRODUCT(productId));
@@ -425,6 +434,21 @@ export default function CreateListingPage() {
     );
   }
 
+  if (!authLoading && isSignedIn && !hasListingAccess) {
+    return (
+      <div className="container flex flex-col items-center justify-center py-16">
+        <Package className="h-16 w-16 text-muted-foreground" />
+        <h1 className="mt-4 text-2xl font-bold">Listing Access Restricted</h1>
+        <p className="mt-2 text-center text-muted-foreground">
+          Apply as a vendor from the sell dashboard before creating listings.
+        </p>
+        <Button asChild className="mt-6">
+          <Link href={ROUTES.SELL}>Open Sell Dashboard</Link>
+        </Button>
+      </div>
+    );
+  }
+
   return (
     <div className="container py-6">
       {/* Breadcrumb */}
@@ -435,7 +459,7 @@ export default function CreateListingPage() {
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
-            <BreadcrumbLink href={ROUTES.SELL}>Sell</BreadcrumbLink>
+            <BreadcrumbLink href={ROUTES.SELL}>Catalog</BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>

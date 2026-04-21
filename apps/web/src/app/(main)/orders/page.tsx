@@ -28,7 +28,7 @@ import {
   ChevronRight,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { formatDistanceToNow } from "date-fns";
 
@@ -180,7 +180,7 @@ export default function OrdersPage() {
                       <div className="text-right">
                         <p className="font-semibold">{formatZMW(order.totalAmount)}</p>
                         <p className="text-xs text-muted-foreground">
-                          Seller: {order.seller?.firstName} {order.seller?.lastName}
+                          Store: {order.seller?.firstName} {order.seller?.lastName}
                         </p>
                       </div>
                     </div>

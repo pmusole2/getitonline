@@ -1,5 +1,11 @@
 import { v } from "convex/values";
 import { mutation, query, internalMutation } from "./_generated/server";
+import {
+  buildSellerPublicProfile,
+  canActAsCompanySeller,
+  ensureCatalogActor,
+  getPlatformSettings,
+} from "./lib/platform";
 
 // Generate unique order number
 function generateOrderNumber(): string {
@@ -109,16 +115,14 @@ export const getOrder = query({
     if (!order) return null;
 
     const buyer = await ctx.db.get(order.buyerId);
-    const seller = await ctx.db.get(order.sellerId);
+    const seller = await buildSellerPublicProfile(ctx, order.sellerId);
 
     return {
       ...order,
       buyer: buyer
         ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName }
         : null,
-      seller: seller
-        ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName }
-        : null,
+      seller,
     };
   },
 });
@@ -165,12 +169,10 @@ export const getBuyerOrders = query({
     // Add seller info
     return await Promise.all(
       orders.map(async (order) => {
-        const seller = await ctx.db.get(order.sellerId);
+        const seller = await buildSellerPublicProfile(ctx, order.sellerId);
         return {
           ...order,
-          seller: seller
-            ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName }
-            : null,
+          seller,
         };
       })
     );
@@ -220,6 +222,53 @@ export const getSellerOrders = query({
   },
 });
 
+export const getManagedCatalogOrders = query({
+  args: {
+    actorUserId: v.id("users"),
+    status: v.optional(
+      v.union(
+        v.literal("pending_payment"),
+        v.literal("paid"),
+        v.literal("processing"),
+        v.literal("shipped"),
+        v.literal("delivered"),
+        v.literal("completed"),
+        v.literal("cancelled"),
+        v.literal("disputed")
+      )
+    ),
+  },
+  handler: async (ctx, args) => {
+    await ensureCatalogActor(ctx, args.actorUserId);
+    const settings = await getPlatformSettings(ctx);
+    if (!settings) {
+      return [];
+    }
+
+    let ordersQuery = ctx.db
+      .query("orders")
+      .withIndex("by_seller", (q) => q.eq("sellerId", settings.companySellerUserId));
+
+    if (args.status) {
+      ordersQuery = ordersQuery.filter((q) => q.eq(q.field("status"), args.status));
+    }
+
+    const orders = await ordersQuery.order("desc").collect();
+
+    return await Promise.all(
+      orders.map(async (order) => {
+        const buyer = await ctx.db.get(order.buyerId);
+        return {
+          ...order,
+          buyer: buyer
+            ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName }
+            : null,
+        };
+      })
+    );
+  },
+});
+
 // Update order status
 export const updateOrderStatus = mutation({
   args: {
@@ -244,7 +293,9 @@ export const updateOrderStatus = mutation({
 
     // Validate who can update to what status
     const isBuyer = order.buyerId === args.userId;
-    const isSeller = order.sellerId === args.userId;
+    const isSeller =
+      order.sellerId === args.userId ||
+      (await canActAsCompanySeller(ctx, args.userId, order.sellerId));
     const isModerator = user.role === "moderator" || user.role === "admin";
 
     // Status transition rules
@@ -292,7 +343,9 @@ export const addTrackingInfo = mutation({
   handler: async (ctx, args) => {
     const order = await ctx.db.get(args.orderId);
     if (!order) throw new Error("Order not found");
-    if (order.sellerId !== args.sellerId) throw new Error("Unauthorized");
+    if (!(await canActAsCompanySeller(ctx, args.sellerId, order.sellerId))) {
+      throw new Error("Unauthorized");
+    }
 
     await ctx.db.patch(args.orderId, {
       trackingNumber: args.trackingNumber,
@@ -315,7 +368,9 @@ export const markAsShipped = mutation({
   handler: async (ctx, args) => {
     const order = await ctx.db.get(args.orderId);
     if (!order) throw new Error("Order not found");
-    if (order.sellerId !== args.sellerId) throw new Error("Unauthorized");
+    if (!(await canActAsCompanySeller(ctx, args.sellerId, order.sellerId))) {
+      throw new Error("Unauthorized");
+    }
     if (order.status !== "processing" && order.status !== "paid") {
       throw new Error("Order must be in processing or paid status to mark as shipped");
     }

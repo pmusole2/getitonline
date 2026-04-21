@@ -1,4 +1,4 @@
-# Auto Marketplace Mobile App - Implementation Documentation
+# Gettitonline Mobile App - Implementation Documentation
 
 This is the detailed mobile implementation reference. For local setup, EAS/TestFlight flow, and release checks, start with the root [README.md](/Users/macbookair/Desktop/Auto%20Marketplace/README.md).
 

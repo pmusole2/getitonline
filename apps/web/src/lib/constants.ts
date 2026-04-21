@@ -1,7 +1,7 @@
 // App constants
-export const APP_NAME = "Auto Marketplace";
+export const APP_NAME = "Gettitonline";
 export const APP_DESCRIPTION =
-  "A mobile-first marketplace for auto parts, accessories, and more";
+  "A mobile-first online store for fashion, electronics, lifestyle products, and more";
 
 // Currency
 export const CURRENCY_CODE = "ZMW";
@@ -137,8 +137,10 @@ export const ROUTES = {
   // Admin
   ADMIN_DASHBOARD: "/admin",
   ADMIN_USERS: "/admin/users",
+  ADMIN_VENDOR_APPLICATIONS: "/admin/vendors",
   ADMIN_USER_DETAIL: (id: string) => `/admin/users/${id}`,
   ADMIN_PRODUCTS: "/admin/products",
+  ADMIN_LISTING_REVIEW: "/admin/products/review",
   ADMIN_ORDERS: "/admin/orders",
   ADMIN_CATEGORIES: "/admin/categories",
   ADMIN_DISPUTES: "/admin/disputes",

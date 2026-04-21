@@ -28,6 +28,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useGuestCart } from '../../context/GuestCartProvider';
 import { calculateDisplayPrice, getPlatformFeeExplanation, useOrderTotal } from '../../hooks/useOrderTotal';
 import { detectProvider, formatZambianPhoneNumber, getProviderColor, usePayment } from '../../hooks/usePayment';
 import { useWallet } from '../../hooks/useWallet';
@@ -59,6 +60,7 @@ type PaymentMethodType = 'wallet' | 'mobile_money' | 'card';
 export default function CheckoutScreen({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
+  const { hasPendingMerge, isMerging } = useGuestCart();
   const [loading, setLoading] = useState(false);
 
   // Shipping address form
@@ -287,7 +289,7 @@ export default function CheckoutScreen({ navigation }: Props) {
     );
   }
 
-  if (cart === undefined) {
+  if (hasPendingMerge || isMerging || cart === undefined) {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <StackHeader title="Checkout" onBackPress={() => navigation.goBack()} />
@@ -653,7 +655,7 @@ export default function CheckoutScreen({ navigation }: Props) {
                     Secure Escrow Payment
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, marginTop: 4, opacity: 0.9 }}>
-                    Your payment is held securely until you confirm delivery. This protects both buyers and sellers.
+                    Your payment is held securely until you confirm delivery. This protects both buyers and the store.
                   </Text>
                 </View>
               </LinearGradient>

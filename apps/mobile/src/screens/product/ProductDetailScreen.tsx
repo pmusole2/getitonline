@@ -17,9 +17,11 @@ import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useGuestCart } from '../../context/GuestCartProvider';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
 import type { Id, ProductCondition, RootStackParamList } from '../../types';
+import { canManageCatalog } from '../../utils/roles';
 
 const { width } = Dimensions.get('window');
 const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
@@ -30,13 +32,20 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   const theme = useTheme();
   const { productId } = route.params;
   const { user } = useAppAuth();
+  const { addItem: addGuestCartItem } = useGuestCart();
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
   const scrollY = useSharedValue(0);
   const favoriteScale = useSharedValue(1);
 
-  const product = useQuery(api.products.getProduct, { productId: productId as Id<'products'> });
+  const product = useQuery(api.products.getProduct, {
+    productId: productId as Id<'products'>,
+    viewerUserId: user?._id,
+  });
+  const managesCurrentStoreProduct = Boolean(
+    canManageCatalog(user?.role) && product?.seller?.isCompanyStore
+  );
   const isFavorited = useQuery(
     api.favorites.isFavorited,
     user && product ? { userId: user._id, productId: product._id } : 'skip'
@@ -50,7 +59,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   // Check for existing conversation
   const existingConversation = useQuery(
     api.conversations.getExistingConversation,
-    user && product && user._id !== product.sellerId
+    user && product && !managesCurrentStoreProduct && user._id !== product.sellerId
       ? { productId: product._id, buyerId: user._id }
       : 'skip'
   );
@@ -60,7 +69,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
   // Increment view count when product is loaded (only for other users' products)
   useEffect(() => {
-    const isOwnProduct = user?._id === product?.sellerId;
+    const isOwnProduct = user?._id === product?.sellerId || managesCurrentStoreProduct;
 
     if (product && !hasIncrementedView.current && !isOwnProduct) {
       hasIncrementedView.current = true;
@@ -68,24 +77,46 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
         console.log('Failed to increment view count:', err);
       });
     }
-  }, [product, user, incrementViews]);
+  }, [incrementViews, managesCurrentStoreProduct, product, user]);
 
   const favoriteAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: favoriteScale.value }],
   }));
 
   const handleAddToCart = async () => {
-    if (!user || !product) return;
+    if (!product) return;
 
     try {
       // Use product's shipping option, default to free delivery
       const shippingOption = product.shippingOptions?.[0] || { name: 'Free Delivery', price: 0 };
-      await addToCart({
-        userId: user._id,
-        productId: product._id,
-        quantity: 1,
-        selectedShipping: { name: shippingOption.name, price: shippingOption.price },
-      });
+
+      if (user) {
+        await addToCart({
+          userId: user._id,
+          productId: product._id,
+          quantity: 1,
+          selectedShipping: { name: shippingOption.name, price: shippingOption.price },
+        });
+      } else {
+        addGuestCartItem({
+          productId: product._id,
+          quantity: 1,
+          selectedShipping: { name: shippingOption.name, price: shippingOption.price },
+          product: {
+            _id: product._id,
+            sellerId: product.sellerId,
+            sellerName: product.seller?.displayName || 'Gettitonline',
+            title: product.title,
+            price: product.price,
+            images: product.images,
+            quantity: product.quantity,
+            status: product.status,
+            shippingOptions: product.shippingOptions ?? [],
+          },
+          addedAt: Date.now(),
+        });
+      }
+
       setSnackbarMessage('Added to cart!');
       setSnackbarVisible(true);
     } catch (error: unknown) {
@@ -96,7 +127,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
 
   const handleToggleFavorite = async () => {
-    if (!user || !product) return;
+    if (!product) return;
+
+    if (!user) {
+      navigation.navigate('Auth');
+      return;
+    }
 
     favoriteScale.value = withSpring(0.8, { damping: 10 }, () => {
       favoriteScale.value = withSpring(1, { damping: 10 });
@@ -120,7 +156,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   };
 
   const handleContactSeller = async () => {
-    if (!user || !product) return;
+    if (!product) return;
+
+    if (!user) {
+      navigation.navigate('Auth');
+      return;
+    }
 
     try {
       // Check if conversation already exists
@@ -186,7 +227,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     );
   }
 
-  const isOwnProduct = user?._id === product.sellerId;
+  const isOwnProduct = user?._id === product.sellerId || managesCurrentStoreProduct;
   const conditionConfig: Record<ProductCondition, { label: string; color: string }> = {
     new: { label: 'New', color: '#10B981' },
     like_new: { label: 'Like New', color: '#3B82F6' },
@@ -364,18 +405,18 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             </Text>
           </Animated.View>
 
-          {/* Seller Info */}
+          {/* Store Info */}
           <Animated.View entering={FadeInUp.delay(300).duration(400)}>
             <Pressable onPress={handleSellerPress}>
               <Surface style={[styles.sellerCard, { backgroundColor: theme.colors.surfaceVariant }]} elevation={0}>
                 <Avatar.Text
                   size={52}
-                  label={product.seller ? `${product.seller.firstName[0]}${product.seller.lastName[0]}` : '?'}
+                  label={product.seller?.displayName?.[0] || product.seller?.firstName?.[0] || 'G'}
                   style={{ backgroundColor: theme.colors.primary }}
                 />
                 <View style={styles.sellerInfo}>
                   <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                    {product.seller ? `${product.seller.firstName} ${product.seller.lastName}` : 'Unknown Seller'}
+                    {product.seller?.displayName || 'Gettitonline'}
                   </Text>
                   <View style={styles.sellerStats}>
                     {product.seller?.rating && (
@@ -387,9 +428,15 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                       </View>
                     )}
                     <View style={styles.ratingRow}>
-                      <Icon name="check-decagram" size={16} color={theme.colors.primary} />
+                      <Icon
+                        name={product.seller?.isCompanyStore ? 'storefront-outline' : 'check-decagram'}
+                        size={16}
+                        color={theme.colors.primary}
+                      />
                       <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 4 }}>
-                        {product.seller?.totalSales || 0} sales
+                        {product.seller?.isCompanyStore
+                          ? 'Official Gettitonline store'
+                          : 'Approved vendor storefront'}
                       </Text>
                     </View>
                   </View>
@@ -398,7 +445,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
               </Surface>
             </Pressable>
 
-            {/* Contact Seller Button - only show if not own product */}
+            {/* Contact Store Button - only show if not own product */}
             {!isOwnProduct && (
               <Button
                 mode="outlined"
@@ -406,7 +453,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                 style={styles.contactSellerButton}
                 icon="message-text-outline"
               >
-                {existingConversation ? 'Continue Conversation' : 'Contact Seller'}
+                {existingConversation ? 'Continue Conversation' : 'Contact Store'}
               </Button>
             )}
           </Animated.View>

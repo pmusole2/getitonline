@@ -1,83 +1,152 @@
 import { v } from "convex/values";
+import type { Doc } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
+import {
+  aiModerationStatusValidator,
+  buildSellerPublicProfile,
+  canActorManageProduct,
+  canViewerInspectProduct,
+  ensureCatalogActor,
+  ensureReviewerActor,
+  getPlatformSettings,
+  isStaffViewer,
+  isPublicStorefrontSeller,
+  productStatusValidator,
+  resolveListingActor,
+} from "./lib/platform";
+
+const productConditionValidator = v.union(
+  v.literal("new"),
+  v.literal("like_new"),
+  v.literal("good"),
+  v.literal("fair")
+);
+
+const shippingOptionValidator = v.object({
+  name: v.string(),
+  price: v.number(),
+  estimatedDays: v.string(),
+});
+
+const productMutationArgs = {
+  title: v.string(),
+  description: v.string(),
+  price: v.number(),
+  compareAtPrice: v.optional(v.number()),
+  categoryId: v.id("categories"),
+  subcategoryId: v.optional(v.id("categories")),
+  images: v.array(v.string()),
+  condition: productConditionValidator,
+  quantity: v.number(),
+  specifications: v.optional(
+    v.array(v.object({ key: v.string(), value: v.string() }))
+  ),
+  tags: v.optional(v.array(v.string())),
+  location: v.optional(v.object({ city: v.string(), province: v.string() })),
+  shippingOptions: v.array(shippingOptionValidator),
+};
+
+type ReaderCtx = QueryCtx | MutationCtx;
+type ProductDoc = Doc<"products">;
+
+async function isProductPublic(
+  ctx: ReaderCtx,
+  product: Pick<ProductDoc, "sellerId" | "status">
+) {
+  return (
+    product.status === "active" &&
+    (await isPublicStorefrontSeller(ctx, product.sellerId))
+  );
+}
+
+async function enrichProduct(
+  ctx: ReaderCtx,
+  product: ProductDoc
+) {
+  const seller = await buildSellerPublicProfile(ctx, product.sellerId);
+  const category = await ctx.db.get(product.categoryId);
+  const subcategory = product.subcategoryId
+    ? await ctx.db.get(product.subcategoryId)
+    : null;
+
+  return {
+    ...product,
+    seller,
+    category,
+    subcategory,
+  };
+}
+
+function hasCustomerFacingChanges(
+  updates: Record<string, unknown>
+) {
+  const customerFacingKeys = [
+    "title",
+    "description",
+    "price",
+    "compareAtPrice",
+    "categoryId",
+    "subcategoryId",
+    "images",
+    "condition",
+    "quantity",
+    "specifications",
+    "tags",
+    "location",
+    "shippingOptions",
+  ];
+
+  return customerFacingKeys.some((key) => key in updates);
+}
 
 // Create a new product listing
 export const createProduct = mutation({
   args: {
-    sellerId: v.id("users"),
-    title: v.string(),
-    description: v.string(),
-    price: v.number(),
-    compareAtPrice: v.optional(v.number()),
-    categoryId: v.id("categories"),
-    subcategoryId: v.optional(v.id("categories")),
-    images: v.array(v.string()),
-    condition: v.union(
-      v.literal("new"),
-      v.literal("like_new"),
-      v.literal("good"),
-      v.literal("fair")
-    ),
-    quantity: v.number(),
-    specifications: v.optional(
-      v.array(v.object({ key: v.string(), value: v.string() }))
-    ),
-    tags: v.optional(v.array(v.string())),
-    location: v.optional(v.object({ city: v.string(), province: v.string() })),
-    shippingOptions: v.array(
-      v.object({
-        name: v.string(),
-        price: v.number(),
-        estimatedDays: v.string(),
-      })
-    ),
-    status: v.optional(
-      v.union(v.literal("draft"), v.literal("active"))
-    ),
+    actorUserId: v.id("users"),
+    ...productMutationArgs,
+    status: v.optional(v.union(v.literal("draft"), v.literal("pending_review"))),
   },
   handler: async (ctx, args) => {
-    const seller = await ctx.db.get(args.sellerId);
-    if (!seller) throw new Error("Seller not found");
-    if (seller.isBanned) throw new Error("User is banned from selling");
+    const listingActor = await resolveListingActor(ctx, args.actorUserId);
+    const { actorUserId, status, ...productInput } = args;
+    const nextStatus = status ?? "draft";
+    const now = Date.now();
 
     return await ctx.db.insert("products", {
-      ...args,
-      status: args.status ?? "active",
+      ...productInput,
+      sellerId: listingActor.sellerId,
+      managedByUserId: actorUserId,
+      status: nextStatus,
+      submittedAt: nextStatus === "pending_review" ? now : undefined,
       views: 0,
-      createdAt: Date.now(),
-      updatedAt: Date.now(),
+      createdAt: now,
+      updatedAt: now,
     });
   },
 });
 
 // Get product by ID
 export const getProduct = query({
-  args: { productId: v.id("products") },
+  args: {
+    productId: v.id("products"),
+    viewerUserId: v.optional(v.id("users")),
+  },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
     if (!product) return null;
 
-    const seller = await ctx.db.get(product.sellerId);
-    const category = await ctx.db.get(product.categoryId);
-    const subcategory = product.subcategoryId
-      ? await ctx.db.get(product.subcategoryId)
-      : null;
+    const canInspectHidden = await canViewerInspectProduct(
+      ctx,
+      product,
+      args.viewerUserId
+    );
 
-    return {
-      ...product,
-      seller: seller
-        ? {
-            _id: seller._id,
-            firstName: seller.firstName,
-            lastName: seller.lastName,
-            avatar: seller.avatar,
-            rating: seller.rating,
-            totalSales: seller.totalSales,
-          }
-        : null,
-      category,
-      subcategory,
-    };
+    if (!(await isProductPublic(ctx, product)) && !canInspectHidden) {
+      return null;
+    }
+
+    return await enrichProduct(ctx, product);
   },
 });
 
@@ -85,25 +154,60 @@ export const getProduct = query({
 export const getProductsBySeller = query({
   args: {
     sellerId: v.id("users"),
-    status: v.optional(
-      v.union(
-        v.literal("draft"),
-        v.literal("active"),
-        v.literal("sold"),
-        v.literal("suspended")
-      )
-    ),
+    status: v.optional(productStatusValidator),
+    viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    let query = ctx.db
+    let productsQuery = ctx.db
       .query("products")
       .withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
 
     if (args.status) {
-      query = query.filter((q) => q.eq(q.field("status"), args.status));
+      productsQuery = productsQuery.filter((q) =>
+        q.eq(q.field("status"), args.status)
+      );
     }
 
-    return await query.order("desc").collect();
+    const products = await productsQuery.order("desc").collect();
+    const canInspectHidden = args.viewerUserId
+      ? args.viewerUserId === args.sellerId ||
+        (await isStaffViewer(ctx, args.viewerUserId))
+      : false;
+
+    return (
+      await Promise.all(
+        products.map(async (product) => {
+          const isPublic = await isProductPublic(ctx, product);
+          if (!isPublic && !canInspectHidden) {
+            return null;
+          }
+          return product;
+        })
+      )
+    ).filter((product) => product !== null);
+  },
+});
+
+export const getMyListings = query({
+  args: {
+    actorUserId: v.id("users"),
+    status: v.optional(productStatusValidator),
+  },
+  handler: async (ctx, args) => {
+    const listingActor = await resolveListingActor(ctx, args.actorUserId);
+    const sellerId = listingActor.sellerId;
+
+    let productsQuery = ctx.db
+      .query("products")
+      .withIndex("by_seller", (q) => q.eq("sellerId", sellerId));
+
+    if (args.status) {
+      productsQuery = productsQuery.filter((q) =>
+        q.eq(q.field("status"), args.status)
+      );
+    }
+
+    return await productsQuery.order("desc").collect();
   },
 });
 
@@ -122,12 +226,20 @@ export const getProductsByCategory = query({
       .withIndex("by_category", (q) => q.eq("categoryId", args.categoryId))
       .filter((q) => q.eq(q.field("status"), "active"))
       .order("desc")
-      .take(limit + 1);
+      .take(limit * 3);
 
-    const hasMore = products.length > limit;
-    const items = hasMore ? products.slice(0, -1) : products;
+    const visibleProducts = (
+      await Promise.all(
+        products.map(async (product) =>
+          (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
 
+    const items = visibleProducts.slice(0, limit);
+    const hasMore = visibleProducts.length > limit;
     const lastItem = items[items.length - 1];
+
     return {
       items,
       hasMore,
@@ -145,12 +257,22 @@ export const getProductsBySubcategory = query({
   handler: async (ctx, args) => {
     const limit = args.limit ?? 20;
 
-    return await ctx.db
+    const products = await ctx.db
       .query("products")
       .withIndex("by_subcategory", (q) => q.eq("subcategoryId", args.subcategoryId))
       .filter((q) => q.eq(q.field("status"), "active"))
       .order("desc")
-      .take(limit);
+      .take(limit * 3);
+
+    const visibleProducts = (
+      await Promise.all(
+        products.map(async (product) =>
+          (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
+
+    return visibleProducts.slice(0, limit);
   },
 });
 
@@ -159,14 +281,7 @@ export const searchProducts = query({
   args: {
     query: v.string(),
     categoryId: v.optional(v.id("categories")),
-    condition: v.optional(
-      v.union(
-        v.literal("new"),
-        v.literal("like_new"),
-        v.literal("good"),
-        v.literal("fair")
-      )
-    ),
+    condition: v.optional(productConditionValidator),
     minPrice: v.optional(v.number()),
     maxPrice: v.optional(v.number()),
     limit: v.optional(v.number()),
@@ -187,9 +302,8 @@ export const searchProducts = query({
         return search.eq("status", "active");
       });
 
-    let results = await searchQuery.take(limit * 2); // Get more to filter
+    let results = await searchQuery.take(limit * 4);
 
-    // Apply price filters
     if (args.minPrice !== undefined || args.maxPrice !== undefined) {
       results = results.filter((product) => {
         if (args.minPrice !== undefined && product.price < args.minPrice) {
@@ -202,7 +316,15 @@ export const searchProducts = query({
       });
     }
 
-    return results.slice(0, limit);
+    const visibleProducts = (
+      await Promise.all(
+        results.map(async (product) =>
+          (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
+
+    return visibleProducts.slice(0, limit);
   },
 });
 
@@ -212,11 +334,21 @@ export const getRecentProducts = query({
   handler: async (ctx, args) => {
     const limit = args.limit ?? 20;
 
-    return await ctx.db
+    const products = await ctx.db
       .query("products")
       .withIndex("by_status_created", (q) => q.eq("status", "active"))
       .order("desc")
-      .take(limit);
+      .take(limit * 4);
+
+    const visibleProducts = (
+      await Promise.all(
+        products.map(async (product) =>
+          (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
+
+    return visibleProducts.slice(0, limit);
   },
 });
 
@@ -231,8 +363,16 @@ export const getPopularProducts = query({
       .filter((q) => q.eq(q.field("status"), "active"))
       .collect();
 
-    return products
-      .sort((a, b) => b.views - a.views)
+    const visibleProducts = (
+      await Promise.all(
+        products.map(async (product) =>
+          (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
+
+    return visibleProducts
+      .sort((left, right) => right.views - left.views)
       .slice(0, limit);
   },
 });
@@ -241,7 +381,7 @@ export const getPopularProducts = query({
 export const updateProduct = mutation({
   args: {
     productId: v.id("products"),
-    sellerId: v.id("users"),
+    actorUserId: v.id("users"),
     title: v.optional(v.string()),
     description: v.optional(v.string()),
     price: v.optional(v.number()),
@@ -249,56 +389,165 @@ export const updateProduct = mutation({
     categoryId: v.optional(v.id("categories")),
     subcategoryId: v.optional(v.id("categories")),
     images: v.optional(v.array(v.string())),
-    condition: v.optional(
-      v.union(
-        v.literal("new"),
-        v.literal("like_new"),
-        v.literal("good"),
-        v.literal("fair")
-      )
-    ),
+    condition: v.optional(productConditionValidator),
     quantity: v.optional(v.number()),
     specifications: v.optional(
       v.array(v.object({ key: v.string(), value: v.string() }))
     ),
     tags: v.optional(v.array(v.string())),
     location: v.optional(v.object({ city: v.string(), province: v.string() })),
-    shippingOptions: v.optional(
-      v.array(
-        v.object({
-          name: v.string(),
-          price: v.number(),
-          estimatedDays: v.string(),
-        })
-      )
-    ),
-    status: v.optional(
-      v.union(
-        v.literal("draft"),
-        v.literal("active"),
-        v.literal("sold"),
-        v.literal("suspended")
-      )
-    ),
+    shippingOptions: v.optional(v.array(shippingOptionValidator)),
+    status: v.optional(v.union(v.literal("draft"), v.literal("pending_review"))),
   },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
     if (!product) throw new Error("Product not found");
-    if (product.sellerId !== args.sellerId) {
-      throw new Error("Unauthorized: You can only edit your own products");
+
+    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    if (!canManage) {
+      throw new Error("Unauthorized");
     }
 
-    const { productId, sellerId, ...updates } = args;
+    const { productId, actorUserId, status, ...updates } = args;
     const filteredUpdates = Object.fromEntries(
       Object.entries(updates).filter(([_, value]) => value !== undefined)
     );
 
+    const now = Date.now();
+    const shouldResubmitActiveListing =
+      product.status === "active" && hasCustomerFacingChanges(filteredUpdates);
+
     await ctx.db.patch(productId, {
       ...filteredUpdates,
-      updatedAt: Date.now(),
+      managedByUserId: actorUserId,
+      status: status ?? (shouldResubmitActiveListing ? "pending_review" : product.status),
+      submittedAt:
+        status === "pending_review" || shouldResubmitActiveListing
+          ? now
+          : product.submittedAt,
+      updatedAt: now,
     });
 
     return await ctx.db.get(productId);
+  },
+});
+
+export const submitForReview = mutation({
+  args: {
+    productId: v.id("products"),
+    actorUserId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const product = await ctx.db.get(args.productId);
+    if (!product) {
+      throw new Error("Product not found");
+    }
+
+    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    if (!canManage) {
+      throw new Error("Unauthorized");
+    }
+
+    if (!["draft", "changes_requested"].includes(product.status)) {
+      throw new Error("Only draft or changes-requested listings can be submitted");
+    }
+
+    await ctx.db.patch(args.productId, {
+      status: "pending_review",
+      submittedAt: Date.now(),
+      managedByUserId: args.actorUserId,
+      updatedAt: Date.now(),
+    });
+
+    return await ctx.db.get(args.productId);
+  },
+});
+
+export const getPendingReviewListings = query({
+  args: {
+    reviewerId: v.id("users"),
+    status: v.optional(
+      v.union(v.literal("pending_review"), v.literal("changes_requested"))
+    ),
+  },
+  handler: async (ctx, args) => {
+    await ensureReviewerActor(ctx, args.reviewerId);
+    const status = args.status ?? "pending_review";
+
+    const products = await ctx.db
+      .query("products")
+      .withIndex("by_status", (q) => q.eq("status", status))
+      .order("desc")
+      .collect();
+
+    return await Promise.all(
+      products.map(async (product) => enrichProduct(ctx, product))
+    );
+  },
+});
+
+export const reviewListing = mutation({
+  args: {
+    productId: v.id("products"),
+    reviewerId: v.id("users"),
+    decision: v.union(
+      v.literal("approved"),
+      v.literal("changes_requested"),
+      v.literal("suspended")
+    ),
+    reviewNotes: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await ensureReviewerActor(ctx, args.reviewerId);
+
+    const product = await ctx.db.get(args.productId);
+    if (!product) {
+      throw new Error("Product not found");
+    }
+
+    const status =
+      args.decision === "approved"
+        ? "active"
+        : args.decision === "changes_requested"
+          ? "changes_requested"
+          : "suspended";
+
+    await ctx.db.patch(args.productId, {
+      status,
+      reviewNotes: args.reviewNotes,
+      reviewedByUserId: args.reviewerId,
+      reviewedAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+
+    return await ctx.db.get(args.productId);
+  },
+});
+
+export const storeListingModerationResult = mutation({
+  args: {
+    productId: v.id("products"),
+    reviewerId: v.id("users"),
+    status: aiModerationStatusValidator,
+    summary: v.string(),
+    flags: v.array(v.string()),
+  },
+  handler: async (ctx, args) => {
+    await ensureReviewerActor(ctx, args.reviewerId);
+
+    const product = await ctx.db.get(args.productId);
+    if (!product) {
+      throw new Error("Product not found");
+    }
+
+    await ctx.db.patch(args.productId, {
+      aiModerationStatus: args.status,
+      aiModerationSummary: args.summary,
+      aiModerationFlags: args.flags,
+      updatedAt: Date.now(),
+    });
+
+    return await ctx.db.get(args.productId);
   },
 });
 
@@ -306,13 +555,15 @@ export const updateProduct = mutation({
 export const deleteProduct = mutation({
   args: {
     productId: v.id("products"),
-    sellerId: v.id("users"),
+    actorUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
     if (!product) throw new Error("Product not found");
-    if (product.sellerId !== args.sellerId) {
-      throw new Error("Unauthorized: You can only delete your own products");
+
+    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    if (!canManage) {
+      throw new Error("Unauthorized");
     }
 
     await ctx.db.delete(args.productId);
@@ -324,7 +575,7 @@ export const incrementViews = mutation({
   args: { productId: v.id("products") },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
-    if (!product) return;
+    if (!product || !(await isProductPublic(ctx, product))) return;
 
     await ctx.db.patch(args.productId, {
       views: product.views + 1,
@@ -336,19 +587,48 @@ export const incrementViews = mutation({
 export const markAsSold = mutation({
   args: {
     productId: v.id("products"),
-    sellerId: v.id("users"),
+    actorUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
     if (!product) throw new Error("Product not found");
-    if (product.sellerId !== args.sellerId) {
+
+    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    if (!canManage) {
       throw new Error("Unauthorized");
     }
 
     await ctx.db.patch(args.productId, {
       status: "sold",
+      managedByUserId: args.actorUserId,
       updatedAt: Date.now(),
     });
+  },
+});
+
+export const getManagedCatalogProducts = query({
+  args: {
+    actorUserId: v.id("users"),
+    status: v.optional(productStatusValidator),
+  },
+  handler: async (ctx, args) => {
+    await ensureCatalogActor(ctx, args.actorUserId);
+    const settings = await getPlatformSettings(ctx);
+    if (!settings) {
+      return [];
+    }
+
+    let productsQuery = ctx.db
+      .query("products")
+      .withIndex("by_seller", (q) => q.eq("sellerId", settings.companySellerUserId));
+
+    if (args.status) {
+      productsQuery = productsQuery.filter((q) =>
+        q.eq(q.field("status"), args.status)
+      );
+    }
+
+    return await productsQuery.order("desc").collect();
   },
 });
 
@@ -359,13 +639,12 @@ export const suspendProduct = mutation({
     moderatorId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const moderator = await ctx.db.get(args.moderatorId);
-    if (!moderator || (moderator.role !== "admin" && moderator.role !== "moderator")) {
-      throw new Error("Unauthorized");
-    }
+    await ensureReviewerActor(ctx, args.moderatorId);
 
     await ctx.db.patch(args.productId, {
       status: "suspended",
+      reviewedByUserId: args.moderatorId,
+      reviewedAt: Date.now(),
       updatedAt: Date.now(),
     });
   },
@@ -401,7 +680,6 @@ export const getProductsByIds = query({
     const products = await Promise.all(
       args.productIds.map(async (id) => {
         try {
-          // Query products table directly to ensure proper typing
           const product = await ctx.db
             .query("products")
             .filter((q) => q.eq(q.field("_id"), id))
@@ -413,10 +691,13 @@ export const getProductsByIds = query({
       })
     );
 
-    // Filter out null values and inactive products
-    return products.filter(
-      (p) => p !== null && p.status === "active"
-    );
+    return (
+      await Promise.all(
+        products.map(async (product) =>
+          product && (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
   },
 });
 
@@ -431,27 +712,36 @@ export const getProductsByCategories = query({
     const limit = args.limit ?? 10;
     const excludeIds = new Set(args.excludeProductIds ?? []);
 
-    const allProducts: any[] = [];
+    const allProducts: ProductDoc[] = [];
 
     for (const categoryId of args.categoryIds) {
       const products = await ctx.db
         .query("products")
         .withIndex("by_category", (q) => q.eq("categoryId", categoryId))
         .filter((q) => q.eq(q.field("status"), "active"))
-        .take(limit);
+        .take(limit * 2);
 
       allProducts.push(...products);
     }
 
-    // Filter out excluded products and deduplicate
+    const visibleProducts = (
+      await Promise.all(
+        allProducts.map(async (product) =>
+          product && (await isProductPublic(ctx, product)) ? product : null
+        )
+      )
+    ).filter((product) => product !== null);
+
     const seen = new Set<string>();
-    const uniqueProducts = allProducts.filter((p) => {
-      if (excludeIds.has(p._id) || seen.has(p._id)) return false;
-      seen.add(p._id);
+    const uniqueProducts = visibleProducts.filter((product) => {
+      if (excludeIds.has(product._id) || seen.has(product._id)) {
+        return false;
+      }
+
+      seen.add(product._id);
       return true;
     });
 
-    // Shuffle and return limited results
     return uniqueProducts
       .sort(() => Math.random() - 0.5)
       .slice(0, limit);

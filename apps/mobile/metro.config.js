@@ -18,9 +18,13 @@ function resolveWorkspaceModule(moduleName) {
   return path.join(rootNodeModules, moduleName);
 }
 
-// 1. Watch the convex folder specifically (not entire monorepo to avoid conflicts)
+const sharedPackageRoot = path.resolve(monorepoRoot, 'packages/shared');
+const convexRoot = path.resolve(monorepoRoot, 'convex');
+
+// 1. Watch the monorepo folders Metro must follow outside the app root
 config.watchFolders = [
-  path.resolve(monorepoRoot, 'convex'),
+  convexRoot,
+  sharedPackageRoot,
 ];
 
 // 2. Let Metro know where to resolve packages from
@@ -31,6 +35,7 @@ config.resolver.nodeModulesPaths = [mobileNodeModules, rootNodeModules].filter(f
 config.resolver.extraNodeModules = {
   'react-dom': path.resolve(projectRoot, 'react-dom-shim.js'),
   'react-dom/client': path.resolve(projectRoot, 'react-dom-shim.js'),
+  '@gettitonline/shared': sharedPackageRoot,
   '@clerk/clerk-expo': resolveWorkspaceModule('@clerk/clerk-expo'),
   '@clerk/clerk-react': resolveWorkspaceModule('@clerk/clerk-react'),
   'react': resolveWorkspaceModule('react'),

@@ -231,7 +231,7 @@ export default function EditProfileScreen({ navigation }: Props) {
                 >
                   {user.isVerified
                     ? 'Your account is verified and trusted'
-                    : 'Complete verification to unlock seller features'}
+                    : 'Verification helps build trust and speeds up support checks'}
                 </Text>
               </View>
               {!user.isVerified && (

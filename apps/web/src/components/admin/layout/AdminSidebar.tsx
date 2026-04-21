@@ -9,6 +9,7 @@ import {
   LayoutDashboard,
   Users,
   Package,
+  ClipboardCheck,
   ShoppingCart,
   FolderTree,
   AlertTriangle,
@@ -42,9 +43,19 @@ const sidebarNav = [
         icon: Users,
       },
       {
+        title: "Vendor Applications",
+        href: ROUTES.ADMIN_VENDOR_APPLICATIONS,
+        icon: Store,
+      },
+      {
         title: "Products",
         href: ROUTES.ADMIN_PRODUCTS,
         icon: Package,
+      },
+      {
+        title: "Listing Review",
+        href: ROUTES.ADMIN_LISTING_REVIEW,
+        icon: ClipboardCheck,
       },
       {
         title: "Orders",
@@ -117,11 +128,11 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
       {/* Header */}
       <div className="flex h-16 items-center justify-between border-b px-4">
         <Link href={ROUTES.ADMIN_DASHBOARD} className="flex items-center gap-2">
-          <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-primary">
-            <span className="text-lg font-bold text-primary-foreground">A</span>
+          <div className="flex h-9 w-9 items-center justify-center rounded-full border border-primary/20 bg-primary shadow-[0_10px_30px_rgba(7,149,249,0.22)]">
+            <span className="text-lg font-bold text-primary-foreground">G</span>
           </div>
           <div className="flex flex-col">
-            <span className="text-sm font-semibold">Auto Marketplace</span>
+            <span className="text-sm font-semibold">Gettitonline</span>
             <span className="text-xs text-muted-foreground">Admin Panel</span>
           </div>
         </Link>
@@ -166,7 +177,7 @@ export function AdminSidebar({ className }: AdminSidebarProps) {
         <Button variant="outline" className="w-full justify-start" asChild>
           <Link href={ROUTES.HOME}>
             <Store className="mr-2 h-4 w-4" />
-            Back to Marketplace
+            Back to Store
           </Link>
         </Button>
       </div>

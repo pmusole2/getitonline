@@ -1,4 +1,4 @@
-# Auto Marketplace API - Implementation Documentation
+# Gettitonline API - Implementation Documentation
 
 This is the detailed API reference. For the canonical startup path, deployment steps, and release checks, start with the root [README.md](/Users/macbookair/Desktop/Auto%20Marketplace/README.md).
 
@@ -9,7 +9,7 @@ This is the detailed API reference. For the canonical startup path, deployment s
 **API Prefix:** `/api/v1`
 **Documentation:** Swagger available at `/docs`
 
-The API is the backend service layer for the Auto Marketplace, handling payment processing, AI-powered features, and integration with the Convex database.
+The API is the backend service layer for the Gettitonline, handling payment processing, AI-powered features, and integration with the Convex database.
 
 ---
 
@@ -225,7 +225,7 @@ AI-powered features using OpenAI.
 {
   "status": "ok",
   "timestamp": "2024-01-15T10:30:00.000Z",
-  "service": "auto-marketplace-api",
+  "service": "gettitonline-api",
   "version": "1.0.0"
 }
 ```
@@ -496,7 +496,7 @@ POST /api/v1/ai/recommendations
 ```json
 {
   "productIds": ["prod_1", "prod_2", "prod_3"],
-  "reasoning": "Based on your interest in auto parts..."
+  "reasoning": "Based on your interest in products..."
 }
 ```
 

@@ -34,7 +34,7 @@ describe('PaymentsController', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.APP_URL = 'https://beta.auto-marketplace.app';
+    process.env.APP_URL = 'https://beta.gettitonline.com';
   });
 
   it('uses APP_URL as the default card callback URL', async () => {
@@ -63,7 +63,7 @@ describe('PaymentsController', () => {
 
     expect(lencoService.collectCard).toHaveBeenCalledWith(
       expect.objectContaining({
-        callbackUrl: 'https://beta.auto-marketplace.app/payment/callback',
+        callbackUrl: 'https://beta.gettitonline.com/payment/callback',
       }),
     );
     expect(result).toEqual({

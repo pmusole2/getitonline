@@ -1,3 +1,4 @@
+import type { NavigatorScreenParams } from '@react-navigation/native';
 import type { Doc, Id } from '../../../../convex/_generated/dataModel';
 
 // Re-export Convex types for direct use
@@ -7,6 +8,7 @@ export type { Doc, Id };
 export type User = Doc<'users'>;
 export type Category = Doc<'categories'>;
 export type Product = Doc<'products'>;
+export type VendorProfile = Doc<'vendorProfiles'>;
 export type CartItem = Doc<'cartItems'>;
 export type Order = Doc<'orders'>;
 export type Escrow = Doc<'escrow'>;
@@ -31,9 +33,15 @@ export interface UserPublic {
   _id: Id<'users'>;
   firstName: string;
   lastName: string;
+  displayName?: string;
   avatar?: string;
   rating?: number;
   totalSales: number;
+  isCompanyStore?: boolean;
+  isVendorStore?: boolean;
+  bannerUrl?: string;
+  slug?: string;
+  vendorStatus?: 'pending' | 'approved' | 'changes_requested' | 'suspended';
 }
 
 export interface ProductWithSeller extends Product {
@@ -120,7 +128,7 @@ export interface CartItemWithProduct extends CartItem {
 
 // Navigation types
 export type RootStackParamList = {
-  Auth: undefined;
+  Auth: NavigatorScreenParams<AuthStackParamList> | undefined;
   Main: undefined;
   ProductDetail: { productId: string };
   CreateProduct: undefined;

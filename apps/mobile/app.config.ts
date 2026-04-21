@@ -1,29 +1,39 @@
 import type { ExpoConfig } from 'expo/config';
 
+const appVersion = '1.0.0';
 const appEnv = process.env.EXPO_PUBLIC_APP_ENV ?? 'development';
 const apiUrl = process.env.EXPO_PUBLIC_API_URL ?? 'http://localhost:3001';
 const easProjectId =
   process.env.EAS_PROJECT_ID ??
   process.env.EXPO_PUBLIC_EAS_PROJECT_ID ??
-  '134d4bf5-00db-4e20-b452-45c69743fb99';
+  'd0150a59-7bd4-4344-96e4-7efefa7563cc';
+const updatesUrl = easProjectId ? `https://u.expo.dev/${easProjectId}` : undefined;
 
 const config: ExpoConfig = {
-  name: 'Auto Marketplace',
-  slug: 'auto-marketplace',
-  version: '1.0.0',
+  name: 'Gettitonline',
+  slug: 'gettitonline',
+  version: appVersion,
   orientation: 'portrait',
   icon: './assets/icon.png',
   userInterfaceStyle: 'automatic',
   newArchEnabled: true,
-  scheme: 'auto-marketplace',
+  scheme: 'gettitonline',
+  runtimeVersion: appVersion,
+  ...(updatesUrl
+    ? {
+        updates: {
+          url: updatesUrl,
+        },
+      }
+    : {}),
   splash: {
     image: './assets/splash-icon.png',
     resizeMode: 'contain',
-    backgroundColor: '#2563EB',
+    backgroundColor: '#0795F9',
   },
   ios: {
     supportsTablet: true,
-    bundleIdentifier: 'com.automarketplace.app',
+    bundleIdentifier: 'com.gettitonline.app',
     config: {
       usesNonExemptEncryption: false,
     },
@@ -31,10 +41,10 @@ const config: ExpoConfig = {
   android: {
     adaptiveIcon: {
       foregroundImage: './assets/adaptive-icon.png',
-      backgroundColor: '#2563EB',
+      backgroundColor: '#0795F9',
     },
     edgeToEdgeEnabled: true,
-    package: 'com.automarketplace.app',
+    package: 'com.gettitonline.app',
   },
   web: {
     favicon: './assets/favicon.png',
@@ -45,7 +55,7 @@ const config: ExpoConfig = {
       'expo-image-picker',
       {
         photosPermission:
-          'Allow Auto Marketplace to access your photos to upload product images.',
+          'Allow Gettitonline to access your photos to upload product images.',
       },
     ],
   ],

@@ -1,7 +1,7 @@
 {
-  "name": "@auto-marketplace/api",
+  "name": "@gettitonline/api",
   "version": "1.0.0",
-  "description": "Auto Marketplace API - AI Integration & Webhooks",
+  "description": "Gettitonline API - AI Integration & Webhooks",
   "author": "",
   "private": true,
   "license": "UNLICENSED",

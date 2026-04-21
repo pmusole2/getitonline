@@ -48,10 +48,11 @@ import {
   Loader2,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@auto-marketplace/shared";
+import { formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
+import { canManageCatalog } from "@/lib/roles";
 
 type OrderStatus =
   | "pending_payment"
@@ -79,6 +80,7 @@ const STATUS_CONFIG: Record<
 
 export default function SellerOrdersPage() {
   const { user, isSignedIn, isLoading: authLoading } = useAuth();
+  const hasCatalogAccess = canManageCatalog(user?.role);
   const [activeTab, setActiveTab] = useState<"pending" | "shipped" | "completed" | "all">("pending");
   const [shippingDialogOpen, setShippingDialogOpen] = useState(false);
   const [selectedOrderId, setSelectedOrderId] = useState<Id<"orders"> | null>(null);
@@ -88,8 +90,8 @@ export default function SellerOrdersPage() {
 
   // Get seller's orders
   const orders = useQuery(
-    api.orders.getSellerOrders,
-    user?._id ? { sellerId: user._id } : "skip"
+    api.orders.getManagedCatalogOrders,
+    user?._id && hasCatalogAccess ? { actorUserId: user._id } : "skip"
   );
 
   // Mutations
@@ -144,7 +146,7 @@ export default function SellerOrdersPage() {
   };
 
   // Loading state
-  if (authLoading || (isSignedIn && orders === undefined)) {
+  if (authLoading || (isSignedIn && hasCatalogAccess && orders === undefined)) {
     return <SellerOrdersSkeleton />;
   }
 
@@ -160,6 +162,18 @@ export default function SellerOrdersPage() {
         <Button asChild className="mt-6">
           <Link href={ROUTES.SIGN_IN}>Sign In</Link>
         </Button>
+      </div>
+    );
+  }
+
+  if (!hasCatalogAccess) {
+    return (
+      <div className="container flex flex-col items-center justify-center py-16">
+        <Package className="h-16 w-16 text-muted-foreground" />
+        <h1 className="mt-4 text-2xl font-bold">Catalog Access Restricted</h1>
+        <p className="mt-2 text-center text-muted-foreground">
+          Only admins and catalog managers can manage storefront orders.
+        </p>
       </div>
     );
   }
@@ -210,7 +224,7 @@ export default function SellerOrdersPage() {
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
-            <BreadcrumbLink href={ROUTES.SELL}>Sell</BreadcrumbLink>
+            <BreadcrumbLink href={ROUTES.SELL}>Catalog</BreadcrumbLink>
           </BreadcrumbItem>
           <BreadcrumbSeparator />
           <BreadcrumbItem>
@@ -219,7 +233,7 @@ export default function SellerOrdersPage() {
         </BreadcrumbList>
       </Breadcrumb>
 
-      <h1 className="mb-6 text-2xl font-bold">Sales Orders</h1>
+      <h1 className="mb-6 text-2xl font-bold">Catalog Orders</h1>
 
       {/* Pending Orders Alert */}
       {pendingCount > 0 && (

@@ -10,7 +10,7 @@ export class HealthController {
     return {
       status: 'ok',
       timestamp: new Date().toISOString(),
-      service: 'auto-marketplace-api',
+      service: 'gettitonline-api',
       version: '1.0.0',
     };
   }

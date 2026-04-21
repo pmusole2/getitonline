@@ -39,14 +39,16 @@ import {
 import { ROUTES } from "@/lib/constants";
 import { useAuth } from "@/hooks/useAuth";
 import { format } from "date-fns";
+import { canManageCatalog } from "@/lib/roles";
 
 export default function ProfilePage() {
   const { user, isSignedIn, isLoading: authLoading, clerkUser } = useAuth();
+  const hasCatalogAccess = canManageCatalog(user?.role);
 
   // Get user's stats
   const products = useQuery(
-    api.products.getProductsBySeller,
-    user?._id ? { sellerId: user._id, status: "active" } : "skip"
+    api.products.getManagedCatalogProducts,
+    user?._id && hasCatalogAccess ? { actorUserId: user._id, status: "active" } : "skip"
   );
 
   const orders = useQuery(
@@ -126,6 +128,9 @@ export default function ProfilePage() {
                   {user.role === "admin" && (
                     <Badge variant="default">Admin</Badge>
                   )}
+                  {user.role === "catalog_manager" && (
+                    <Badge variant="secondary">Catalog Manager</Badge>
+                  )}
                   {user.role === "moderator" && (
                     <Badge variant="secondary">Moderator</Badge>
                   )}
@@ -151,7 +156,9 @@ export default function ProfilePage() {
                 <div className="grid grid-cols-3 gap-4 w-full text-center">
                   <div>
                     <p className="text-2xl font-bold">{stats.activeListings}</p>
-                    <p className="text-xs text-muted-foreground">Listings</p>
+                    <p className="text-xs text-muted-foreground">
+                      {hasCatalogAccess ? "Catalog" : "Listings"}
+                    </p>
                   </div>
                   <div>
                     <p className="text-2xl font-bold">{stats.totalSales}</p>
@@ -243,17 +250,19 @@ export default function ProfilePage() {
                   </Link>
                 </Button>
 
-                <Button variant="outline" className="justify-start h-auto py-4" asChild>
-                  <Link href={ROUTES.SELL}>
-                    <Package className="mr-3 h-5 w-5" />
-                    <div className="text-left">
-                      <p className="font-medium">My Listings</p>
-                      <p className="text-xs text-muted-foreground">
-                        Manage your products
-                      </p>
-                    </div>
-                  </Link>
-                </Button>
+                {hasCatalogAccess && (
+                  <Button variant="outline" className="justify-start h-auto py-4" asChild>
+                    <Link href={ROUTES.SELL}>
+                      <Package className="mr-3 h-5 w-5" />
+                      <div className="text-left">
+                        <p className="font-medium">Catalog</p>
+                        <p className="text-xs text-muted-foreground">
+                          Manage storefront products
+                        </p>
+                      </div>
+                    </Link>
+                  </Button>
+                )}
 
                 <Button variant="outline" className="justify-start h-auto py-4" asChild>
                   <Link href={ROUTES.WALLET}>

@@ -30,7 +30,7 @@ export default function SettingsScreen({ navigation }: Props) {
   };
 
   const handleSupport = () => {
-    Linking.openURL('mailto:support@automarketplace.zm');
+    Linking.openURL('mailto:support@gettitonline.com');
   };
 
   const getThemeModeLabel = (mode: ThemeMode): string => {
@@ -61,10 +61,9 @@ export default function SettingsScreen({ navigation }: Props) {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      {/* Custom Futuristic Header */}
       <StackHeader
         title="Settings"
-        subtitle="Customize your experience"
+        subtitle="Customize your Gettitonline experience"
         onBackPress={() => navigation.goBack()}
         variant="gradient"
       />
@@ -287,7 +286,7 @@ export default function SettingsScreen({ navigation }: Props) {
                     Contact Support
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    support@automarketplace.zm
+                    support@gettitonline.com
                   </Text>
                 </View>
               </View>
@@ -344,13 +343,13 @@ export default function SettingsScreen({ navigation }: Props) {
             <Icon name="creation" size={24} color={theme.colors.primary} />
           </MotiView>
           <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginTop: 8 }}>
-            Auto Marketplace
+            Gettitonline
           </Text>
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
             Version 1.0.0
           </Text>
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-            Made with ❤️ in Zambia
+            Built for Zambia
           </Text>
         </Animated.View>
       </ScrollView>

@@ -20,6 +20,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { OrderCardSkeleton } from '../../components/ui/Skeleton';
 import { MotiView } from 'moti';
 import { TabHeader } from '../../components/ui/Header';
+import { canManageCatalog } from '../../utils/roles';
 
 type ViewMode = 'buying' | 'selling';
 
@@ -166,6 +167,7 @@ export default function OrdersScreen() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
+  const hasCatalogAccess = canManageCatalog(user?.role);
   const [viewMode, setViewMode] = useState<ViewMode>('buying');
 
   const buyerOrders = useQuery(
@@ -174,8 +176,8 @@ export default function OrdersScreen() {
   );
 
   const sellerOrders = useQuery(
-    api.orders.getSellerOrders,
-    user ? { sellerId: user._id } : 'skip'
+    api.orders.getManagedCatalogOrders,
+    user && hasCatalogAccess ? { actorUserId: user._id } : 'skip'
   );
 
   const orders = viewMode === 'buying' ? buyerOrders : sellerOrders;
@@ -197,7 +199,11 @@ export default function OrdersScreen() {
       {/* Custom Futuristic Header */}
       <TabHeader
         title="Orders"
-        subtitle="Track your purchases and sales"
+        subtitle={
+          hasCatalogAccess
+            ? 'Track purchases and company sales'
+            : 'Track your purchases'
+        }
         showAIAssistant
       />
 
@@ -213,12 +219,16 @@ export default function OrdersScreen() {
               icon: 'shopping',
               checkedColor: theme.colors.primary,
             },
-            {
-              value: 'selling',
-              label: 'Sales',
-              icon: 'store',
-              checkedColor: theme.colors.primary,
-            },
+            ...(hasCatalogAccess
+              ? [
+                  {
+                    value: 'selling',
+                    label: 'Catalog Sales',
+                    icon: 'store',
+                    checkedColor: theme.colors.primary,
+                  },
+                ]
+              : []),
           ]}
           style={styles.segmentedButtons}
         />
@@ -285,7 +295,7 @@ export default function OrdersScreen() {
           <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
             {viewMode === 'buying'
               ? 'Start shopping to see your orders here'
-              : 'List products to start selling'}
+              : 'Catalog orders will appear here as customers buy from the storefront'}
           </Text>
           <Pressable
             style={[styles.emptyButton, { backgroundColor: theme.colors.primary }]}
@@ -296,7 +306,7 @@ export default function OrdersScreen() {
             }
           >
             <Text style={{ color: theme.colors.onPrimary, fontWeight: '600' }}>
-              {viewMode === 'buying' ? 'Browse Products' : 'Create Listing'}
+              {viewMode === 'buying' ? 'Browse Products' : 'Add Listing'}
             </Text>
           </Pressable>
         </Animated.View>

@@ -1,8 +1,8 @@
-# Auto Marketplace - Web App Implementation Plan
+# Gettitonline - Web App Implementation Plan
 
 ## Overview
 
-A web application for the Auto Marketplace platform with full marketplace functionality (mirroring the mobile app) plus a comprehensive admin panel for platform management.
+A web application for the Gettitonline platform with full marketplace functionality (mirroring the mobile app) plus a comprehensive admin panel for platform management.
 
 **Currency:** ZMW (Zambian Kwacha)
 **Target Market:** Zambia
