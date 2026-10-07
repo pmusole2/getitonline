@@ -1,9 +1,13 @@
 import { v } from "convex/values";
+import type { Doc, Id } from "./_generated/dataModel";
 import { mutation, query, internalMutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import {
   buildSellerPublicProfile,
   canActAsCompanySeller,
+  ensureAdminActor,
   ensureCatalogActor,
+  getSellerDisplayInfo,
   getPlatformSettings,
 } from "./lib/platform";
 
@@ -16,10 +20,142 @@ function generateOrderNumber(): string {
 
 // Platform fee percentage (5% to cover transaction fees and ensure no shortfall)
 const PLATFORM_FEE_PERCENTAGE = 0.05;
+const ADMIN_ORDER_STATUSES = [
+  "pending_payment",
+  "paid",
+  "processing",
+  "shipped",
+  "delivered",
+  "completed",
+  "cancelled",
+  "disputed",
+] as const;
+const selectedVariantValidator = v.object({
+  variantId: v.string(),
+  sku: v.string(),
+  attributes: v.array(v.object({ name: v.string(), value: v.string() })),
+  price: v.number(),
+  image: v.optional(v.string()),
+});
+
+type SelectedVariant = {
+  variantId: string;
+  sku: string;
+  attributes: Array<{ name: string; value: string }>;
+  price: number;
+  image?: string;
+};
+type VariantCombination = {
+  id: string;
+  sku: string;
+  attributes: Array<{ name: string; value: string }>;
+  price: number;
+  stock: number;
+  status: "active" | "inactive" | "out_of_stock";
+  primaryImage?: string;
+  galleryImages?: string[];
+};
 
 // Calculate platform fee from subtotal
 function calculatePlatformFee(subtotal: number): number {
   return Math.ceil(subtotal * PLATFORM_FEE_PERCENTAGE * 100) / 100; // Round up to nearest cent
+}
+
+function getVariantCombinations(product: { variantCombinations?: unknown }) {
+  return (product.variantCombinations ?? []) as VariantCombination[];
+}
+
+function resolveOrderVariant(
+  product: { title: string; variantCombinations?: unknown },
+  selectedVariant?: SelectedVariant
+) {
+  const combinations = getVariantCombinations(product);
+  if (combinations.length === 0) return undefined;
+  if (!selectedVariant) {
+    throw new Error(`Select a variant for ${product.title}`);
+  }
+
+  const combination = combinations.find(
+    (candidate) =>
+      candidate.id === selectedVariant.variantId ||
+      candidate.sku === selectedVariant.sku
+  );
+  if (!combination) throw new Error(`Invalid variant for ${product.title}`);
+  if (combination.status !== "active" || combination.stock <= 0) {
+    throw new Error(`Selected variant for ${product.title} is out of stock`);
+  }
+
+  return combination;
+}
+
+function getOrderLineStock(
+  product: { quantity: number; title: string; variantCombinations?: unknown },
+  selectedVariant?: SelectedVariant
+) {
+  const combination = resolveOrderVariant(product, selectedVariant);
+  return combination ? Math.min(product.quantity, combination.stock) : product.quantity;
+}
+
+function decrementVariantStock(
+  product: { variantCombinations?: unknown },
+  selectedVariant: SelectedVariant,
+  quantity: number
+) {
+  return getVariantCombinations(product).map((combination) => {
+    if (combination.id !== selectedVariant.variantId) return combination;
+    const stock = Math.max(0, combination.stock - quantity);
+    return {
+      ...combination,
+      stock,
+      status: stock === 0 ? ("out_of_stock" as const) : combination.status,
+    };
+  });
+}
+
+function createAdminOrderCounts() {
+  return {
+    all: 0,
+    pending_payment: 0,
+    paid: 0,
+    processing: 0,
+    shipped: 0,
+    delivered: 0,
+    completed: 0,
+    cancelled: 0,
+    disputed: 0,
+  };
+}
+
+async function syncTransactionsForCancelledOrder(
+  ctx: MutationCtx,
+  orderId: Id<"orders">,
+  now: number
+) {
+  const transactions = await ctx.db
+    .query("transactions")
+    .withIndex("by_order", (q) => q.eq("orderId", orderId))
+    .collect();
+
+  await Promise.all(
+    transactions.map(async (transaction) => {
+      if (transaction.status === "successful") {
+        await ctx.db.patch(transaction._id, {
+          status: "refunded",
+          completedAt: now,
+          updatedAt: now,
+        });
+        return;
+      }
+
+      if (transaction.status === "pending" || transaction.status === "processing") {
+        await ctx.db.patch(transaction._id, {
+          status: "cancelled",
+          completedAt: now,
+          updatedAt: now,
+        });
+      }
+    })
+  );
 }
 
 // Create order from cart items (grouped by seller)
@@ -34,10 +170,43 @@ export const createOrder = mutation({
         price: v.number(),
         quantity: v.number(),
         image: v.string(),
+        selectedVariantOptions: v.optional(
+          v.array(
+            v.object({
+              name: v.string(),
+              value: v.string(),
+              sku: v.optional(v.string()),
+              priceDelta: v.optional(v.number()),
+            })
+          )
+        ),
+        selectedVariant: v.optional(selectedVariantValidator),
+        selectedAddOns: v.optional(
+          v.array(
+            v.object({
+              name: v.string(),
+              description: v.optional(v.string()),
+              price: v.number(),
+            })
+          )
+        ),
+        customizationKey: v.optional(v.string()),
       })
     ),
     subtotal: v.number(),
+    discountAmount: v.optional(v.number()),
+    promoCodeId: v.optional(v.id("promoCodes")),
+    promoCode: v.optional(v.string()),
     shippingCost: v.number(),
+    deliveryMethodId: v.optional(v.id("deliveryMethods")),
+    deliveryMethodName: v.optional(v.string()),
+    deliveryEta: v.optional(
+      v.object({
+        minDays: v.number(),
+        maxDays: v.number(),
+      })
+    ),
+    pickupPointId: v.optional(v.id("pickupPoints")),
     shippingAddress: v.object({
       street: v.string(),
       city: v.string(),
@@ -58,20 +227,23 @@ export const createOrder = mutation({
       if (product.status !== "active") {
         throw new Error(`Product ${product.title} is no longer available`);
       }
-      if (product.quantity < item.quantity) {
+      const availableStock = getOrderLineStock(product, item.selectedVariant);
+      if (availableStock < item.quantity) {
         throw new Error(`Insufficient stock for ${product.title}`);
       }
     }
 
     // Calculate financial breakdown
     // Platform fee: 5% of subtotal to cover bank/gateway fees
-    const platformFee = calculatePlatformFee(args.subtotal);
+    const discountAmount = Math.min(args.discountAmount ?? 0, args.subtotal);
+    const discountedSubtotal = args.subtotal - discountAmount;
+    const platformFee = calculatePlatformFee(discountedSubtotal);
 
     // Seller payout: subtotal + shipping (what seller receives)
-    const sellerPayout = args.subtotal + args.shippingCost;
+    const sellerPayout = discountedSubtotal + args.shippingCost;
 
     // Total amount: what buyer pays (subtotal + shipping + platform fee)
-    const totalAmount = args.subtotal + args.shippingCost + platformFee;
+    const totalAmount = discountedSubtotal + args.shippingCost + platformFee;
 
     // Create order with full financial breakdown
     const orderId = await ctx.db.insert("orders", {
@@ -80,10 +252,17 @@ export const createOrder = mutation({
       sellerId: args.sellerId,
       items: args.items,
       subtotal: args.subtotal,
+      discountAmount,
+      promoCodeId: args.promoCodeId,
+      promoCode: args.promoCode,
       shippingCost: args.shippingCost,
       platformFee,
       totalAmount,
       sellerPayout,
+      deliveryMethodId: args.deliveryMethodId,
+      deliveryMethodName: args.deliveryMethodName,
+      deliveryEta: args.deliveryEta,
+      pickupPointId: args.pickupPointId,
       shippingAddress: args.shippingAddress,
       status: "pending_payment",
       createdAt: Date.now(),
@@ -95,10 +274,31 @@ export const createOrder = mutation({
       const product = await ctx.db.get(item.productId);
       if (product) {
         const newQuantity = product.quantity - item.quantity;
-        await ctx.db.patch(item.productId, {
+        const patch: Partial<Doc<"products">> = {
           quantity: newQuantity,
           status: newQuantity === 0 ? "sold" : product.status,
           updatedAt: Date.now(),
+        };
+
+        if (item.selectedVariant) {
+          patch.variantCombinations = decrementVariantStock(
+            product,
+            item.selectedVariant,
+            item.quantity
+          ) as Doc<"products">["variantCombinations"];
+        }
+
+        await ctx.db.patch(item.productId, patch);
+
+        await ctx.db.insert("behaviorEvents", {
+          userId: args.buyerId,
+          eventType: "purchase",
+          productId: item.productId,
+          categoryId: product.categoryId,
+          variantId: item.selectedVariant?.variantId,
+          quantity: item.quantity,
+          metadata: { orderId },
+          createdAt: Date.now(),
         });
       }
     }
@@ -266,6 +466,99 @@ export const getManagedCatalogOrders = query({
         };
       })
     );
+  },
+});
+
+export const listOrdersForAdmin = query({
+  args: {
+    adminId: v.id("users"),
+    status: v.optional(
+      v.union(
+        v.literal("pending_payment"),
+        v.literal("paid"),
+        v.literal("processing"),
+        v.literal("shipped"),
+        v.literal("delivered"),
+        v.literal("completed"),
+        v.literal("cancelled"),
+        v.literal("disputed")
+      )
+    ),
+  },
+  handler: async (ctx, args) => {
+    await ensureAdminActor(ctx, args.adminId);
+
+    const allOrders = await ctx.db.query("orders").collect();
+    const allEscrows = await ctx.db.query("escrow").collect();
+    const allDisputes = await ctx.db.query("disputes").collect();
+    const counts = createAdminOrderCounts();
+
+    for (const order of allOrders) {
+      counts.all += 1;
+      counts[order.status] += 1;
+    }
+
+    const escrowByOrderId = new Map(allEscrows.map((escrow) => [escrow.orderId, escrow]));
+    const disputeByOrderId = new Map(allDisputes.map((dispute) => [dispute.orderId, dispute]));
+
+    const filteredOrders = allOrders
+      .filter((order) => !args.status || order.status === args.status)
+      .sort((left, right) => right.createdAt - left.createdAt);
+
+    const items = await Promise.all(
+      filteredOrders.map(async (order) => {
+        const [buyer, seller, sellerDisplay] = await Promise.all([
+          ctx.db.get(order.buyerId),
+          ctx.db.get(order.sellerId),
+          getSellerDisplayInfo(ctx, order.sellerId),
+        ]);
+
+        const escrow = escrowByOrderId.get(order._id);
+        const dispute = disputeByOrderId.get(order._id);
+        const itemCount = order.items.reduce(
+          (total, item) => total + item.quantity,
+          0
+        );
+
+        return {
+          _id: order._id,
+          orderNumber: order.orderNumber,
+          buyerId: order.buyerId,
+          sellerId: order.sellerId,
+          status: order.status,
+          totalAmount: order.totalAmount,
+          subtotal: order.subtotal,
+          shippingCost: order.shippingCost,
+          platformFee: order.platformFee,
+          createdAt: order.createdAt,
+          updatedAt: order.updatedAt,
+          buyerName: buyer
+            ? `${buyer.firstName} ${buyer.lastName}`.trim()
+            : "Unknown buyer",
+          buyerEmail: buyer?.email ?? "",
+          sellerName: seller
+            ? `${seller.firstName} ${seller.lastName}`.trim()
+            : "Unknown seller",
+          sellerEmail: seller?.email ?? "",
+          sellerDisplayName: sellerDisplay.displayName,
+          isCompanyStore: sellerDisplay.isCompanyStore,
+          shippingLocation: `${order.shippingAddress.city}, ${order.shippingAddress.province}`,
+          itemCount,
+          itemPreview:
+            order.items[0]?.title ??
+            `${itemCount} item${itemCount === 1 ? "" : "s"}`,
+          escrowId: escrow?._id,
+          escrowStatus: escrow?.status,
+          disputeId: dispute?._id,
+          disputeStatus: dispute?.status,
+        };
+      })
+    );
+
+    return {
+      items,
+      counts,
+    };
   },
 });
 
@@ -476,6 +769,8 @@ export const cancelOrder = mutation({
       throw new Error("Order cannot be cancelled at this stage");
     }
 
+    const now = Date.now();
+
     // Restore product quantities
     for (const item of order.items) {
       const product = await ctx.db.get(item.productId);
@@ -483,15 +778,30 @@ export const cancelOrder = mutation({
         await ctx.db.patch(item.productId, {
           quantity: product.quantity + item.quantity,
           status: product.status === "sold" ? "active" : product.status,
-          updatedAt: Date.now(),
+          updatedAt: now,
         });
       }
     }
 
+    const escrow = await ctx.db
+      .query("escrow")
+      .withIndex("by_order", (q) => q.eq("orderId", args.orderId))
+      .first();
+
+    if (escrow && (escrow.status === "held" || escrow.status === "disputed")) {
+      await ctx.db.patch(escrow._id, {
+        status: "refunded",
+        refundAmount: escrow.grossAmount || escrow.amount,
+        updatedAt: now,
+      });
+    }
+
+    await syncTransactionsForCancelledOrder(ctx, args.orderId, now);
+
     await ctx.db.patch(args.orderId, {
       status: "cancelled",
       notes: args.reason,
-      updatedAt: Date.now(),
+      updatedAt: now,
     });
 
     return await ctx.db.get(args.orderId);

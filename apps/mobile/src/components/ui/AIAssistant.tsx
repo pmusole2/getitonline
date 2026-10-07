@@ -2,7 +2,7 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { MotiView } from 'moti';
 import React, { useCallback, useEffect, useRef, useState } from 'react';
-import { ActivityIndicator, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
+import { ActivityIndicator, Keyboard, KeyboardAvoidingView, Modal, Platform, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Chip, IconButton, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Animated, {
   FadeIn,
@@ -12,7 +12,9 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { ASSISTANT_NAME } from '../../config/assistant';
 import { useAppAuth } from '../../context/AuthProvider';
+import { requestAIConsent } from '../../services/aiConsent';
 import { apiService, ChatResponse } from '../../services/api';
 import type { RootStackParamList } from '../../types';
 
@@ -106,6 +108,7 @@ export function AIAssistantModal({
   const [message, setMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [isConnected, setIsConnected] = useState(true);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
   const [suggestions, setSuggestions] = useState<string[]>([
     'Find trending products',
     'Track my order',
@@ -115,7 +118,7 @@ export function AIAssistantModal({
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       id: '1',
-      content: "Hi! I'm your AI shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?",
+      content: `Hi! I'm ${ASSISTANT_NAME}, your shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?`,
       isUser: false,
       timestamp: new Date(),
     },
@@ -129,6 +132,30 @@ export function AIAssistantModal({
       loadQuickActions();
     }
   }, [visible, currentScreen]);
+
+  useEffect(() => {
+    if (!visible) {
+      setIsKeyboardVisible(false);
+      return;
+    }
+
+    const showEvent = Platform.OS === 'ios' ? 'keyboardWillShow' : 'keyboardDidShow';
+    const hideEvent = Platform.OS === 'ios' ? 'keyboardWillHide' : 'keyboardDidHide';
+    const showSubscription = Keyboard.addListener(showEvent, () => {
+      setIsKeyboardVisible(true);
+      setTimeout(() => {
+        scrollViewRef.current?.scrollToEnd({ animated: true });
+      }, 120);
+    });
+    const hideSubscription = Keyboard.addListener(hideEvent, () => {
+      setIsKeyboardVisible(false);
+    });
+
+    return () => {
+      showSubscription.remove();
+      hideSubscription.remove();
+    };
+  }, [visible]);
 
   const checkConnection = async () => {
     const reachable = await apiService.isReachable();
@@ -155,6 +182,19 @@ export function AIAssistantModal({
     if (!message.trim() || isTyping) return;
 
     const userMessageText = message.trim();
+    const hasConsent = await requestAIConsent();
+    if (!hasConsent) {
+      const blockedMessage: ChatMessage = {
+        id: Date.now().toString(),
+        content:
+          `${ASSISTANT_NAME} is off until you allow Gettitonline to send AI requests to OpenAI via our backend.`,
+        isUser: false,
+        timestamp: new Date(),
+      };
+      setMessages((prev) => [...prev, blockedMessage]);
+      return;
+    }
+
     const userMessage: ChatMessage = {
       id: Date.now().toString(),
       content: userMessageText,
@@ -229,10 +269,15 @@ export function AIAssistantModal({
     setMessage(suggestion);
   };
 
+  const handleClose = useCallback(() => {
+    Keyboard.dismiss();
+    onClose();
+  }, [onClose]);
+
   const handleActionPress = (action: NonNullable<ChatResponse['actions']>[number]) => {
     switch (action.type) {
       case 'navigate':
-        onClose();
+        handleClose();
         if (action.payload.screen) {
           // Use type assertion to bypass TypeScript's strict navigate typing
           navigation.navigate({
@@ -242,7 +287,7 @@ export function AIAssistantModal({
         }
         break;
       case 'search':
-        onClose();
+        handleClose();
         navigation.navigate('Search', { query: action.payload.query });
         break;
       case 'filter':
@@ -255,7 +300,7 @@ export function AIAssistantModal({
     setMessages([
       {
         id: '1',
-        content: "Hi! I'm your AI shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?",
+        content: `Hi! I'm ${ASSISTANT_NAME}, your shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?`,
         isUser: false,
         timestamp: new Date(),
       },
@@ -265,14 +310,22 @@ export function AIAssistantModal({
   };
 
   return (
-    <Modal visible={visible} animationType="none" transparent onRequestClose={onClose}>
-      <View style={styles.modalOverlay}>
-        <Pressable style={styles.modalBackdrop} onPress={onClose} />
+    <Modal visible={visible} animationType="none" transparent onRequestClose={handleClose}>
+      <KeyboardAvoidingView
+        behavior="height"
+        style={styles.modalOverlay}
+        keyboardVerticalOffset={0}
+      >
+        <Pressable style={styles.modalBackdrop} onPress={handleClose} />
 
         <Animated.View
           entering={FadeIn.duration(180)}
           exiting={FadeOut.duration(140)}
-          style={[styles.modalContent, { backgroundColor: theme.colors.surface }]}
+          style={[
+            styles.modalContent,
+            isKeyboardVisible && styles.modalContentKeyboard,
+            { backgroundColor: theme.colors.surface },
+          ]}
         >
           {/* Header */}
           <View style={[styles.modalHeader, { borderBottomColor: theme.colors.outlineVariant }]}>
@@ -282,7 +335,7 @@ export function AIAssistantModal({
               </View>
               <View style={styles.headerInfo}>
                 <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
-                  AI Assistant
+                  {ASSISTANT_NAME}
                 </Text>
                 <View style={styles.statusRow}>
                   <View
@@ -299,21 +352,20 @@ export function AIAssistantModal({
             </View>
             <View style={styles.headerActions}>
               <IconButton icon="refresh" size={20} onPress={handleClearChat} />
-              <IconButton icon="close" size={20} onPress={onClose} />
+              <IconButton icon="close" size={20} onPress={handleClose} />
             </View>
           </View>
 
           {/* Messages */}
-          <KeyboardAvoidingView
-            behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-            style={styles.keyboardView}
-            keyboardVerticalOffset={0}
-          >
+          <View style={styles.keyboardView}>
             <ScrollView
               ref={scrollViewRef}
               style={styles.messagesContainer}
               contentContainerStyle={styles.messagesContent}
               showsVerticalScrollIndicator={false}
+              keyboardDismissMode={Platform.OS === 'ios' ? 'interactive' : 'on-drag'}
+              keyboardShouldPersistTaps="handled"
+              onContentSizeChange={() => scrollViewRef.current?.scrollToEnd({ animated: true })}
             >
               {messages.map((msg, index) => (
                 <Animated.View
@@ -399,7 +451,7 @@ export function AIAssistantModal({
             </ScrollView>
 
             {/* Suggestions */}
-            {messages.length <= 3 && !isTyping && (
+            {messages.length <= 3 && !isTyping && !isKeyboardVisible && (
               <Animated.View
                 entering={FadeIn.delay(200).duration(300)}
                 style={styles.suggestionsContainer}
@@ -448,11 +500,17 @@ export function AIAssistantModal({
                   )
                 }
                 onSubmitEditing={handleSendMessage}
+                onFocus={() => {
+                  setTimeout(() => {
+                    scrollViewRef.current?.scrollToEnd({ animated: true });
+                  }, 120);
+                }}
+                returnKeyType="send"
               />
             </View>
-          </KeyboardAvoidingView>
+          </View>
         </Animated.View>
-      </View>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
@@ -537,6 +595,10 @@ const styles = StyleSheet.create({
     height: '80%',
     borderTopLeftRadius: 24,
     borderTopRightRadius: 24,
+    overflow: 'hidden',
+  },
+  modalContentKeyboard: {
+    height: '92%',
   },
   modalHeader: {
     flexDirection: 'row',

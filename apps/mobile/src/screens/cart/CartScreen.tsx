@@ -28,6 +28,7 @@ import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { MotiView } from 'moti';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { StackHeader } from '../../components/ui/Header';
+import { ASSISTANT_NAME } from '../../config/assistant';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Cart'>;
 
@@ -35,6 +36,16 @@ interface CartItem {
   _id: Id<'cartItems'>;
   quantity: number;
   selectedShipping: { name: string; price: number };
+  selectedVariant?: {
+    variantId: string;
+    sku: string;
+    attributes: Array<{ name: string; value: string }>;
+    price: number;
+    image?: string;
+  };
+  selectedVariantOptions?: Array<{ name: string; value: string; sku?: string; priceDelta?: number }>;
+  selectedAddOns?: Array<{ name: string; description?: string; price: number }>;
+  lineUnitPrice?: number;
   product: {
     _id: Id<'products'>;
     title: string;
@@ -53,6 +64,16 @@ interface CartLineItem {
   productId: string;
   quantity: number;
   selectedShipping: { name: string; price: number };
+  selectedVariant?: {
+    variantId: string;
+    sku: string;
+    attributes: Array<{ name: string; value: string }>;
+    price: number;
+    image?: string;
+  };
+  selectedVariantOptions?: Array<{ name: string; value: string; sku?: string; priceDelta?: number }>;
+  selectedAddOns?: Array<{ name: string; description?: string; price: number }>;
+  lineUnitPrice: number;
   product: {
     _id: string;
     title: string;
@@ -94,6 +115,10 @@ export default function CartScreen({ navigation }: Props) {
         productId: item.product._id,
         quantity: item.quantity,
         selectedShipping: item.selectedShipping,
+        selectedVariant: item.selectedVariant,
+        selectedVariantOptions: item.selectedVariantOptions,
+        selectedAddOns: item.selectedAddOns,
+        lineUnitPrice: item.lineUnitPrice ?? item.product.price,
         product: {
           _id: item.product._id,
           title: item.product.title,
@@ -106,10 +131,14 @@ export default function CartScreen({ navigation }: Props) {
         },
       }))
     : guestCartItems.map((item: GuestCartItem) => ({
-        key: item.productId,
+        key: item.customizationKey ?? item.productId,
         productId: item.productId,
         quantity: item.quantity,
         selectedShipping: item.selectedShipping,
+        selectedVariant: item.selectedVariant,
+        selectedVariantOptions: item.selectedVariantOptions,
+        selectedAddOns: item.selectedAddOns,
+        lineUnitPrice: item.product.price,
         product: item.product,
       }));
 
@@ -127,7 +156,7 @@ export default function CartScreen({ navigation }: Props) {
     if (newQuantity < 1) return;
 
     if (!user) {
-      updateGuestQuantity(item.productId, newQuantity);
+      updateGuestQuantity(item.key, newQuantity);
       return;
     }
 
@@ -149,7 +178,7 @@ export default function CartScreen({ navigation }: Props) {
 
   const handleRemoveItem = async (item: CartLineItem) => {
     if (!user) {
-      removeGuestItem(item.productId);
+      removeGuestItem(item.key);
       return;
     }
 
@@ -297,12 +326,12 @@ export default function CartScreen({ navigation }: Props) {
               <Surface style={[styles.cartItem, { backgroundColor: theme.colors.surface }]} elevation={2}>
                 <View style={styles.itemContent}>
                   {/* Product Image */}
-                  {item.product.images[0] ? (
-                    <Image
-                      source={{ uri: item.product.images[0] }}
-                      style={styles.itemImage}
-                      resizeMode="cover"
-                    />
+                    {(item.selectedVariant?.image || item.product.images[0]) ? (
+                      <Image
+                        source={{ uri: item.selectedVariant?.image || item.product.images[0] }}
+                        style={styles.itemImage}
+                        resizeMode="contain"
+                      />
                   ) : (
                     <View style={[styles.itemImage, styles.imagePlaceholder, { backgroundColor: theme.colors.surfaceVariant }]}>
                       <Icon name="image" size={24} color={theme.colors.onSurfaceVariant} />
@@ -322,8 +351,28 @@ export default function CartScreen({ navigation }: Props) {
                       Store: {item.product.sellerName}
                     </Text>
                     <Text variant="titleMedium" style={{ color: theme.colors.primary, marginTop: 4, fontWeight: '700' }}>
-                      {formatPrice(calculateDisplayPrice(item.product.price))}
+                      {formatPrice(calculateDisplayPrice(item.lineUnitPrice))}
                     </Text>
+                    {item.selectedVariantOptions && item.selectedVariantOptions.length > 0 ? (
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                        {item.selectedVariantOptions.map((option) => `${option.name}: ${option.value}`).join(' • ')}
+                      </Text>
+                    ) : null}
+                    {item.selectedVariant?.attributes && item.selectedVariant.attributes.length > 0 ? (
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                        {item.selectedVariant.attributes.map((attribute) => `${attribute.name}: ${attribute.value}`).join(' • ')}
+                      </Text>
+                    ) : null}
+                    {item.selectedVariant?.sku ? (
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                        SKU: {item.selectedVariant.sku}
+                      </Text>
+                    ) : null}
+                    {item.selectedAddOns && item.selectedAddOns.length > 0 ? (
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                        Add-ons: {item.selectedAddOns.map((addOn) => addOn.name).join(', ')}
+                      </Text>
+                    ) : null}
 
                     {/* Quantity Controls */}
                     <View style={styles.quantityRow}>
@@ -373,7 +422,7 @@ export default function CartScreen({ navigation }: Props) {
               <Icon name="creation" size={24} color={theme.colors.tertiary} />
               <View style={{ flex: 1, marginLeft: 12 }}>
                 <Text variant="labelLarge" style={{ color: theme.colors.onTertiaryContainer, fontWeight: '600' }}>
-                  AI Recommendation
+                  {ASSISTANT_NAME}'s Recommendation
                 </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, opacity: 0.8 }}>
                   Based on your cart, you might also need brake fluid

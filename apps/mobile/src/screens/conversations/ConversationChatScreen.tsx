@@ -3,6 +3,7 @@ import { useMutation, useQuery } from 'convex/react';
 import React, { useEffect, useRef, useState } from 'react';
 import {
   ActivityIndicator,
+  Alert,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -22,6 +23,7 @@ import { formatPrice } from '../../theme';
 import type { Id, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'ConversationChat'>;
+type ReportReason = 'harassment_or_abuse' | 'spam_or_scam' | 'unsafe_content' | 'other';
 
 interface Message {
   _id: Id<'conversationMessages'>;
@@ -44,7 +46,7 @@ interface ConversationWithDetails {
   productId: Id<'products'>;
   buyerId: Id<'users'>;
   sellerId: Id<'users'>;
-  status: string;
+  status: 'active' | 'archived' | 'blocked';
   product: {
     _id: Id<'products'>;
     title: string;
@@ -133,24 +135,31 @@ function MessageBubble({
 export default function ConversationChatScreen({ route, navigation }: Props) {
   const theme = useTheme() as MD3Theme;
   const { conversationId, productId } = route.params;
-  const { user } = useAppAuth();
+  const { user, isLoading: authLoading } = useAppAuth();
   const flatListRef = useRef<FlatList>(null);
 
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
+  const [safetyActionPending, setSafetyActionPending] = useState(false);
 
   const conversation = useQuery(
     api.conversations.getConversation,
-    { conversationId: conversationId as Id<'conversations'> }
+    user
+      ? { conversationId: conversationId as Id<'conversations'>, viewerId: user._id }
+      : 'skip'
   ) as ConversationWithDetails | null | undefined;
 
   const messages = useQuery(
     api.conversations.getConversationMessages,
-    { conversationId: conversationId as Id<'conversations'> }
+    user
+      ? { conversationId: conversationId as Id<'conversations'>, viewerId: user._id }
+      : 'skip'
   ) as Message[] | undefined;
 
   const sendMessage = useMutation(api.conversations.sendConversationMessage);
   const markRead = useMutation(api.conversations.markConversationRead);
+  const blockConversation = useMutation(api.conversations.blockConversation);
+  const reportConversation = useMutation(api.conversations.reportConversation);
 
   // Mark messages as read when viewing
   useEffect(() => {
@@ -180,7 +189,8 @@ export default function ConversationChatScreen({ route, navigation }: Props) {
       });
       setMessageText('');
     } catch (error) {
-      console.error('Failed to send message:', error);
+      const errorMessage = error instanceof Error ? error.message : 'Failed to send message';
+      Alert.alert('Message not sent', errorMessage);
     } finally {
       setSending(false);
     }
@@ -191,6 +201,93 @@ export default function ConversationChatScreen({ route, navigation }: Props) {
       navigation.navigate('ProductDetail', { productId: conversation.product._id });
     }
   };
+
+  const submitReport = async (reason: ReportReason = 'other') => {
+    if (!user || safetyActionPending) return;
+
+    setSafetyActionPending(true);
+    try {
+      await reportConversation({
+        conversationId: conversationId as Id<'conversations'>,
+        reporterId: user._id,
+        reason,
+      });
+      Alert.alert('Report sent', 'This conversation was sent to moderation for review.');
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to report conversation';
+      Alert.alert('Report failed', errorMessage);
+    } finally {
+      setSafetyActionPending(false);
+    }
+  };
+
+  const performBlock = async () => {
+    if (!user || safetyActionPending) return;
+
+    setSafetyActionPending(true);
+    try {
+      await blockConversation({
+        conversationId: conversationId as Id<'conversations'>,
+        userId: user._id,
+      });
+      Alert.alert('Conversation blocked', 'You will no longer receive messages in this conversation.', [
+        { text: 'OK', onPress: () => navigation.goBack() },
+      ]);
+    } catch (error) {
+      const errorMessage = error instanceof Error ? error.message : 'Failed to block conversation';
+      Alert.alert('Block failed', errorMessage);
+    } finally {
+      setSafetyActionPending(false);
+    }
+  };
+
+  const confirmBlock = () => {
+    Alert.alert(
+      'Block conversation',
+      'This stops buyer/seller messaging for this conversation.',
+      [
+        { text: 'Cancel', style: 'cancel' },
+        { text: 'Block', style: 'destructive', onPress: () => void performBlock() },
+      ]
+    );
+  };
+
+  const handleSafetyMenu = () => {
+    Alert.alert(
+      'Conversation safety',
+      'Report abusive or unsafe messaging, or block this conversation.',
+      [
+        { text: 'Report', onPress: () => void submitReport('other') },
+        { text: 'Block', style: 'destructive', onPress: confirmBlock },
+        { text: 'Cancel', style: 'cancel' },
+      ]
+    );
+  };
+
+  if (authLoading) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader title="Chat" onBackPress={() => navigation.goBack()} />
+        <View style={styles.centered}>
+          <ActivityIndicator size="large" />
+        </View>
+      </View>
+    );
+  }
+
+  if (!user) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader title="Chat" onBackPress={() => navigation.goBack()} />
+        <View style={styles.centered}>
+          <Icon name="lock-outline" size={64} color={theme.colors.error} />
+          <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 16 }}>
+            Sign in to view this conversation
+          </Text>
+        </View>
+      </View>
+    );
+  }
 
   // Loading
   if (conversation === undefined || messages === undefined) {
@@ -222,6 +319,7 @@ export default function ConversationChatScreen({ route, navigation }: Props) {
   const isBuyer = user?._id === conversation.buyerId;
   const otherUser = isBuyer ? conversation.seller : conversation.buyer;
   const otherUserName = otherUser ? `${otherUser.firstName} ${otherUser.lastName}` : 'Unknown';
+  const isBlocked = conversation.status === 'blocked';
 
   const renderMessage = ({ item, index }: { item: Message; index: number }) => {
     const isOwn = item.senderId === user?._id;
@@ -248,6 +346,13 @@ export default function ConversationChatScreen({ route, navigation }: Props) {
         title={otherUserName}
         subtitle={isBuyer ? 'Seller' : 'Buyer'}
         onBackPress={() => navigation.goBack()}
+        rightActions={[
+          {
+            icon: 'shield-alert-outline',
+            onPress: handleSafetyMenu,
+            disabled: safetyActionPending || isBlocked,
+          },
+        ]}
       />
 
       {/* Product Info Card */}
@@ -302,31 +407,40 @@ export default function ConversationChatScreen({ route, navigation }: Props) {
       />
 
       {/* Input Area */}
-      <Surface style={[styles.inputContainer, { backgroundColor: theme.colors.surface }]} elevation={2}>
-        <RNTextInput
-          style={[
-            styles.textInput,
-            {
-              backgroundColor: theme.colors.surfaceVariant,
-              color: theme.colors.onSurface,
-            },
-          ]}
-          placeholder="Type a message..."
-          placeholderTextColor={theme.colors.onSurfaceVariant}
-          value={messageText}
-          onChangeText={setMessageText}
-          multiline
-          maxLength={2000}
-        />
-        <IconButton
-          icon="send"
-          iconColor={messageText.trim() ? theme.colors.primary : theme.colors.onSurfaceVariant}
-          size={24}
-          onPress={handleSend}
-          disabled={!messageText.trim() || sending}
-          loading={sending}
-        />
-      </Surface>
+      {isBlocked ? (
+        <Surface style={[styles.blockedContainer, { backgroundColor: theme.colors.errorContainer }]} elevation={2}>
+          <Icon name="block-helper" size={20} color={theme.colors.onErrorContainer} />
+          <Text variant="bodyMedium" style={{ color: theme.colors.onErrorContainer, marginLeft: 8 }}>
+            This conversation is blocked.
+          </Text>
+        </Surface>
+      ) : (
+        <Surface style={[styles.inputContainer, { backgroundColor: theme.colors.surface }]} elevation={2}>
+          <RNTextInput
+            style={[
+              styles.textInput,
+              {
+                backgroundColor: theme.colors.surfaceVariant,
+                color: theme.colors.onSurface,
+              },
+            ]}
+            placeholder="Type a message..."
+            placeholderTextColor={theme.colors.onSurfaceVariant}
+            value={messageText}
+            onChangeText={setMessageText}
+            multiline
+            maxLength={2000}
+          />
+          <IconButton
+            icon="send"
+            iconColor={messageText.trim() ? theme.colors.primary : theme.colors.onSurfaceVariant}
+            size={24}
+            onPress={handleSend}
+            disabled={!messageText.trim() || sending}
+            loading={sending}
+          />
+        </Surface>
+      )}
     </KeyboardAvoidingView>
   );
 }
@@ -408,5 +522,12 @@ const styles = StyleSheet.create({
     paddingVertical: 10,
     maxHeight: 100,
     fontSize: 16,
+  },
+  blockedContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingHorizontal: 16,
+    paddingVertical: 14,
+    paddingBottom: Platform.OS === 'ios' ? 28 : 14,
   },
 });

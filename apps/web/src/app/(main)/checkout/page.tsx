@@ -3,7 +3,7 @@
 import { useState, useEffect } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useQuery, useMutation } from "convex/react";
+import { useConvex, useQuery, useMutation } from "convex/react";
 import { api } from "../../../../../../convex/_generated/api";
 import { Id } from "../../../../../../convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -49,6 +49,8 @@ import {
   Loader2,
   CheckCircle,
   AlertTriangle,
+  Tag,
+  Truck,
 } from "lucide-react";
 import { ROUTES, ZAMBIAN_PROVINCES } from "@/lib/constants";
 import { formatZMW } from "@gettitonline/shared";
@@ -67,8 +69,20 @@ interface ShippingAddress {
   phone: string;
 }
 
+interface AppliedPromo {
+  promoCodeId: Id<"promoCodes">;
+  code: string;
+  title: string;
+  discountAmount: number;
+}
+
+function roundMoney(amount: number) {
+  return Math.round(amount * 100) / 100;
+}
+
 export default function CheckoutPage() {
   const router = useRouter();
+  const convex = useConvex();
   const { user, isSignedIn, isLoading: authLoading } = useAuth();
   const {
     isHydrated: guestCartHydrated,
@@ -78,6 +92,11 @@ export default function CheckoutPage() {
 
   const [isProcessing, setIsProcessing] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<"wallet">("wallet");
+  const [selectedDeliveryMethodId, setSelectedDeliveryMethodId] = useState<string>("");
+  const [promoCodeInput, setPromoCodeInput] = useState("");
+  const [appliedPromo, setAppliedPromo] = useState<AppliedPromo | null>(null);
+  const [promoError, setPromoError] = useState<string | null>(null);
+  const [isApplyingPromo, setIsApplyingPromo] = useState(false);
   const [shippingAddress, setShippingAddress] = useState<ShippingAddress>({
     street: "",
     city: "",
@@ -111,11 +130,34 @@ export default function CheckoutPage() {
     user?._id ? { userId: user._id } : "skip"
   );
 
+  const subtotal = cart?.subtotal || 0;
+  const deliveryWeightKg =
+    cart?.items.reduce(
+      (total, item) =>
+        total + ((item.product.weightKg ?? 0) * item.quantity),
+      0
+    ) ?? 0;
+
+  const deliveryQuotes = useQuery(
+    api.delivery.calculateDeliveryQuote,
+    shippingAddress.province && shippingAddress.city && subtotal > 0
+      ? {
+          province: shippingAddress.province,
+          city: shippingAddress.city,
+          subtotal,
+          weightKg: deliveryWeightKg,
+        }
+      : "skip"
+  );
+
   // Mutations
   const createOrder = useMutation(api.orders.createOrder);
   const markPaidByWallet = useMutation(api.orders.markPaidByWallet);
   const debitWallet = useMutation(api.wallet.debitWallet);
   const clearCart = useMutation(api.cart.clearCart);
+  const recordPromoCodeRedemption = useMutation(
+    api.promotions.recordPromoCodeRedemption
+  );
 
   // Load user's saved address if available
   useEffect(() => {
@@ -130,11 +172,111 @@ export default function CheckoutPage() {
     }
   }, [user]);
 
+  useEffect(() => {
+    if (!deliveryQuotes || deliveryQuotes.length === 0) {
+      setSelectedDeliveryMethodId("");
+      return;
+    }
+
+    const hasSelectedQuote = deliveryQuotes.some(
+      (quote) => quote.methodId === selectedDeliveryMethodId
+    );
+    if (!hasSelectedQuote) {
+      setSelectedDeliveryMethodId(deliveryQuotes[0].methodId);
+    }
+  }, [deliveryQuotes, selectedDeliveryMethodId]);
+
   // Calculate totals
-  const subtotal = cart?.subtotal || 0;
-  const shippingTotal = cart?.shippingTotal || 0;
-  const platformFee = Math.ceil(subtotal * PLATFORM_FEE_PERCENTAGE * 100) / 100;
-  const totalAmount = subtotal + shippingTotal + platformFee;
+  const selectedDeliveryQuote =
+    deliveryQuotes?.find((quote) => quote.methodId === selectedDeliveryMethodId) ??
+    null;
+  const shippingTotal = selectedDeliveryQuote?.fee ?? cart?.shippingTotal ?? 0;
+  const discountAmount = Math.min(appliedPromo?.discountAmount ?? 0, subtotal);
+  const discountedSubtotal = Math.max(0, subtotal - discountAmount);
+  const platformFee =
+    Math.ceil(discountedSubtotal * PLATFORM_FEE_PERCENTAGE * 100) / 100;
+  const totalAmount = discountedSubtotal + shippingTotal + platformFee;
+
+  const getPromoScope = () => {
+    const categoryIds = new Set<Id<"categories">>();
+    const productIds: Id<"products">[] = [];
+
+    for (const item of cart?.items ?? []) {
+      productIds.push(item.product._id);
+      categoryIds.add(item.product.categoryId);
+      if (item.product.subcategoryId) categoryIds.add(item.product.subcategoryId);
+      if (item.product.classificationId) {
+        categoryIds.add(item.product.classificationId);
+      }
+    }
+
+    return {
+      categoryIds: Array.from(categoryIds),
+      productIds,
+    };
+  };
+
+  const handleApplyPromo = async () => {
+    if (!user) return;
+
+    const code = promoCodeInput.trim();
+    if (!code) {
+      setPromoError("Enter a promo code");
+      return;
+    }
+
+    setIsApplyingPromo(true);
+    setPromoError(null);
+
+    try {
+      const promoScope = getPromoScope();
+      const result = await convex.query(api.promotions.validatePromoCode, {
+        code,
+        userId: user._id,
+        subtotal,
+        categoryIds: promoScope.categoryIds,
+        productIds: promoScope.productIds,
+      });
+
+      const promoCodeId = result.promoCodeId;
+      const validatedCode = result.code;
+      const promoTitle = result.title;
+      const nextDiscountAmount = result.discountAmount;
+
+      if (
+        result.valid !== true ||
+        !promoCodeId ||
+        !validatedCode ||
+        !promoTitle ||
+        typeof nextDiscountAmount !== "number"
+      ) {
+        setAppliedPromo(null);
+        setPromoError(result.reason ?? "Promo code is not valid");
+        return;
+      }
+
+      setAppliedPromo({
+        promoCodeId,
+        code: validatedCode,
+        title: promoTitle,
+        discountAmount: nextDiscountAmount,
+      });
+      setPromoCodeInput(validatedCode);
+      toast.success("Promo code applied");
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : "Failed to apply promo code";
+      setPromoError(message);
+      toast.error(message);
+    } finally {
+      setIsApplyingPromo(false);
+    }
+  };
+
+  const removePromo = () => {
+    setAppliedPromo(null);
+    setPromoError(null);
+  };
 
   const validateForm = (): boolean => {
     const newErrors: Partial<ShippingAddress> = {};
@@ -183,11 +325,54 @@ export default function CheckoutPage() {
 
     try {
       const orderIds: Id<"orders">[] = [];
+      const promoScope = getPromoScope();
+
+      if (appliedPromo) {
+        const promoCheck = await convex.query(api.promotions.validatePromoCode, {
+          code: appliedPromo.code,
+          userId: user._id,
+          subtotal,
+          categoryIds: promoScope.categoryIds,
+          productIds: promoScope.productIds,
+        });
+
+        if (promoCheck.valid !== true) {
+          setAppliedPromo(null);
+          const reason = promoCheck.reason ?? "Promo code is no longer valid";
+          setPromoError(reason);
+          toast.error(reason);
+          return;
+        }
+      }
+
+      let allocatedDiscount = 0;
+      let allocatedShipping = 0;
+      const sellerGroups = cartBySeller;
 
       // Create orders for each seller
-      for (const sellerGroup of cartBySeller) {
+      for (let index = 0; index < sellerGroups.length; index += 1) {
+        const sellerGroup = sellerGroups[index];
+        const isLastSeller = index === sellerGroups.length - 1;
         const sellerSubtotal = sellerGroup.subtotal;
-        const sellerShipping = sellerGroup.shippingTotal;
+        const sellerDiscount = isLastSeller
+          ? roundMoney(discountAmount - allocatedDiscount)
+          : roundMoney(
+              subtotal > 0
+                ? discountAmount * (sellerSubtotal / subtotal)
+                : 0
+            );
+        allocatedDiscount = roundMoney(allocatedDiscount + sellerDiscount);
+
+        const sellerShipping = selectedDeliveryQuote
+          ? isLastSeller
+            ? roundMoney(shippingTotal - allocatedShipping)
+            : roundMoney(
+                subtotal > 0
+                  ? shippingTotal * (sellerSubtotal / subtotal)
+                  : shippingTotal / sellerGroups.length
+              )
+          : sellerGroup.shippingTotal;
+        allocatedShipping = roundMoney(allocatedShipping + sellerShipping);
 
         const orderId = await createOrder({
           buyerId: user._id,
@@ -195,16 +380,40 @@ export default function CheckoutPage() {
           items: sellerGroup.items.map((item) => ({
             productId: item.productId as Id<"products">,
             title: item.product.title,
-            price: item.product.price,
+            price: item.lineUnitPrice ?? item.product.price,
             quantity: item.quantity,
-            image: item.product.images?.[0] || "",
+            image: item.selectedVariant?.image || item.product.images?.[0] || "",
+            selectedVariant: item.selectedVariant,
+            selectedVariantOptions: item.selectedVariantOptions,
+            selectedAddOns: item.selectedAddOns,
+            customizationKey: item.customizationKey,
           })),
           subtotal: sellerSubtotal,
+          discountAmount: sellerDiscount,
+          promoCodeId: appliedPromo?.promoCodeId,
+          promoCode: appliedPromo?.code,
           shippingCost: sellerShipping,
+          deliveryMethodId: selectedDeliveryQuote?.methodId,
+          deliveryMethodName: selectedDeliveryQuote?.name,
+          deliveryEta: selectedDeliveryQuote
+            ? {
+                minDays: selectedDeliveryQuote.minDays,
+                maxDays: selectedDeliveryQuote.maxDays,
+              }
+            : undefined,
           shippingAddress,
         });
 
         orderIds.push(orderId);
+      }
+
+      if (appliedPromo && orderIds[0]) {
+        await recordPromoCodeRedemption({
+          promoCodeId: appliedPromo.promoCodeId,
+          userId: user._id,
+          orderId: orderIds[0],
+          discountAmount,
+        });
       }
 
       // Process wallet payment
@@ -422,6 +631,67 @@ export default function CheckoutPage() {
             </CardContent>
           </Card>
 
+          {/* Delivery Options */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Delivery Option</CardTitle>
+              <CardDescription>
+                Zone-based rates are shown after city and province are set.
+              </CardDescription>
+            </CardHeader>
+            <CardContent>
+              {deliveryQuotes === undefined &&
+              shippingAddress.city &&
+              shippingAddress.province ? (
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Calculating delivery options...
+                </div>
+              ) : deliveryQuotes && deliveryQuotes.length > 0 ? (
+                <RadioGroup
+                  value={selectedDeliveryMethodId}
+                  onValueChange={setSelectedDeliveryMethodId}
+                  className="space-y-3"
+                >
+                  {deliveryQuotes.map((quote) => (
+                    <div
+                      key={quote.methodId}
+                      className="flex items-start space-x-3 rounded-lg border p-4"
+                    >
+                      <RadioGroupItem
+                        value={quote.methodId}
+                        id={`delivery-${quote.methodId}`}
+                        className="mt-1"
+                      />
+                      <div className="flex-1">
+                        <Label
+                          htmlFor={`delivery-${quote.methodId}`}
+                          className="flex cursor-pointer items-center gap-2"
+                        >
+                          <Truck className="h-5 w-5" />
+                          {quote.name}
+                        </Label>
+                        <p className="mt-1 text-sm text-muted-foreground">
+                          {quote.minDays === quote.maxDays
+                            ? `${quote.minDays} day ETA`
+                            : `${quote.minDays}-${quote.maxDays} day ETA`}
+                          {quote.courierName ? ` • ${quote.courierName}` : ""}
+                        </p>
+                      </div>
+                      <p className="font-medium">
+                        {quote.fee > 0 ? formatZMW(quote.fee) : "Free"}
+                      </p>
+                    </div>
+                  ))}
+                </RadioGroup>
+              ) : (
+                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
+                  Using seller-defined shipping until an admin configures matching delivery zones.
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Order Items by Seller */}
           <Card>
             <CardHeader>
@@ -450,9 +720,9 @@ export default function CheckoutPage() {
                           <div key={item._id} className="flex gap-3">
                             <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-muted">
                               <img
-                                src={item.product.images?.[0] || "/placeholder.png"}
+                                src={item.selectedVariant?.image || item.product.images?.[0] || "/placeholder.png"}
                                 alt={item.product.title}
-                                className="h-full w-full object-cover"
+                                className="h-full w-full object-contain"
                               />
                             </div>
                             <div className="flex-1 min-w-0">
@@ -460,11 +730,23 @@ export default function CheckoutPage() {
                                 {item.product.title}
                               </p>
                               <p className="text-sm text-muted-foreground">
-                                Qty: {item.quantity} x {formatZMW(item.product.price)}
+                                Qty: {item.quantity} x {formatZMW(item.lineUnitPrice ?? item.product.price)}
                               </p>
+                              {item.selectedVariant?.attributes?.length ? (
+                                <p className="text-sm text-muted-foreground line-clamp-1">
+                                  {item.selectedVariant.attributes
+                                    .map((attribute) => `${attribute.name}: ${attribute.value}`)
+                                    .join(" • ")}
+                                </p>
+                              ) : null}
+                              {item.selectedVariant?.sku ? (
+                                <p className="text-xs text-muted-foreground">
+                                  SKU: {item.selectedVariant.sku}
+                                </p>
+                              ) : null}
                             </div>
                             <p className="font-medium">
-                              {formatZMW(item.product.price * item.quantity)}
+                              {formatZMW((item.lineUnitPrice ?? item.product.price) * item.quantity)}
                             </p>
                           </div>
                         ))}
@@ -548,12 +830,60 @@ export default function CheckoutPage() {
               <CardTitle>Order Summary</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="promoCode">Promo Code</Label>
+                <div className="flex gap-2">
+                  <Input
+                    id="promoCode"
+                    value={promoCodeInput}
+                    onChange={(event) => {
+                      setPromoCodeInput(event.target.value);
+                      setPromoError(null);
+                    }}
+                    placeholder="Enter code"
+                    disabled={Boolean(appliedPromo) || isApplyingPromo}
+                  />
+                  {appliedPromo ? (
+                    <Button variant="outline" onClick={removePromo}>
+                      Remove
+                    </Button>
+                  ) : (
+                    <Button
+                      variant="outline"
+                      onClick={handleApplyPromo}
+                      disabled={isApplyingPromo || subtotal <= 0}
+                    >
+                      {isApplyingPromo ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        "Apply"
+                      )}
+                    </Button>
+                  )}
+                </div>
+                {appliedPromo && (
+                  <p className="flex items-center gap-1 text-sm text-green-700 dark:text-green-400">
+                    <Tag className="h-4 w-4" />
+                    {appliedPromo.title} applied
+                  </p>
+                )}
+                {promoError && (
+                  <p className="text-sm text-destructive">{promoError}</p>
+                )}
+              </div>
+              <Separator />
               <div className="flex justify-between">
                 <span className="text-muted-foreground">
                   Subtotal ({cart.itemCount} items)
                 </span>
                 <span>{formatZMW(subtotal)}</span>
               </div>
+              {discountAmount > 0 && (
+                <div className="flex justify-between text-green-700 dark:text-green-400">
+                  <span>Promo Discount</span>
+                  <span>-{formatZMW(discountAmount)}</span>
+                </div>
+              )}
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Shipping</span>
                 <span>

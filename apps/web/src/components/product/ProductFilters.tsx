@@ -231,16 +231,19 @@ function FilterContent({
           <AccordionTrigger>Location</AccordionTrigger>
           <AccordionContent>
             <Select
-              value={filters.province}
+              value={filters.province || "all"}
               onValueChange={(value) =>
-                onFiltersChange({ ...filters, province: value })
+                onFiltersChange({
+                  ...filters,
+                  province: value === "all" ? "" : value,
+                })
               }
             >
               <SelectTrigger>
                 <SelectValue placeholder="Select province" />
               </SelectTrigger>
               <SelectContent>
-                <SelectItem value="">All Provinces</SelectItem>
+                <SelectItem value="all">All Provinces</SelectItem>
                 {ZAMBIAN_PROVINCES.map((province) => (
                   <SelectItem key={province} value={province}>
                     {province}

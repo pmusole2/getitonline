@@ -254,7 +254,7 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
                 What happens next?
               </Text>
               <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, marginTop: 4 }}>
-                After submitting, you'll be able to chat with the seller and upload evidence. A moderator may be assigned to help resolve the dispute.
+                After submitting, you'll be able to chat with the seller and upload evidence. A Reviewer-Approver may be assigned to help resolve the dispute.
               </Text>
             </View>
           </Surface>

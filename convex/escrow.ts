@@ -1,5 +1,17 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { ensureAdminActor, getSellerDisplayInfo } from "./lib/platform";
+
+function createAdminEscrowCounts() {
+  return {
+    all: 0,
+    held: 0,
+    released: 0,
+    refunded: 0,
+    partially_refunded: 0,
+    disputed: 0,
+  };
+}
 
 // Create escrow hold when order is paid
 export const createEscrowHold = mutation({
@@ -387,6 +399,78 @@ export const getSellerPendingEscrow = query({
       escrows,
       totalPending, // Amount seller will receive when released
       count: escrows.length,
+    };
+  },
+});
+
+export const listEscrowsForAdmin = query({
+  args: { adminId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ensureAdminActor(ctx, args.adminId);
+
+    const allEscrows = await ctx.db.query("escrow").collect();
+    const allDisputes = await ctx.db.query("disputes").collect();
+    const counts = createAdminEscrowCounts();
+
+    for (const escrow of allEscrows) {
+      counts.all += 1;
+      counts[escrow.status] += 1;
+    }
+
+    const disputeByOrderId = new Map(
+      allDisputes.map((dispute) => [dispute.orderId, dispute])
+    );
+
+    const items = await Promise.all(
+      [...allEscrows]
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .map(async (escrow) => {
+          const [buyer, seller, sellerDisplay, order] = await Promise.all([
+            ctx.db.get(escrow.buyerId),
+            ctx.db.get(escrow.sellerId),
+            getSellerDisplayInfo(ctx, escrow.sellerId),
+            ctx.db.get(escrow.orderId),
+          ]);
+
+          const dispute = disputeByOrderId.get(escrow.orderId);
+
+          return {
+            _id: escrow._id,
+            orderId: escrow.orderId,
+            orderNumber: order?.orderNumber ?? "Unknown order",
+            orderStatus: order?.status,
+            buyerId: escrow.buyerId,
+            buyerName: buyer
+              ? `${buyer.firstName} ${buyer.lastName}`.trim()
+              : "Unknown buyer",
+            buyerEmail: buyer?.email ?? "",
+            sellerId: escrow.sellerId,
+            sellerName: seller
+              ? `${seller.firstName} ${seller.lastName}`.trim()
+              : "Unknown seller",
+            sellerEmail: seller?.email ?? "",
+            sellerDisplayName: sellerDisplay.displayName,
+            isCompanyStore: sellerDisplay.isCompanyStore,
+            status: escrow.status,
+            grossAmount: escrow.grossAmount || escrow.amount,
+            sellerAmount: escrow.sellerAmount || escrow.amount,
+            platformFee: escrow.platformFee || 0,
+            refundAmount: escrow.refundAmount,
+            shippingLocation: order
+              ? `${order.shippingAddress.city}, ${order.shippingAddress.province}`
+              : undefined,
+            createdAt: escrow.createdAt,
+            updatedAt: escrow.updatedAt,
+            releasedAt: escrow.releasedAt,
+            disputeId: dispute?._id,
+            disputeStatus: dispute?.status,
+          };
+        })
+    );
+
+    return {
+      items,
+      counts,
     };
   },
 });

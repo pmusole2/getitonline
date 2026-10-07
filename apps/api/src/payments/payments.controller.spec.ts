@@ -76,7 +76,7 @@ describe('PaymentsController', () => {
     });
   });
 
-  it('skips signature verification for unhandled webhook events', async () => {
+  it('verifies signatures before acknowledging unhandled webhook events', async () => {
     const { controller, lencoService } = createController();
     const request = {
       rawBody: Buffer.from('{"event":"transaction.debit"}'),
@@ -99,7 +99,10 @@ describe('PaymentsController', () => {
     );
 
     expect(result).toEqual({ received: true });
-    expect(lencoService.verifyWebhookSignature).not.toHaveBeenCalled();
+    expect(lencoService.verifyWebhookSignature).toHaveBeenCalledWith(
+      '{"event":"transaction.debit"}',
+      'signature',
+    );
   });
 
   it('rejects handled webhook events with invalid signatures', async () => {
@@ -131,6 +134,52 @@ describe('PaymentsController', () => {
       expect((error as HttpException).getStatus()).toBe(
         HttpStatus.UNAUTHORIZED,
       );
+    }
+  });
+
+  it('does not log webhook references or signatures when rejecting invalid signatures', async () => {
+    const { controller, lencoService } = createController();
+    const request = {
+      rawBody: Buffer.from('{"event":"collection.successful"}'),
+    } as RawBodyRequest<Request>;
+    const payload: LencoWebhookPayload = {
+      event: 'collection.successful',
+      data: {
+        id: 'evt_sensitive',
+        reference: 'REF-SENSITIVE-123',
+        status: 'successful',
+        amount: 75,
+        currency: 'ZMW',
+      },
+    };
+    const logSpy = jest.spyOn(console, 'log').mockImplementation();
+    const warnSpy = jest.spyOn(console, 'warn').mockImplementation();
+    const errorSpy = jest.spyOn(console, 'error').mockImplementation();
+
+    lencoService.verifyWebhookSignature.mockReturnValue(false);
+
+    try {
+      await expect(
+        controller.handleWebhook(request, 'invalid-signature-secret', payload),
+      ).rejects.toThrow('Invalid signature');
+
+      const logOutput = [logSpy, warnSpy, errorSpy]
+        .flatMap((spy) =>
+          spy.mock.calls.flatMap((call) =>
+            call.map((value: unknown) =>
+              typeof value === 'string' ? value : JSON.stringify(value),
+            ),
+          ),
+        )
+        .join('\n');
+
+      expect(logOutput).not.toContain('REF-SENSITIVE-123');
+      expect(logOutput).not.toContain('evt_sensitive');
+      expect(logOutput).not.toContain('invalid-signature');
+    } finally {
+      logSpy.mockRestore();
+      warnSpy.mockRestore();
+      errorSpy.mockRestore();
     }
   });
 

@@ -31,5 +31,11 @@ export * from "./review.schema";
 // Notification schemas
 export * from "./notification.schema";
 
+// Delivery schemas
+export * from "./delivery.schema";
+
+// Promotion schemas
+export * from "./promotion.schema";
+
 // Common schemas
 export * from "./common.schema";

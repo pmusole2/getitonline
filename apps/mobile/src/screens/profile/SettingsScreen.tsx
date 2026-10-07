@@ -1,36 +1,157 @@
 import React from 'react';
-import { View, StyleSheet, ScrollView, Linking, Pressable } from 'react-native';
-import { Text, useTheme, Switch, Divider, Surface } from 'react-native-paper';
+import { ActivityIndicator, Alert, View, StyleSheet, ScrollView, Linking, Pressable } from 'react-native';
+import { Text, useTheme, Switch, Divider, Surface, Portal, Dialog, Button } from 'react-native-paper';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
+import { useAuth, useUser } from '@clerk/clerk-expo';
 import type { RootStackParamList } from '../../types';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useAppTheme } from '../../context/ThemeProvider';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { MotiView } from 'moti';
 import { StackHeader } from '../../components/ui/Header';
+import {
+  getAIConsentRecord,
+  requestAIConsent,
+  revokeAIConsent,
+  type AIConsentRecord,
+} from '../../services/aiConsent';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Settings'>;
 
 type ThemeMode = 'light' | 'dark' | 'system';
 
+const PRIVACY_POLICY_URL = 'https://www.gettitonline.com/getitonline-privacy-policy/';
+const TERMS_OF_SERVICE_URL = 'https://www.gettitonline.com/getitonline-marketplace-seller-terms-conditions';
+const HELP_CENTER_URL = 'https://www.gettitonline.com/gettitonline-contact-us-support/';
+const SUPPORT_EMAIL_URL = 'mailto:info@gettitonline.com';
+
 export default function SettingsScreen({ navigation }: Props) {
   const theme = useTheme();
-  const { user } = useAppAuth();
+  const { user, isSignedIn } = useAppAuth();
+  const { user: clerkUser } = useUser();
+  const { signOut } = useAuth();
   const { themeMode, setThemeMode, isDark, isSyncing } = useAppTheme();
 
   const [notifications, setNotifications] = React.useState(true);
+  const [deleteDialogVisible, setDeleteDialogVisible] = React.useState(false);
+  const [isDeletingAccount, setIsDeletingAccount] = React.useState(false);
+  const [accountDeletionError, setAccountDeletionError] = React.useState<string | null>(null);
+  const [aiConsent, setAiConsent] = React.useState<AIConsentRecord | null>(null);
+
+  React.useEffect(() => {
+    let isMounted = true;
+
+    void getAIConsentRecord().then((record) => {
+      if (isMounted) {
+        setAiConsent(record);
+      }
+    });
+
+    return () => {
+      isMounted = false;
+    };
+  }, []);
 
   const handlePrivacyPolicy = () => {
-    Linking.openURL('https://example.com/privacy');
+    void Linking.openURL(PRIVACY_POLICY_URL);
   };
 
   const handleTermsOfService = () => {
-    Linking.openURL('https://example.com/terms');
+    void Linking.openURL(TERMS_OF_SERVICE_URL);
+  };
+
+  const handleHelpCenter = () => {
+    void Linking.openURL(HELP_CENTER_URL);
   };
 
   const handleSupport = () => {
-    Linking.openURL('mailto:support@gettitonline.com');
+    void Linking.openURL(SUPPORT_EMAIL_URL);
+  };
+
+  const handleAIConsent = async () => {
+    if (aiConsent) {
+      await revokeAIConsent();
+      setAiConsent(null);
+      return;
+    }
+
+    const accepted = await requestAIConsent();
+    if (accepted) {
+      setAiConsent(await getAIConsentRecord());
+    }
+  };
+
+  const handleOpenDeleteDialog = () => {
+    setAccountDeletionError(null);
+    setDeleteDialogVisible(true);
+  };
+
+  const handleCloseDeleteDialog = () => {
+    if (isDeletingAccount) {
+      return;
+    }
+
+    setDeleteDialogVisible(false);
+    setAccountDeletionError(null);
+  };
+
+  const handleDeleteAccount = async () => {
+    if (!isSignedIn || !clerkUser) {
+      setAccountDeletionError('Sign in again before deleting your account.');
+      return;
+    }
+
+    setIsDeletingAccount(true);
+    setAccountDeletionError(null);
+
+    try {
+      const usedAppleSignIn = clerkUser.externalAccounts.some((account) =>
+        account.provider.toLowerCase().includes('apple'),
+      );
+
+      await clerkUser.delete();
+
+      try {
+        await revokeAIConsent();
+      } catch {
+        // The identity is already deleted; local consent cleanup is best effort.
+      }
+
+      try {
+        await signOut();
+      } catch {
+        // Clerk deletion can invalidate the active session before sign out finishes.
+      }
+
+      setDeleteDialogVisible(false);
+
+      const completionMessage = usedAppleSignIn
+        ? 'Your Gettitonline account was deleted. To revoke Apple access manually, open iPhone Settings, select your Apple Account, choose Sign in with Apple, then remove Gettitonline.'
+        : 'Your Gettitonline account was deleted. Personal marketplace data will be removed or anonymized shortly, except records that must be retained for legal, accounting, fraud-prevention, or dispute purposes.';
+
+      Alert.alert('Account Deleted', completionMessage, [
+        {
+          text: 'Done',
+          onPress: () =>
+            navigation.reset({
+              index: 0,
+              routes: [{ name: 'Main' }],
+            }),
+        },
+      ]);
+    } catch (error: unknown) {
+      const clerkError = error as {
+        errors?: Array<{ longMessage?: string; message?: string }>;
+      };
+      setAccountDeletionError(
+        clerkError.errors?.[0]?.longMessage ||
+          clerkError.errors?.[0]?.message ||
+          'Unable to delete your account. Sign in again and retry, or contact support.',
+      );
+    } finally {
+      setIsDeletingAccount(false);
+    }
   };
 
   const getThemeModeLabel = (mode: ThemeMode): string => {
@@ -251,6 +372,45 @@ export default function SettingsScreen({ navigation }: Props) {
                 </Text>
               </View>
             </View>
+
+            {isSignedIn && (
+              <>
+                <Divider style={styles.divider} />
+
+                <Pressable
+                  style={({ pressed }) => [
+                    styles.deleteAccountRow,
+                    {
+                      borderColor: theme.colors.error,
+                      backgroundColor: theme.colors.errorContainer,
+                      opacity: isDeletingAccount ? 0.72 : 1,
+                    },
+                    pressed && !isDeletingAccount ? styles.pressedRow : null,
+                  ]}
+                  onPress={handleOpenDeleteDialog}
+                  disabled={isDeletingAccount}
+                >
+                  <View style={styles.linkContent}>
+                    <View style={[styles.deleteAccountIcon, { backgroundColor: theme.colors.surface }]}>
+                      {isDeletingAccount ? (
+                        <ActivityIndicator size="small" color={theme.colors.error} />
+                      ) : (
+                        <Icon name="trash-can-outline" size={20} color={theme.colors.error} />
+                      )}
+                    </View>
+                    <View style={{ marginLeft: 12, flex: 1 }}>
+                      <Text variant="bodyMedium" style={{ color: theme.colors.error, fontWeight: '600' }}>
+                        Delete Account
+                      </Text>
+                      <Text variant="bodySmall" style={{ color: theme.colors.onErrorContainer }}>
+                        Permanently delete your account and sign out
+                      </Text>
+                    </View>
+                  </View>
+                  <Icon name="chevron-right" size={20} color={theme.colors.error} />
+                </Pressable>
+              </>
+            )}
           </Surface>
         </Animated.View>
 
@@ -266,7 +426,7 @@ export default function SettingsScreen({ navigation }: Props) {
               </Text>
             </View>
 
-            <Pressable style={styles.linkRow} onPress={handleSupport}>
+            <Pressable style={styles.linkRow} onPress={handleHelpCenter}>
               <View style={styles.linkContent}>
                 <Icon name="help-circle-outline" size={20} color={theme.colors.onSurfaceVariant} />
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginLeft: 12 }}>
@@ -286,7 +446,7 @@ export default function SettingsScreen({ navigation }: Props) {
                     Contact Support
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    support@gettitonline.com
+                    info@gettitonline.com
                   </Text>
                 </View>
               </View>
@@ -315,6 +475,25 @@ export default function SettingsScreen({ navigation }: Props) {
                 </Text>
               </View>
               <Icon name="chevron-right" size={20} color={theme.colors.onSurfaceVariant} />
+            </Pressable>
+
+            <Divider style={styles.divider} />
+
+            <Pressable style={styles.linkRow} onPress={handleAIConsent}>
+              <View style={styles.linkContent}>
+                <Icon name="robot-outline" size={20} color={theme.colors.onSurfaceVariant} />
+                <View style={{ marginLeft: 12, flex: 1 }}>
+                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                    AI Features
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    {aiConsent ? 'Allowed for OpenAI via Gettitonline backend' : 'Not allowed'}
+                  </Text>
+                </View>
+              </View>
+              <Text variant="labelMedium" style={{ color: theme.colors.primary }}>
+                {aiConsent ? 'Turn Off' : 'Allow'}
+              </Text>
             </Pressable>
 
             <Divider style={styles.divider} />
@@ -353,6 +532,46 @@ export default function SettingsScreen({ navigation }: Props) {
           </Text>
         </Animated.View>
       </ScrollView>
+
+      <Portal>
+        <Dialog
+          visible={deleteDialogVisible}
+          onDismiss={handleCloseDeleteDialog}
+          style={{ backgroundColor: theme.colors.surface }}
+        >
+          <Dialog.Title>
+            <View style={styles.deleteDialogTitle}>
+              <Icon name="alert-circle" size={24} color={theme.colors.error} />
+              <Text style={{ marginLeft: 8, fontSize: 20, fontWeight: '600', color: theme.colors.onSurface }}>
+                Delete Account
+              </Text>
+            </View>
+          </Dialog.Title>
+          <Dialog.Content>
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+              This permanently deletes your Gettitonline account and signs you out. This action cannot be undone.
+            </Text>
+            {accountDeletionError && (
+              <Text variant="bodySmall" style={[styles.deleteErrorText, { color: theme.colors.error }]}>
+                {accountDeletionError}
+              </Text>
+            )}
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button onPress={handleCloseDeleteDialog} disabled={isDeletingAccount}>
+              Cancel
+            </Button>
+            <Button
+              onPress={() => void handleDeleteAccount()}
+              loading={isDeletingAccount}
+              disabled={isDeletingAccount}
+              textColor={theme.colors.error}
+            >
+              Delete
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
+      </Portal>
       </View>
   );
 }
@@ -448,10 +667,36 @@ const styles = StyleSheet.create({
     justifyContent: 'space-between',
     paddingVertical: 12,
   },
+  pressedRow: {
+    opacity: 0.84,
+  },
   linkContent: {
     flexDirection: 'row',
     alignItems: 'center',
     flex: 1,
+  },
+  deleteAccountRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    borderWidth: 1,
+    borderRadius: 12,
+    marginTop: 8,
+    padding: 12,
+  },
+  deleteAccountIcon: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  deleteDialogTitle: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  deleteErrorText: {
+    marginTop: 12,
   },
   appInfo: {
     alignItems: 'center',

@@ -143,6 +143,8 @@ export const ROUTES = {
   ADMIN_LISTING_REVIEW: "/admin/products/review",
   ADMIN_ORDERS: "/admin/orders",
   ADMIN_CATEGORIES: "/admin/categories",
+  ADMIN_DELIVERY: "/admin/delivery",
+  ADMIN_PROMOTIONS: "/admin/promotions",
   ADMIN_DISPUTES: "/admin/disputes",
   ADMIN_TRANSACTIONS: "/admin/transactions",
   ADMIN_ESCROW: "/admin/escrow",

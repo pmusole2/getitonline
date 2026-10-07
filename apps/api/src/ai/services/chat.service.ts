@@ -1,6 +1,17 @@
 import { Injectable } from '@nestjs/common';
 import { ConvexService } from '../../convex/convex.service';
 import { AiService } from '../ai.service';
+import {
+  ASSISTANT_IDENTITY_PROMPT,
+  ASSISTANT_INTRODUCTION,
+  ASSISTANT_NAME,
+  enforceAssistantIdentity,
+  isAssistantIdentityQuestion,
+} from '../assistant-identity';
+import {
+  buildSafeAccountContext,
+  buildSafeProductContext,
+} from './chat-context-policy';
 
 interface ChatContext {
   userId?: string;
@@ -318,12 +329,6 @@ export class ChatService {
     pendingOrders: number;
     completedOrders: number;
     disputedOrders: number;
-    recentOrders: Array<{
-      orderNumber: string;
-      status: string;
-      total: number;
-      _id: string;
-    }>;
   } | null> {
     try {
       const orders = await this.convexService.getUserOrders(userId);
@@ -348,21 +353,6 @@ export class ChatService {
         disputedOrders: orders.filter(
           (o: { status: string }) => o.status === 'disputed',
         ).length,
-        recentOrders: orders
-          .slice(0, 5)
-          .map(
-            (o: {
-              _id: string;
-              orderNumber: string;
-              status: string;
-              totalAmount: number;
-            }) => ({
-              _id: o._id,
-              orderNumber: o.orderNumber,
-              status: o.status,
-              total: o.totalAmount,
-            }),
-          ),
       };
     } catch {
       return null;
@@ -691,6 +681,11 @@ export class ChatService {
     conversationHistory: ChatMessage[] = [],
     context: ChatContext = {},
   ): Promise<ChatResult> {
+    // Answer name/identity questions deterministically so they never depend on the model.
+    if (isAssistantIdentityQuestion(message)) {
+      return this.getIdentityResponse();
+    }
+
     if (!this.aiService.isConfigured()) {
       return this.getFallbackResponse(message);
     }
@@ -803,139 +798,47 @@ export class ChatService {
       }
     }
 
-    // Add user-specific data if userId is provided
+    // Add only aggregate account activity. Names, addresses, payment data,
+    // order identifiers, and private conversations must not enter AI prompts.
     let userContext = '';
     if (context.userId) {
+      const asksAboutOrders =
+        lowerMessage.includes('order') ||
+        lowerMessage.includes('purchase') ||
+        lowerMessage.includes('bought') ||
+        lowerMessage.includes('dispute') ||
+        lowerMessage.includes('delivery') ||
+        lowerMessage.includes('shipped') ||
+        lowerMessage.includes('refund') ||
+        lowerMessage.includes('escrow');
+      const asksAboutListings =
+        lowerMessage.includes('my listing') ||
+        lowerMessage.includes('my product') ||
+        lowerMessage.includes('selling') ||
+        lowerMessage.includes('listed');
+
       try {
-        const user = await this.convexService.getUser(context.userId);
-        if (user) {
-          userContext += `\n\n=== CURRENT USER ===`;
-          userContext += `\nName: ${user.firstName} ${user.lastName}`;
-          userContext += `\nTotal purchases: ${user.totalPurchases || 0}`;
-          userContext += `\nTotal sales: ${user.totalSales || 0}`;
-          if (user.rating) userContext += `\nRating: ${user.rating}/5`;
-        }
+        const [orders, sellerOrders, listings] = await Promise.all([
+          asksAboutOrders
+            ? this.getUserOrdersSummary(context.userId)
+            : Promise.resolve(null),
+          asksAboutOrders
+            ? this.convexService
+                .getSellerOrders(context.userId)
+                .catch(() => null)
+            : Promise.resolve(null),
+          asksAboutListings
+            ? this.getUserListingsSummary(context.userId)
+            : Promise.resolve(null),
+        ]);
 
-        // Get user's orders if asking about orders
-        if (
-          lowerMessage.includes('order') ||
-          lowerMessage.includes('purchase') ||
-          lowerMessage.includes('bought') ||
-          lowerMessage.includes('dispute') ||
-          lowerMessage.includes('delivery') ||
-          lowerMessage.includes('shipped') ||
-          lowerMessage.includes('refund') ||
-          lowerMessage.includes('escrow')
-        ) {
-          const ordersSummary = await this.getUserOrdersSummary(context.userId);
-          if (ordersSummary) {
-            userContext += `\n\n=== USER'S ORDERS SUMMARY ===`;
-            userContext += `\nTotal orders: ${ordersSummary.totalOrders}`;
-            userContext += `\nPending: ${ordersSummary.pendingOrders}`;
-            userContext += `\nCompleted: ${ordersSummary.completedOrders}`;
-            userContext += `\nDisputed: ${ordersSummary.disputedOrders}`;
-
-            // Check if user is asking about a specific order or "last order"
-            const isAskingAboutLastOrder =
-              lowerMessage.includes('last order') ||
-              lowerMessage.includes('recent order') ||
-              lowerMessage.includes('latest order') ||
-              lowerMessage.includes('my order') ||
-              (lowerMessage.includes('order') &&
-                (lowerMessage.includes('how was') ||
-                  lowerMessage.includes('what happened') ||
-                  lowerMessage.includes('status') ||
-                  lowerMessage.includes('dispute') ||
-                  lowerMessage.includes('details') ||
-                  lowerMessage.includes('tell me about')));
-
-            if (
-              isAskingAboutLastOrder &&
-              ordersSummary.recentOrders.length > 0
-            ) {
-              // Get comprehensive details for the most recent order
-              const lastOrder = ordersSummary.recentOrders[0];
-              const comprehensiveContext =
-                await this.getComprehensiveOrderContext(
-                  lastOrder._id,
-                  'buyer', // User is asking as buyer
-                );
-              userContext += comprehensiveContext;
-            } else if (ordersSummary.recentOrders.length > 0) {
-              userContext += `\n\nRecent orders:`;
-              for (const order of ordersSummary.recentOrders) {
-                userContext += `\n- #${order.orderNumber}: ${this.formatOrderStatus(order.status)} (K${order.total.toLocaleString()})`;
-              }
-              userContext += `\n\nFor detailed information about any order, ask about "my last order" or specify an order number.`;
-            }
-          }
-
-          // Also check seller orders if user is a seller
-          try {
-            const sellerOrders = await this.convexService.getSellerOrders(
-              context.userId,
-            );
-            if (sellerOrders && sellerOrders.length > 0) {
-              userContext += `\n\n=== ORDERS RECEIVED (as seller) ===`;
-              userContext += `\nTotal orders received: ${sellerOrders.length}`;
-
-              const pendingSales = sellerOrders.filter(
-                (o: Record<string, unknown>) =>
-                  ['paid', 'processing', 'shipped'].includes(
-                    o.status as string,
-                  ),
-              ).length;
-              const completedSales = sellerOrders.filter(
-                (o: Record<string, unknown>) =>
-                  ['delivered', 'completed'].includes(o.status as string),
-              ).length;
-              const disputedSales = sellerOrders.filter(
-                (o: Record<string, unknown>) => o.status === 'disputed',
-              ).length;
-
-              userContext += `\nPending fulfillment: ${pendingSales}`;
-              userContext += `\nCompleted sales: ${completedSales}`;
-              userContext += `\nDisputed orders: ${disputedSales}`;
-
-              // If asking about sales-related question, provide more context
-              if (
-                lowerMessage.includes('sale') ||
-                lowerMessage.includes('sold') ||
-                lowerMessage.includes('customer') ||
-                lowerMessage.includes('buyer')
-              ) {
-                const recentSales = sellerOrders.slice(0, 3);
-                userContext += `\n\nRecent sales:`;
-                for (const sale of recentSales) {
-                  userContext += `\n- #${sale.orderNumber}: ${this.formatOrderStatus(sale.status as string)} (K${(sale.totalAmount as number)?.toLocaleString()})`;
-                }
-              }
-            }
-          } catch {
-            // Ignore seller orders fetch errors
-          }
-        }
-
-        // Get user's listings if asking about their products
-        if (
-          lowerMessage.includes('my listing') ||
-          lowerMessage.includes('my product') ||
-          lowerMessage.includes('selling') ||
-          lowerMessage.includes('listed')
-        ) {
-          const listingsSummary = await this.getUserListingsSummary(
-            context.userId,
-          );
-          if (listingsSummary) {
-            userContext += `\n\n=== USER'S LISTINGS ===`;
-            userContext += `\nTotal listings: ${listingsSummary.totalListings}`;
-            userContext += `\nActive: ${listingsSummary.activeListings}`;
-            userContext += `\nSold: ${listingsSummary.soldListings}`;
-            userContext += `\nTotal views: ${listingsSummary.totalViews}`;
-          }
-        }
+        userContext = buildSafeAccountContext({
+          orders,
+          sellerOrders,
+          listings,
+        });
       } catch {
-        // Ignore user fetch errors
+        // Account context is optional; continue without it if a lookup fails.
       }
     }
 
@@ -944,42 +847,23 @@ export class ChatService {
     if (context.productId) {
       try {
         const product = await this.convexService.getProduct(context.productId);
-        if (product) {
-          productContext += `\n\n=== CURRENTLY VIEWING PRODUCT ===`;
-          productContext += `\nTitle: ${product.title}`;
-          productContext += `\nPrice: K${product.price.toLocaleString()}`;
-          productContext += `\nCondition: ${product.condition}`;
-          productContext += `\nDescription: ${product.description}`;
-          productContext += `\nViews: ${product.views || 0}`;
-          if (product.seller) {
-            productContext += `\nSeller: ${product.seller.firstName} ${product.seller.lastName}`;
-            if (product.seller.rating)
-              productContext += ` (${product.seller.rating}/5 rating)`;
-          }
-        }
+        if (product) productContext = buildSafeProductContext(product);
       } catch {
         // Ignore product fetch errors
       }
     }
 
-    const systemPrompt = `You are an AI shopping assistant for Gettitonline, a trusted online store in Zambia for fashion, electronics, lifestyle essentials, and general products.
+    const systemPrompt = `You are ${ASSISTANT_NAME}, the AI shopping assistant for Gettitonline, a trusted online store in Zambia for fashion, electronics, lifestyle essentials, and general products.
+${ASSISTANT_IDENTITY_PROMPT}
 
-YOU HAVE FULL ACCESS TO THE MARKETPLACE DATABASE. Use the real-time data provided below to answer questions accurately and comprehensively.
+Use only the minimized marketplace and aggregate account data provided below.
 
 Your capabilities:
 1. Answer questions about available products with REAL data
 2. Provide accurate counts, prices, and listings information
 3. Help users find products across categories such as fashion, electronics, beauty, home, and everyday essentials
-4. Answer COMPREHENSIVE questions about orders including:
-   - Order status and timeline
-   - Payment details and history
-   - Dispute information (if any)
-   - How disputes were resolved
-   - Duration of disputes
-   - Escrow status and fund movements
-   - Communication history
-5. Give personalized information based on user's account data
-6. Explain the escrow system, disputes, and resolutions
+4. Answer questions about aggregate order and listing activity
+5. Explain the marketplace's general escrow and dispute process
 
 Important information:
 - Currency is ZMW (Zambian Kwacha), displayed as K (e.g., K500)
@@ -991,13 +875,12 @@ Important information:
 
 Guidelines:
 - USE THE DATABASE DATA PROVIDED to give accurate, specific, detailed answers
-- When users ask about orders, provide COMPREHENSIVE information including disputes, resolution, timeline
-- When users ask "how was my order", give a full narrative including any issues and how they were resolved
+- Do not infer or request names, addresses, phone numbers, payment details, private messages, or exact order identifiers
+- When a user needs private order details, direct them to the Orders screen or support instead of inventing an answer
 - When users ask "how many", give the exact count from the data
 - When users ask about products, reference actual listings
 - Be helpful, friendly, conversational, and provide thorough information
 - Address the user directly and personally (e.g., "Your order...", "You purchased...")
-- If there was a dispute, explain what happened, how long it took, and how it was resolved
 - If information isn't in the provided data, say so honestly
 ${databaseContext}
 ${userContext}
@@ -1021,7 +904,7 @@ Valid action types: "navigate", "search", "filter"`;
         ? conversationHistory
             .map(
               (m) =>
-                `${m.role === 'user' ? 'User' : 'Assistant'}: ${m.content}`,
+                `${m.role === 'user' ? 'User' : ASSISTANT_NAME}: ${m.content}`,
             )
             .join('\n') + '\n'
         : '';
@@ -1036,9 +919,10 @@ Valid action types: "navigate", "search", "filter"`;
       );
 
       return {
-        message:
+        message: enforceAssistantIdentity(
           result.message ||
-          'I apologize, but I could not process your request. Please try again.',
+            'I apologize, but I could not process your request. Please try again.',
+        ),
         suggestions: result.suggestions || [],
         actions: result.actions || [],
       };
@@ -1091,6 +975,18 @@ Valid action types: "navigate", "search", "filter"`;
     return screenSuggestions[currentScreen] || screenSuggestions.Home;
   }
 
+  private getIdentityResponse(): ChatResult {
+    return {
+      message: ASSISTANT_INTRODUCTION,
+      suggestions: [
+        'How many products are listed?',
+        'What are the newest listings?',
+        'Track my order',
+      ],
+      actions: [],
+    };
+  }
+
   private getFallbackResponse(message: string): ChatResult {
     const lowerMessage = message.toLowerCase();
 
@@ -1122,7 +1018,7 @@ Valid action types: "navigate", "search", "filter"`;
 
     return {
       message:
-        "I'm here to help! I have access to the full marketplace database. Ask me about available products, prices, your orders, or anything else!",
+        `I'm ${ASSISTANT_NAME}, and I'm here to help! I have access to the full marketplace database. Ask me about available products, prices, your orders, or anything else!`,
       suggestions: [
         'How many products are listed?',
         'What are the newest listings?',

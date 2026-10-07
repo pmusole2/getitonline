@@ -1,4 +1,6 @@
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
 
 // Create a review
@@ -9,6 +11,7 @@ export const createReview = mutation({
     rating: v.number(), // 1-5
     title: v.optional(v.string()),
     comment: v.optional(v.string()),
+    photoUrls: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
     // Validate rating
@@ -51,26 +54,42 @@ export const createReview = mutation({
       rating: args.rating,
       title: args.title,
       comment: args.comment,
+      photoUrls: args.photoUrls,
       createdAt: Date.now(),
     });
 
     // Update seller's rating
     await updateUserRating(ctx, order.sellerId);
 
+    const [reviewer, product] = await Promise.all([
+      ctx.db.get(args.reviewerId),
+      ctx.db.get(productId),
+    ]);
+
+    await ctx.db.insert("notifications", {
+      userId: order.sellerId,
+      type: "new_review",
+      title: "New Review",
+      message: `${reviewer ? `${reviewer.firstName} ${reviewer.lastName}`.trim() : "A buyer"} left a ${args.rating}-star review for "${product?.title ?? "an item"}".`,
+      data: { orderId: args.orderId, productId, rating: args.rating },
+      isRead: false,
+      createdAt: Date.now(),
+    });
+
     return reviewId;
   },
 });
 
 // Helper function to update user's average rating
-async function updateUserRating(ctx: any, userId: any) {
+async function updateUserRating(ctx: MutationCtx, userId: Id<"users">) {
   const reviews = await ctx.db
     .query("reviews")
-    .withIndex("by_reviewee", (q: any) => q.eq("revieweeId", userId))
+    .withIndex("by_reviewee", (q) => q.eq("revieweeId", userId))
     .collect();
 
   if (reviews.length === 0) return;
 
-  const totalRating = reviews.reduce((sum: number, review: any) => sum + review.rating, 0);
+  const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
   const averageRating = totalRating / reviews.length;
 
   await ctx.db.patch(userId, {

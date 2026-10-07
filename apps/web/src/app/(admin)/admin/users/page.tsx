@@ -15,6 +15,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { UserRole } from "@/types";
+import { getRoleLabel } from "@/lib/roles";
 
 const ROLE_OPTIONS: UserRole[] = [
   "user",
@@ -22,19 +23,6 @@ const ROLE_OPTIONS: UserRole[] = [
   "moderator",
   "admin",
 ];
-
-function formatRoleLabel(role: UserRole) {
-  switch (role) {
-    case "catalog_manager":
-      return "Catalog Manager";
-    case "moderator":
-      return "Moderator";
-    case "admin":
-      return "Admin";
-    default:
-      return "User";
-  }
-}
 
 export default function AdminUsersPage() {
   const { user, isLoading: authLoading } = useAuth();
@@ -101,7 +89,7 @@ export default function AdminUsersPage() {
             <CardTitle>Access Restricted</CardTitle>
           </CardHeader>
           <CardContent className="text-sm text-muted-foreground">
-            Only administrators can manage users and the company seller account.
+            Only Super Admins can manage users and the company seller account.
           </CardContent>
         </Card>
       </div>
@@ -286,7 +274,7 @@ export default function AdminUsersPage() {
                         <SelectContent>
                           {ROLE_OPTIONS.map((role) => (
                             <SelectItem key={role} value={role}>
-                              {formatRoleLabel(role)}
+                              {getRoleLabel(role)}
                             </SelectItem>
                           ))}
                         </SelectContent>

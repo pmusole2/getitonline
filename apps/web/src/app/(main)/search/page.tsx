@@ -37,6 +37,7 @@ function SearchPageContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const queryParam = searchParams.get("q") || "";
+  const brandParam = searchParams.get("brand") || "";
 
   const [searchQuery, setSearchQuery] = useState(queryParam);
   const [filters, setFilters] = useState<FilterState>({
@@ -54,7 +55,7 @@ function SearchPageContent() {
   }, [queryParam]);
 
   // Search products
-  const searchResults = useQuery(
+  const textSearchResults = useQuery(
     api.products.searchProducts,
     queryParam
       ? {
@@ -64,6 +65,16 @@ function SearchPageContent() {
         }
       : "skip"
   );
+  const brandResults = useQuery(
+    api.products.getProductsByBrand,
+    !queryParam && brandParam
+      ? {
+          brand: brandParam,
+          limit: 50,
+        }
+      : "skip"
+  );
+  const searchResults = queryParam ? textSearchResults : brandParam ? brandResults : undefined;
 
   const handleSearch = (e: React.FormEvent) => {
     e.preventDefault();
@@ -92,6 +103,8 @@ function SearchPageContent() {
         <h1 className="mb-4 text-2xl font-bold">
           {queryParam
             ? `Search results for "${queryParam}"`
+            : brandParam
+              ? `Products by "${brandParam}"`
             : "Search Products"}
         </h1>
 
@@ -113,7 +126,7 @@ function SearchPageContent() {
         </form>
       </div>
 
-      {queryParam ? (
+      {queryParam || brandParam ? (
         <div className="flex flex-col gap-6 lg:flex-row">
           {/* Sidebar - Filters */}
           <aside className="w-full lg:w-64 lg:shrink-0">
@@ -174,7 +187,7 @@ function SearchPageContent() {
             <ProductGrid
               products={searchResults}
               columns={viewMode === "grid" ? 3 : 2}
-              emptyMessage={`No products found for "${queryParam}"`}
+              emptyMessage={`No products found for "${queryParam || brandParam}"`}
             />
           </main>
         </div>

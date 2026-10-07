@@ -24,6 +24,7 @@ import {
   Sun,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
+import { getRoleLabel } from "@/lib/roles";
 import { useTheme } from "next-themes";
 import { useQuery } from "convex/react";
 import { api } from "../../../../../../convex/_generated/api";
@@ -132,7 +133,7 @@ export function AdminHeader({ onMenuClick }: AdminHeaderProps) {
                   {user?.firstName} {user?.lastName}
                 </p>
                 <p className="text-xs leading-none text-muted-foreground">
-                  {user?.role === "admin" ? "Administrator" : "Moderator"}
+                  {getRoleLabel(user?.role)}
                 </p>
               </div>
             </DropdownMenuLabel>

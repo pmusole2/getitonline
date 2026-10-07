@@ -2,12 +2,13 @@ import React, { useState, useCallback } from 'react';
 import { View, StyleSheet, KeyboardAvoidingView, Platform, ScrollView } from 'react-native';
 import { Button, Text, TextInput, useTheme, Divider } from 'react-native-paper';
 import { SafeAreaView } from 'react-native-safe-area-context';
-import { useSignIn, useOAuth } from '@clerk/clerk-expo';
+import { useSignIn, useOAuth, useSignInWithApple } from '@clerk/clerk-expo';
 import * as Linking from 'expo-linking';
 import * as WebBrowser from 'expo-web-browser';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { AuthStackParamList } from '../../types';
 import { useWarmUpBrowser } from '../../hooks/useWarmUpBrowser';
+import { AppleSignInButton } from '../../components/auth/AppleSignInButton';
 
 WebBrowser.maybeCompleteAuthSession();
 
@@ -18,11 +19,13 @@ export default function SignInScreen({ navigation }: Props) {
   const theme = useTheme();
   const { signIn, setActive, isLoaded } = useSignIn();
   const { startOAuthFlow } = useOAuth({ strategy: 'oauth_google' });
+  const { startAppleAuthenticationFlow } = useSignInWithApple();
 
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
+  const [oauthLoading, setOauthLoading] = useState<'apple' | 'google' | null>(null);
   const [error, setError] = useState('');
 
   const handleEmailSignIn = async () => {
@@ -52,9 +55,14 @@ export default function SignInScreen({ navigation }: Props) {
   };
 
   const handleGoogleSignIn = useCallback(async () => {
+    setOauthLoading('google');
+    setError('');
+
     try {
       const { createdSessionId, setActive: setActiveSession } = await startOAuthFlow({
-        redirectUrl: Linking.createURL('/oauth-callback'),
+        redirectUrl: Linking.createURL('/oauth-callback', {
+          scheme: 'gettitonline',
+        }),
       });
 
       if (createdSessionId && setActiveSession) {
@@ -63,8 +71,36 @@ export default function SignInScreen({ navigation }: Props) {
     } catch (err: unknown) {
       console.error('Google sign in error:', err);
       setError('Failed to sign in with Google. Please try again.');
+    } finally {
+      setOauthLoading(null);
     }
   }, [startOAuthFlow]);
+
+  const handleAppleSignIn = useCallback(async () => {
+    if (Platform.OS !== 'ios') return;
+
+    setOauthLoading('apple');
+    setError('');
+
+    try {
+      const { createdSessionId, setActive: setActiveSession } =
+        await startAppleAuthenticationFlow();
+
+      if (createdSessionId && setActiveSession) {
+        await setActiveSession({ session: createdSessionId });
+      }
+    } catch (err: unknown) {
+      const maybeCancelled = err as { code?: string };
+      if (maybeCancelled.code === 'ERR_REQUEST_CANCELED') {
+        return;
+      }
+
+      console.error('Apple sign in error:', err);
+      setError('Failed to sign in with Apple. Please try again.');
+    } finally {
+      setOauthLoading(null);
+    }
+  }, [startAppleAuthenticationFlow]);
 
   return (
     <SafeAreaView style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -83,12 +119,21 @@ export default function SignInScreen({ navigation }: Props) {
           </View>
 
           <View style={styles.form}>
+            <AppleSignInButton
+              disabled={oauthLoading !== null || loading}
+              isDark={theme.dark}
+              loading={oauthLoading === 'apple'}
+              onPress={handleAppleSignIn}
+            />
+
             <Button
               mode="outlined"
               onPress={handleGoogleSignIn}
-              style={styles.googleButton}
-              contentStyle={styles.googleButtonContent}
+              style={styles.oauthButton}
+              contentStyle={styles.oauthButtonContent}
               icon="google"
+              loading={oauthLoading === 'google'}
+              disabled={oauthLoading !== null || loading}
             >
               Continue with Google
             </Button>
@@ -186,16 +231,17 @@ const styles = StyleSheet.create({
   form: {
     flex: 1,
   },
-  googleButton: {
+  oauthButton: {
     borderRadius: 12,
-    marginBottom: 24,
+    marginBottom: 12,
   },
-  googleButtonContent: {
+  oauthButtonContent: {
     paddingVertical: 8,
   },
   dividerContainer: {
     flexDirection: 'row',
     alignItems: 'center',
+    marginTop: 12,
     marginBottom: 24,
   },
   divider: {

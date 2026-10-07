@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiService } from '../ai.service';
+import {
+  ASSISTANT_IDENTITY_PROMPT,
+  ASSISTANT_NAME,
+  GHOSTWRITING_RULE,
+} from '../assistant-identity';
 
 interface DisputeDetails {
   title: string;
@@ -61,7 +66,8 @@ export class DisputeAnalysisService {
     // Personalize the prompt based on who's viewing
     const viewerContext = this.getViewerContext(viewerRole);
 
-    const systemPrompt = `You are an expert dispute resolution assistant for an online marketplace in Zambia.
+    const systemPrompt = `You are ${ASSISTANT_NAME}, an expert dispute resolution assistant for an online marketplace in Zambia.
+${ASSISTANT_IDENTITY_PROMPT}
 ${viewerContext.roleDescription}
 
 Guidelines:
@@ -215,7 +221,8 @@ Please provide a comprehensive analysis.`;
       return this.getDefaultBrief(dispute, analysis);
     }
 
-    const systemPrompt = `You are preparing a brief for a moderator reviewing a dispute.
+    const systemPrompt = `You are ${ASSISTANT_NAME}, preparing a brief for a moderator reviewing a dispute.
+${ASSISTANT_IDENTITY_PROMPT}
 Write a clear, actionable brief that helps them quickly understand and resolve the case.
 Be concise but thorough. Use bullet points where appropriate.
 Currency is ZMW (Zambian Kwacha).`;
@@ -259,7 +266,9 @@ Seller Sentiment: ${analysis.sentiment.seller}`;
       return this.getDefaultResolutionMessage(resolutionType, dispute, refundAmount);
     }
 
-    const systemPrompt = `Write a professional, empathetic resolution message for a marketplace dispute.
+    const systemPrompt = `You are ${ASSISTANT_NAME}, drafting a professional, empathetic resolution message that a moderator will send for a marketplace dispute.
+${ASSISTANT_IDENTITY_PROMPT}
+${GHOSTWRITING_RULE}
 The message should:
 1. Acknowledge both parties' concerns
 2. Clearly state the decision and reasoning

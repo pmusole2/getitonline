@@ -3,6 +3,7 @@ import { useAuth, useUser } from '@clerk/clerk-expo';
 import { useQuery, useMutation } from 'convex/react';
 import { api } from '../../../../convex/_generated/api';
 import type { User } from '../types';
+import { setAIConsentSubject } from '../services/aiConsent';
 
 interface ClerkUserType {
   id: string;
@@ -17,10 +18,12 @@ interface AuthContextType {
   isSignedIn: boolean;
   user: User | null;
   clerkUser: ClerkUserType | null;
+  authSyncError: string | null;
   postAuthDestination: 'Cart' | 'Checkout' | null;
   setPostAuthDestination: React.Dispatch<
     React.SetStateAction<'Cart' | 'Checkout' | null>
   >;
+  retryUserSync: () => void;
   signOut: () => Promise<void>;
 }
 
@@ -31,6 +34,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { user: clerkUser } = useUser();
   const [isInitialized, setIsInitialized] = useState(false);
   const [fallbackUser, setFallbackUser] = useState<User | null>(null);
+  const [authSyncError, setAuthSyncError] = useState<string | null>(null);
+  const [syncAttempt, setSyncAttempt] = useState(0);
   const [postAuthDestination, setPostAuthDestination] = useState<
     'Cart' | 'Checkout' | null
   >(null);
@@ -45,8 +50,15 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   const upsertUser = useMutation(api.users.upsertUser);
 
   useEffect(() => {
+    setAIConsentSubject(
+      clerkUser?.id ? `account:${clerkUser.id}` : 'guest',
+    );
+  }, [clerkUser?.id]);
+
+  useEffect(() => {
     if (convexUser) {
       setFallbackUser(null);
+      setAuthSyncError(null);
     }
   }, [convexUser]);
 
@@ -62,12 +74,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       if (!isSignedIn || !clerkUser) {
         if (!isCancelled) {
           setFallbackUser(null);
+          setAuthSyncError(null);
           setIsInitialized(true);
         }
         return;
       }
 
       if (!isCancelled) {
+        setAuthSyncError(null);
         setIsInitialized(false);
       }
 
@@ -107,6 +121,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         }
       } catch (error) {
         console.error('Failed to sync user with Convex:', error);
+        if (!isCancelled) {
+          setAuthSyncError(
+            'We could not finish setting up your account. Check your connection and try again.'
+          );
+        }
       } finally {
         if (!isCancelled) {
           setIsInitialized(true);
@@ -119,19 +138,29 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       isCancelled = true;
     };
-  }, [isLoaded, isSignedIn, clerkUser, upsertUser]);
+  }, [isLoaded, isSignedIn, clerkUser, syncAttempt, upsertUser]);
 
   const handleSignOut = async () => {
     try {
+      setFallbackUser(null);
+      setAuthSyncError(null);
+      setAIConsentSubject('guest');
       await clerkSignOut();
     } catch (error) {
       console.error('Sign out error:', error);
     }
   };
 
+  const retryUserSync = () => {
+    setAuthSyncError(null);
+    setSyncAttempt((currentAttempt) => currentAttempt + 1);
+  };
+
   const user = convexUser ?? fallbackUser;
   const isLoading =
-    !isLoaded || !isInitialized || (Boolean(isSignedIn) && !user);
+    !isLoaded ||
+    !isInitialized ||
+    (Boolean(isSignedIn) && !user && !authSyncError);
 
   const clerkUserData: ClerkUserType | null = clerkUser ? {
     id: clerkUser.id,
@@ -148,8 +177,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         isSignedIn: isSignedIn ?? false,
         user,
         clerkUser: clerkUserData,
+        authSyncError,
         postAuthDestination,
         setPostAuthDestination,
+        retryUserSync,
         signOut: handleSignOut,
       }}
     >

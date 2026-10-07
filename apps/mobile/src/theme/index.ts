@@ -143,7 +143,7 @@ export const CURRENCY = {
 
 export function formatPrice(amount: number): string {
   return `K${amount.toLocaleString('en-ZM', {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
     maximumFractionDigits: 2,
   })}`;
 }

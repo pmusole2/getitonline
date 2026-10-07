@@ -83,7 +83,7 @@ To verify the fix works:
    POST /api/v1/wallet/withdraw/mobile-money
    {
      "userId": "...",
-     "phone": "260976737221",
+     "phone": "[ZAMBIAN_MOBILE_NUMBER]",
      "provider": "airtel",
      "amount": 50,
      "description": "Test withdrawal"

@@ -1,5 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { AiService } from '../ai.service';
+import {
+  ASSISTANT_IDENTITY_PROMPT,
+  ASSISTANT_NAME,
+  GHOSTWRITING_RULE,
+} from '../assistant-identity';
 
 interface RephraseResult {
   original: string;
@@ -41,7 +46,9 @@ export class MessageRephraseService {
       };
     }
 
-    const systemPrompt = `You are a professional communication assistant for an online marketplace dispute resolution system.
+    const systemPrompt = `You are ${ASSISTANT_NAME}, a professional communication assistant for an online marketplace dispute resolution system.
+${ASSISTANT_IDENTITY_PROMPT}
+For the rephrased version only: ${GHOSTWRITING_RULE}
 Your job is to:
 1. Analyze messages for professionalism and constructiveness
 2. Identify any issues (hostile language, threats, profanity, unconstructive criticism)
@@ -101,7 +108,9 @@ Cultural note: This is for Zambia, so be culturally appropriate.`;
       return [];
     }
 
-    const systemPrompt = `You are helping a ${respondAs} respond to a dispute conversation in a Zambian online marketplace.
+    const systemPrompt = `You are ${ASSISTANT_NAME}, helping a ${respondAs} respond to a dispute conversation in a Zambian online marketplace.
+${ASSISTANT_IDENTITY_PROMPT}
+${GHOSTWRITING_RULE}
 Generate 2-3 professional response suggestions that could help resolve the dispute.
 
 Keep responses:

@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import { useQuery, useMutation } from "convex/react";
@@ -19,6 +19,14 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import {
   Breadcrumb,
   BreadcrumbItem,
@@ -42,7 +50,7 @@ import {
   Package,
 } from "lucide-react";
 import { ROUTES, CONDITION_DISPLAY_NAMES } from "@/lib/constants";
-import { formatZMW } from "@gettitonline/shared";
+import { createCartCustomizationKey, formatZMW } from "@gettitonline/shared";
 import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { ProductGrid } from "@/components/product/ProductGrid";
@@ -60,6 +68,8 @@ export default function ProductDetailPage() {
   const [selectedImage, setSelectedImage] = useState(0);
   const [selectedShipping, setSelectedShipping] = useState<string>("");
   const [quantity, setQuantity] = useState(1);
+  const [selectedAttributes, setSelectedAttributes] = useState<Record<string, string>>({});
+  const [cartDialogOpen, setCartDialogOpen] = useState(false);
 
   // Get product details
   const product = useQuery(api.products.getProduct, {
@@ -86,6 +96,8 @@ export default function ProductDetailPage() {
   // Mutations
   const toggleFavorite = useMutation(api.favorites.toggleFavorite);
   const addToCart = useMutation(api.cart.addToCart);
+  const incrementViews = useMutation(api.products.incrementViews);
+  const recordBehaviorEvent = useMutation(api.notifications.recordBehaviorEvent);
   const managesCurrentStoreProduct = Boolean(
     canManageCatalog(user?.role) && product?.seller?.isCompanyStore
   );
@@ -93,12 +105,103 @@ export default function ProductDetailPage() {
     user?._id === product?.sellerId || managesCurrentStoreProduct
   );
 
-  // Increment views on mount
-  // useEffect(() => {
-  //   if (product?._id) {
-  //     incrementViews({ productId: product._id });
-  //   }
-  // }, [product?._id]);
+  const variantCombinations = useMemo(
+    () => product?.variantCombinations ?? [],
+    [product?.variantCombinations]
+  );
+  const variantAttributes = useMemo(() => {
+    if (!product) return [];
+    if (product.variantAttributes?.length) return product.variantAttributes;
+
+    const attributes = new Map<string, Set<string>>();
+    for (const combination of variantCombinations) {
+      for (const attribute of combination.attributes) {
+        const values = attributes.get(attribute.name) ?? new Set<string>();
+        values.add(attribute.value);
+        attributes.set(attribute.name, values);
+      }
+    }
+
+    return Array.from(attributes.entries()).map(([name, values]) => ({
+      name,
+      values: Array.from(values),
+    }));
+  }, [product, variantCombinations]);
+  const selectedVariant = useMemo(() => {
+    const selectedNames = Object.keys(selectedAttributes);
+    if (!variantCombinations.length || selectedNames.length !== variantAttributes.length) {
+      return null;
+    }
+
+    return (
+      variantCombinations.find((combination) =>
+        variantAttributes.every((attribute) =>
+          combination.attributes.some(
+            (candidate) =>
+              candidate.name === attribute.name &&
+              candidate.value === selectedAttributes[attribute.name]
+          )
+        )
+      ) ?? null
+    );
+  }, [selectedAttributes, variantAttributes, variantCombinations]);
+  const selectedVariantSnapshot = selectedVariant
+    ? {
+        variantId: selectedVariant.id,
+        sku: selectedVariant.sku,
+        attributes: selectedVariant.attributes,
+        price: selectedVariant.price,
+        image: selectedVariant.primaryImage,
+      }
+    : undefined;
+  const selectedStock = selectedVariant ? selectedVariant.stock : product?.quantity ?? 0;
+  const displayPrice = selectedVariant?.price ?? product?.price ?? 0;
+  const images = selectedVariant
+    ? [
+        selectedVariant.primaryImage,
+        ...(selectedVariant.galleryImages ?? []),
+        ...(product?.images ?? []),
+      ].filter((image): image is string => Boolean(image))
+    : product?.images?.length
+      ? product.images
+      : ["/placeholder.png"];
+
+  useEffect(() => {
+    setSelectedImage(0);
+  }, [selectedVariant?.id, product?._id]);
+
+  useEffect(() => {
+    setQuantity((current) => Math.min(Math.max(current, 1), Math.max(selectedStock, 1)));
+  }, [selectedStock]);
+
+  useEffect(() => {
+    if (!product?._id || isOwnProduct) return;
+
+    void incrementViews({ productId: product._id });
+    void recordBehaviorEvent({
+      userId: user?._id,
+      eventType: "product_view",
+      productId: product._id,
+      categoryId: product.categoryId,
+    });
+  }, [incrementViews, isOwnProduct, product?._id, product?.categoryId, recordBehaviorEvent, user?._id]);
+
+  useEffect(() => {
+    if (!product?._id || isOwnProduct) return;
+
+    const startedAt = Date.now();
+    return () => {
+      const durationMs = Date.now() - startedAt;
+      if (durationMs < 1000) return;
+      void recordBehaviorEvent({
+        userId: user?._id,
+        eventType: "product_time_spent",
+        productId: product._id,
+        categoryId: product.categoryId,
+        durationMs,
+      });
+    };
+  }, [isOwnProduct, product?._id, product?.categoryId, recordBehaviorEvent, user?._id]);
 
   const handleFavoriteClick = async () => {
     if (!isSignedIn || !user || !product) {
@@ -116,8 +219,18 @@ export default function ProductDetailPage() {
     }
   };
 
-  const handleAddToCart = async () => {
+  const handleAddToCart = async (showCartDialog = true) => {
     if (!product) {
+      return false;
+    }
+
+    if (variantCombinations.length > 0 && !selectedVariantSnapshot) {
+      toast.error("Please select product options");
+      return false;
+    }
+
+    if (selectedVariant && (selectedVariant.status !== "active" || selectedVariant.stock <= 0)) {
+      toast.error("Selected variant is out of stock");
       return false;
     }
 
@@ -140,8 +253,14 @@ export default function ProductDetailPage() {
             name: shipping.name,
             price: shipping.price,
           },
+          selectedVariant: selectedVariantSnapshot,
         });
       } else {
+        const customizationKey = createCartCustomizationKey({
+          productId: product._id,
+          selectedVariant: selectedVariantSnapshot,
+        });
+
         addGuestCartItem({
           productId: product._id,
           quantity,
@@ -149,14 +268,16 @@ export default function ProductDetailPage() {
             name: shipping.name,
             price: shipping.price,
           },
+          selectedVariant: selectedVariantSnapshot,
+          customizationKey,
           product: {
             _id: product._id,
             sellerId: product.sellerId,
             sellerName: product.seller?.displayName || "Gettitonline",
             title: product.title,
-            price: product.price,
-            images: product.images,
-            quantity: product.quantity,
+            price: displayPrice,
+            images,
+            quantity: selectedStock,
             status: product.status,
             shippingOptions: product.shippingOptions ?? [],
           },
@@ -165,6 +286,9 @@ export default function ProductDetailPage() {
       }
 
       toast.success("Added to cart!");
+      if (showCartDialog) {
+        setCartDialogOpen(true);
+      }
       return true;
     } catch {
       toast.error("Failed to add to cart");
@@ -173,7 +297,7 @@ export default function ProductDetailPage() {
   };
 
   const handleBuyNow = async () => {
-    const addedToCart = await handleAddToCart();
+    const addedToCart = await handleAddToCart(false);
     if (addedToCart) {
       router.push(ROUTES.CART);
     }
@@ -198,7 +322,59 @@ export default function ProductDetailPage() {
     );
   }
 
-  const images = product.images?.length ? product.images : ["/placeholder.png"];
+  const hasDiscount =
+    product.compareAtPrice !== undefined &&
+    product.compareAtPrice > displayPrice;
+  const discountPercent = hasDiscount
+    ? Math.round(((product.compareAtPrice! - displayPrice) / product.compareAtPrice!) * 100)
+    : 0;
+  const isVariantProduct = variantCombinations.length > 0;
+  const selectedSku = selectedVariant?.sku ?? product.sku;
+  const stockLabel = isVariantProduct && !selectedVariant ? "Select options" : `${selectedStock} available`;
+  const sellerDisplayName = product.seller?.displayName || product.seller?.firstName || "Gettitonline";
+  const warrantySummary = product.warranty
+    ? [
+        product.warranty.type === "none" ? "No warranty" : product.warranty.type,
+        product.warranty.durationDays ? `${product.warranty.durationDays} days` : undefined,
+        product.warranty.provider,
+      ]
+        .filter(Boolean)
+        .join(" • ")
+    : undefined;
+  const canSelectVariantValue = (attributeName: string, value: string) => {
+    if (!isVariantProduct) return true;
+
+    const nextSelection = { ...selectedAttributes, [attributeName]: value };
+    return variantCombinations.some(
+      (combination) =>
+        combination.status === "active" &&
+        combination.stock > 0 &&
+        variantAttributes.every((attribute) => {
+          const selectedValue = nextSelection[attribute.name];
+          if (!selectedValue) return true;
+          return combination.attributes.some(
+            (candidate) =>
+              candidate.name === attribute.name && candidate.value === selectedValue
+          );
+        })
+      );
+  };
+  const productDetailRows = [
+    product.brand ? { label: "Brand", value: product.brand } : null,
+    product.classification ? { label: "Classification", value: product.classification.name } : null,
+    product.modelNumber ? { label: "Model", value: product.modelNumber } : null,
+    selectedSku ? { label: "SKU", value: selectedSku } : null,
+    product.color ? { label: "Color", value: product.color } : null,
+    product.material ? { label: "Material", value: product.material } : null,
+    product.countryOfOrigin ? { label: "Country of origin", value: product.countryOfOrigin } : null,
+    { label: "Condition", value: CONDITION_DISPLAY_NAMES[product.condition] },
+    product.availabilityStatus
+      ? { label: "Availability", value: product.availabilityStatus.replace(/_/g, " ") }
+      : null,
+    { label: "Stock", value: stockLabel },
+    warrantySummary ? { label: "Warranty", value: warrantySummary } : null,
+    ...(product.specifications ?? []).map((spec) => ({ label: spec.key, value: spec.value })),
+  ].filter((row): row is { label: string; value: string } => Boolean(row?.label && row.value));
 
   return (
     <div className="container py-6">
@@ -230,6 +406,11 @@ export default function ProductDetailPage() {
               alt={product.title}
               className="h-full w-full object-contain"
             />
+            {hasDiscount && (
+              <Badge variant="destructive" className="absolute right-3 top-3">
+                {discountPercent}% OFF
+              </Badge>
+            )}
 
             {/* Navigation Arrows */}
             {images.length > 1 && (
@@ -300,7 +481,28 @@ export default function ProductDetailPage() {
               <Badge className="mb-2">
                 {CONDITION_DISPLAY_NAMES[product.condition]}
               </Badge>
+              {product.brand && (
+                <Link
+                  href={`${ROUTES.SEARCH}?brand=${encodeURIComponent(product.brand)}`}
+                  className="mb-1 block text-sm font-medium text-primary hover:underline"
+                >
+                  {product.brand}
+                </Link>
+              )}
+              {product.seller && (
+                <p className="mb-2 text-sm text-muted-foreground">
+                  Sold by{" "}
+                  <Link href={ROUTES.SELLER(product.seller._id)} className="font-medium text-primary hover:underline">
+                    {sellerDisplayName}
+                  </Link>
+                </p>
+              )}
               <h1 className="text-2xl font-bold lg:text-3xl">{product.title}</h1>
+              {product.shortDescription && (
+                <p className="mt-2 max-w-xl text-muted-foreground">
+                  {product.shortDescription}
+                </p>
+              )}
             </div>
             <div className="flex gap-2">
               {!isOwnProduct && (
@@ -323,9 +525,16 @@ export default function ProductDetailPage() {
           </div>
 
           {/* Price */}
-          <p className="mt-4 text-3xl font-bold text-primary">
-            {formatZMW(product.price)}
-          </p>
+          <div className="mt-4 flex flex-wrap items-baseline gap-3">
+            <p className="text-3xl font-bold text-foreground">
+              {formatZMW(displayPrice)}
+            </p>
+            {hasDiscount && (
+              <p className="text-lg text-muted-foreground line-through">
+                {formatZMW(product.compareAtPrice!)}
+              </p>
+            )}
+          </div>
 
           {/* Stats */}
           <div className="mt-4 flex flex-wrap gap-4 text-sm text-muted-foreground">
@@ -343,12 +552,52 @@ export default function ProductDetailPage() {
               <Clock className="h-4 w-4" />
               {formatDistanceToNow(product.createdAt, { addSuffix: true })}
             </span>
+            {selectedSku && <span>SKU: {selectedSku}</span>}
           </div>
 
           <Separator className="my-6" />
 
           {/* Quantity & Shipping */}
           <div className="space-y-4">
+            {variantAttributes.length > 0 && (
+              <div className="space-y-4">
+                {variantAttributes.map((attribute) => (
+                  <div key={attribute.name}>
+                    <label className="text-sm font-medium">{attribute.name}</label>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      {attribute.values.map((value) => {
+                        const isSelected = selectedAttributes[attribute.name] === value;
+                        const isAvailable = canSelectVariantValue(attribute.name, value);
+
+                        return (
+                          <Button
+                            key={`${attribute.name}-${value}`}
+                            type="button"
+                            variant={isSelected ? "default" : "outline"}
+                            size="sm"
+                            disabled={!isAvailable}
+                            onClick={() =>
+                              setSelectedAttributes((current) => ({
+                                ...current,
+                                [attribute.name]: value,
+                              }))
+                            }
+                          >
+                            {value}
+                          </Button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ))}
+                {isVariantProduct && !selectedVariant && (
+                  <p className="text-sm text-muted-foreground">
+                    Select all product options to confirm price and availability.
+                  </p>
+                )}
+              </div>
+            )}
+
             {/* Quantity */}
             <div>
               <label className="text-sm font-medium">Quantity</label>
@@ -366,14 +615,14 @@ export default function ProductDetailPage() {
                   variant="outline"
                   size="icon"
                   onClick={() =>
-                    setQuantity(Math.min(product.quantity || 1, quantity + 1))
+                    setQuantity(Math.min(selectedStock || 1, quantity + 1))
                   }
-                  disabled={quantity >= (product.quantity || 1)}
+                  disabled={quantity >= (selectedStock || 1) || (isVariantProduct && !selectedVariant)}
                 >
                   +
                 </Button>
                 <span className="text-sm text-muted-foreground">
-                  {product.quantity} available
+                  {stockLabel}
                 </span>
               </div>
             </div>
@@ -404,12 +653,28 @@ export default function ProductDetailPage() {
                 </Select>
               </div>
             )}
+
+            {product.keyFeatures && product.keyFeatures.length > 0 && (
+              <div>
+                <p className="text-sm font-medium">Key Features</p>
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-muted-foreground">
+                  {product.keyFeatures.map((feature, index) => (
+                    <li key={`${feature}-${index}`}>{feature}</li>
+                  ))}
+                </ul>
+              </div>
+            )}
           </div>
 
           {/* Action Buttons */}
           {!isOwnProduct ? (
             <div className="mt-6 flex gap-3">
-              <Button size="lg" className="flex-1 gap-2" onClick={handleAddToCart}>
+              <Button
+                size="lg"
+                className="flex-1 gap-2"
+                onClick={() => void handleAddToCart()}
+                disabled={selectedStock <= 0 || (isVariantProduct && !selectedVariant)}
+              >
                 <ShoppingCart className="h-5 w-5" />
                 Add to Cart
               </Button>
@@ -418,6 +683,7 @@ export default function ProductDetailPage() {
                 variant="secondary"
                 className="flex-1"
                 onClick={handleBuyNow}
+                disabled={selectedStock <= 0 || (isVariantProduct && !selectedVariant)}
               >
                 Buy Now
               </Button>
@@ -504,7 +770,7 @@ export default function ProductDetailPage() {
         </div>
       </div>
 
-      {/* Description & Specifications */}
+      {/* Description & Product Details */}
       <div className="mt-8 grid gap-6 lg:grid-cols-2">
         {/* Description */}
         <Card>
@@ -518,28 +784,45 @@ export default function ProductDetailPage() {
           </CardContent>
         </Card>
 
-        {/* Specifications */}
-        {product.specifications && product.specifications.length > 0 && (
+        {productDetailRows.length > 0 && (
           <Card>
-            <CardHeader>
-              <CardTitle>Specifications</CardTitle>
-            </CardHeader>
             <CardContent>
-              <dl className="space-y-2">
-                {product.specifications.map((spec, index) => (
-                  <div
-                    key={index}
-                    className="flex justify-between border-b py-2 last:border-0"
-                  >
-                    <dt className="text-muted-foreground">{spec.key}</dt>
-                    <dd className="font-medium">{spec.value}</dd>
-                  </div>
-                ))}
-              </dl>
+              <details open className="group">
+                <summary className="cursor-pointer list-none py-2 text-lg font-semibold">
+                  Product Details
+                </summary>
+                <dl className="mt-2 divide-y">
+                  {productDetailRows.map((row) => (
+                    <div key={`${row.label}-${row.value}`} className="grid grid-cols-2 gap-4 py-3">
+                      <dt className="text-muted-foreground">{row.label}</dt>
+                      <dd className="text-right font-medium">{row.value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </details>
             </CardContent>
           </Card>
         )}
       </div>
+
+      <Dialog open={cartDialogOpen} onOpenChange={setCartDialogOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Added to cart</DialogTitle>
+            <DialogDescription>
+              Review your cart or continue shopping.
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter className="gap-2 sm:gap-0">
+            <Button variant="outline" onClick={() => setCartDialogOpen(false)}>
+              Continue
+            </Button>
+            <Button onClick={() => router.push(ROUTES.CART)}>
+              Proceed to Cart
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
 
       {/* Similar Products */}
       {similarProducts && similarProducts.items && similarProducts.items.length > 1 && (

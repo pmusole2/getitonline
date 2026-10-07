@@ -122,6 +122,10 @@ export default function BrowseScreen() {
     });
   };
 
+  const handleStoresPress = () => {
+    navigation.navigate('StoresDirectory');
+  };
+
   const renderCategory = ({ item, index }: { item: CategoryTreeItem; index: number }) => (
     <AnimatedCategoryCard
       category={item}
@@ -189,6 +193,26 @@ export default function BrowseScreen() {
           <Text variant="labelMedium" style={{ color: theme.colors.tertiary, marginLeft: 6 }}>
             Popular
           </Text>
+        </Pressable>
+      </Animated.View>
+
+      <Animated.View entering={FadeInDown.delay(175).duration(400)} style={styles.storesSection}>
+        <Pressable
+          style={[styles.storesCallout, { backgroundColor: theme.colors.secondaryContainer }]}
+          onPress={handleStoresPress}
+        >
+          <View style={[styles.storesIcon, { backgroundColor: theme.colors.secondary + '20' }]}>
+            <Icon name="storefront-outline" size={24} color={theme.colors.secondary} />
+          </View>
+          <View style={styles.storesContent}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSecondaryContainer, fontWeight: '600' }}>
+              Explore Stores
+            </Text>
+            <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.82 }}>
+              Browse official and approved vendor storefronts in one place.
+            </Text>
+          </View>
+          <Icon name="chevron-right" size={24} color={theme.colors.secondary} />
         </Pressable>
       </Animated.View>
 
@@ -271,6 +295,28 @@ const styles = StyleSheet.create({
     paddingHorizontal: 12,
     paddingVertical: 8,
     borderRadius: 20,
+  },
+  storesSection: {
+    paddingHorizontal: 16,
+    marginBottom: 16,
+  },
+  storesCallout: {
+    borderRadius: 18,
+    padding: 16,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 14,
+  },
+  storesIcon: {
+    width: 48,
+    height: 48,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  storesContent: {
+    flex: 1,
+    gap: 4,
   },
   sectionHeader: {
     paddingHorizontal: 16,

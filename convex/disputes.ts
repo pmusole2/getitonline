@@ -1,5 +1,32 @@
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+
+async function markSuccessfulOrderTransactionsRefunded(
+  ctx: MutationCtx,
+  orderId: Id<"orders">,
+  now: number
+) {
+  const transactions = await ctx.db
+    .query("transactions")
+    .withIndex("by_order", (q) => q.eq("orderId", orderId))
+    .collect();
+
+  await Promise.all(
+    transactions.map(async (transaction) => {
+      if (transaction.status !== "successful") {
+        return;
+      }
+
+      await ctx.db.patch(transaction._id, {
+        status: "refunded",
+        completedAt: now,
+        updatedAt: now,
+      });
+    })
+  );
+}
 
 // Create a new dispute
 export const createDispute = mutation({
@@ -430,14 +457,16 @@ export const resolveDispute = mutation({
 
     const escrow = await ctx.db.get(dispute.escrowId);
     if (!escrow) throw new Error("Escrow not found");
+    const now = Date.now();
 
     // Process escrow based on resolution type
     if (args.resolutionType === "full_refund") {
       await ctx.db.patch(dispute.escrowId, {
         status: "refunded",
         refundAmount: escrow.amount,
-        updatedAt: Date.now(),
+        updatedAt: now,
       });
+      await markSuccessfulOrderTransactionsRefunded(ctx, dispute.orderId, now);
     } else if (args.resolutionType === "partial_refund") {
       if (!args.refundAmount || args.refundAmount <= 0 || args.refundAmount > escrow.amount) {
         throw new Error("Invalid refund amount");
@@ -445,14 +474,14 @@ export const resolveDispute = mutation({
       await ctx.db.patch(dispute.escrowId, {
         status: "partially_refunded",
         refundAmount: args.refundAmount,
-        releasedAt: Date.now(),
-        updatedAt: Date.now(),
+        releasedAt: now,
+        updatedAt: now,
       });
     } else if (args.resolutionType === "no_refund") {
       await ctx.db.patch(dispute.escrowId, {
         status: "released",
-        releasedAt: Date.now(),
-        updatedAt: Date.now(),
+        releasedAt: now,
+        updatedAt: now,
       });
     }
 
@@ -464,15 +493,15 @@ export const resolveDispute = mutation({
         refundAmount: args.refundAmount,
         resolvedBy: args.moderatorId,
         notes: args.notes,
-        resolvedAt: Date.now(),
+        resolvedAt: now,
       },
-      updatedAt: Date.now(),
+      updatedAt: now,
     });
 
     // Update order status
     await ctx.db.patch(dispute.orderId, {
       status: args.resolutionType === "full_refund" ? "cancelled" : "completed",
-      updatedAt: Date.now(),
+      updatedAt: now,
     });
 
     // Add system message
@@ -481,7 +510,7 @@ export const resolveDispute = mutation({
       senderId: args.moderatorId,
       content: `Dispute resolved: ${args.resolutionType}. ${args.notes}`,
       isSystemMessage: true,
-      createdAt: Date.now(),
+      createdAt: now,
     });
 
     return await ctx.db.get(args.disputeId);

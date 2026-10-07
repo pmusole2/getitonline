@@ -52,12 +52,24 @@ import { useAuth } from "@/hooks/useAuth";
 import { toast } from "sonner";
 import { useGuestCart } from "@/providers/GuestCartProvider";
 
+interface SelectedVariant {
+  variantId?: string;
+  sku?: string;
+  attributes: Array<{ name: string; value: string }>;
+  price?: number;
+  image?: string;
+}
+
 interface CartLineItem {
   key: string;
   cartItemId?: Id<"cartItems">;
   productId: string;
   quantity: number;
   selectedShipping: { name: string; price: number };
+  selectedVariant?: SelectedVariant;
+  selectedVariantOptions?: Array<{ name: string; value: string; sku?: string; priceDelta?: number }>;
+  selectedAddOns?: Array<{ name: string; description?: string; price: number }>;
+  lineUnitPrice: number;
   product: {
     _id: string;
     title: string;
@@ -113,6 +125,10 @@ export default function CartPage() {
         productId: string;
         quantity: number;
         selectedShipping: { name: string; price: number };
+        selectedVariant?: SelectedVariant;
+        selectedVariantOptions?: Array<{ name: string; value: string; sku?: string; priceDelta?: number }>;
+        selectedAddOns?: Array<{ name: string; description?: string; price: number }>;
+        lineUnitPrice?: number;
         product: {
           _id: string;
           title: string;
@@ -132,13 +148,21 @@ export default function CartPage() {
         productId: item.productId,
         quantity: item.quantity,
         selectedShipping: item.selectedShipping,
+        selectedVariant: item.selectedVariant,
+        selectedVariantOptions: item.selectedVariantOptions,
+        selectedAddOns: item.selectedAddOns,
+        lineUnitPrice: item.lineUnitPrice ?? item.product.price,
         product: item.product,
       }))
     : guestCartItems.map((item) => ({
-        key: item.productId,
+        key: item.customizationKey ?? item.productId,
         productId: item.productId,
         quantity: item.quantity,
         selectedShipping: item.selectedShipping,
+        selectedVariant: item.selectedVariant,
+        selectedVariantOptions: item.selectedVariantOptions,
+        selectedAddOns: item.selectedAddOns,
+        lineUnitPrice: item.product.price,
         product: item.product,
       }));
   const cartSummary = isSignedIn
@@ -152,7 +176,7 @@ export default function CartPage() {
 
   const handleQuantityChange = async (item: CartLineItem, newQuantity: number) => {
     if (!isSignedIn) {
-      updateGuestQuantity(item.productId, newQuantity);
+      updateGuestQuantity(item.key, newQuantity);
       return;
     }
 
@@ -176,7 +200,7 @@ export default function CartPage() {
     shippingPrice: number
   ) => {
     if (!isSignedIn) {
-      updateGuestShipping(item.productId, {
+      updateGuestShipping(item.key, {
         name: shippingName,
         price: shippingPrice,
       });
@@ -198,7 +222,7 @@ export default function CartPage() {
 
   const handleRemoveItem = async (item: CartLineItem) => {
     if (!isSignedIn) {
-      removeGuestItem(item.productId);
+      removeGuestItem(item.key);
       toast.success("Item removed from cart");
       return;
     }
@@ -347,9 +371,9 @@ export default function CartPage() {
                   <Link href={ROUTES.PRODUCT(item.product._id)} className="shrink-0">
                     <div className="h-24 w-24 overflow-hidden rounded-lg bg-muted">
                       <img
-                        src={item.product.images?.[0] || "/placeholder.png"}
+                        src={item.selectedVariant?.image || item.product.images?.[0] || "/placeholder.png"}
                         alt={item.product.title}
-                        className="h-full w-full object-cover"
+                        className="h-full w-full object-contain"
                       />
                     </div>
                   </Link>
@@ -366,8 +390,27 @@ export default function CartPage() {
                       Store: {item.product.sellerName}
                     </p>
                     <p className="font-semibold text-primary mt-2">
-                      {formatZMW(item.product.price)}
+                      {formatZMW(item.lineUnitPrice)}
                     </p>
+                    {item.selectedVariant?.attributes?.length ? (
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {item.selectedVariant.attributes
+                          .map((attribute) => `${attribute.name}: ${attribute.value}`)
+                          .join(" • ")}
+                      </p>
+                    ) : null}
+                    {item.selectedVariant?.sku ? (
+                      <p className="text-xs text-muted-foreground">
+                        SKU: {item.selectedVariant.sku}
+                      </p>
+                    ) : null}
+                    {item.selectedVariantOptions && item.selectedVariantOptions.length > 0 ? (
+                      <p className="mt-1 text-sm text-muted-foreground">
+                        {item.selectedVariantOptions
+                          .map((option) => `${option.name}: ${option.value}`)
+                          .join(" • ")}
+                      </p>
+                    ) : null}
 
                     {/* Shipping Option */}
                     {item.product.shippingOptions && item.product.shippingOptions.length > 0 && (
@@ -439,7 +482,7 @@ export default function CartPage() {
 
                     {/* Item Total */}
                     <p className="font-semibold">
-                      {formatZMW(item.product.price * item.quantity)}
+                      {formatZMW(item.lineUnitPrice * item.quantity)}
                     </p>
 
                     {/* Remove Button */}

@@ -23,6 +23,7 @@ const convexRoot = path.resolve(monorepoRoot, 'convex');
 
 // 1. Watch the monorepo folders Metro must follow outside the app root
 config.watchFolders = [
+  ...(config.watchFolders || []),
   convexRoot,
   sharedPackageRoot,
 ];

@@ -13,6 +13,7 @@ import {
   TrendingUp,
   TrendingDown,
   ArrowRight,
+  ClipboardCheck,
 } from "lucide-react";
 import { useQuery } from "convex/react";
 import { api } from "../../../../../../convex/_generated/api";
@@ -37,6 +38,12 @@ export default function AdminDashboard() {
     api.disputes.getDisputeStats,
     user?._id ? { adminId: user._id } : "skip"
   );
+  const pendingListings = useQuery(
+    api.products.getPendingReviewListings,
+    user?._id
+      ? { reviewerId: user._id, status: "pending_review" }
+      : "skip"
+  );
 
   // Get open disputes
   const openDisputes = useQuery(
@@ -44,7 +51,8 @@ export default function AdminDashboard() {
     user?._id ? { moderatorId: user._id } : "skip"
   );
 
-  const isLoading = !orderStats || !escrowStats || !disputeStats;
+  const isLoading =
+    !orderStats || !escrowStats || !disputeStats || !pendingListings;
 
   const stats = [
     {
@@ -78,6 +86,20 @@ export default function AdminDashboard() {
       href: ROUTES.ADMIN_DISPUTES,
     },
     {
+      title: "Pending Listings",
+      value: pendingListings?.length ?? 0,
+      icon: ClipboardCheck,
+      change:
+        pendingListings && pendingListings.length > 0
+          ? "Approve now"
+          : "All clear",
+      trend:
+        pendingListings && pendingListings.length > 0
+          ? ("down" as const)
+          : ("up" as const),
+      href: ROUTES.ADMIN_LISTING_REVIEW,
+    },
+    {
       title: "Escrow Balance",
       value: formatZMW(escrowStats?.totalGrossHeld ?? 0),
       icon: Wallet,
@@ -100,7 +122,7 @@ export default function AdminDashboard() {
       {/* Stats Grid */}
       <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-4">
         {isLoading
-          ? Array.from({ length: 4 }).map((_, i) => (
+          ? Array.from({ length: 5 }).map((_, i) => (
               <Card key={i}>
                 <CardHeader className="flex flex-row items-center justify-between pb-2">
                   <Skeleton className="h-4 w-24" />
@@ -256,12 +278,12 @@ export default function AdminDashboard() {
                 className="h-auto justify-start py-4"
                 asChild
               >
-                <Link href={ROUTES.ADMIN_PRODUCTS}>
-                  <Package className="mr-2 h-5 w-5" />
+                <Link href={ROUTES.ADMIN_LISTING_REVIEW}>
+                  <ClipboardCheck className="mr-2 h-5 w-5" />
                   <div className="text-left">
-                    <div className="font-medium">Product Listings</div>
+                    <div className="font-medium">Approve Listings</div>
                     <div className="text-xs text-muted-foreground">
-                      Review and moderate products
+                      Publish pending products to the store
                     </div>
                   </div>
                 </Link>

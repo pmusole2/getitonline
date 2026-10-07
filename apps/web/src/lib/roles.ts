@@ -1,5 +1,16 @@
 import type { UserRole } from "@/types";
 
+export const PRD_ROLE_LABELS: Record<UserRole, string> = {
+  user: "Customer",
+  catalog_manager: "Product Uploader",
+  moderator: "Reviewer-Approver",
+  admin: "Super Admin",
+};
+
+export function getRoleLabel(role?: UserRole | null) {
+  return role ? PRD_ROLE_LABELS[role] : "Customer";
+}
+
 export function canManageCatalog(role?: UserRole | null) {
   return role === "admin" || role === "catalog_manager";
 }

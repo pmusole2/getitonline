@@ -34,6 +34,7 @@ export const productStatusValidator = v.union(
   v.literal("draft"),
   v.literal("pending_review"),
   v.literal("changes_requested"),
+  v.literal("rejected"),
   v.literal("active"),
   v.literal("sold"),
   v.literal("suspended")
@@ -43,6 +44,7 @@ export type AppProductStatus =
   | "draft"
   | "pending_review"
   | "changes_requested"
+  | "rejected"
   | "active"
   | "sold"
   | "suspended";
@@ -101,6 +103,23 @@ type ProductDoc = {
   _id: Id<"products">;
   sellerId: Id<"users">;
 };
+
+export function normalizeOptionalExternalUrl(value?: string) {
+  const trimmed = value?.trim();
+  if (!trimmed) return undefined;
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return trimmed;
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
 
 type ListingActorContext =
   | {
@@ -391,12 +410,12 @@ export async function getSellerDisplayInfo(
       displayName: vendorProfile.storeName,
       isCompanyStore: false,
       isVendorStore: true,
-      bannerUrl: vendorProfile.bannerUrl,
+      bannerUrl: normalizeOptionalExternalUrl(vendorProfile.bannerUrl),
       slug: vendorProfile.slug,
       vendorStatus: vendorProfile.status,
       seller: {
         ...seller,
-        avatar: vendorProfile.logoUrl ?? seller.avatar,
+        avatar: normalizeOptionalExternalUrl(vendorProfile.logoUrl) ?? seller.avatar,
       },
     };
   }

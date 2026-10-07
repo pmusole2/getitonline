@@ -1,6 +1,6 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from 'convex/react';
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { ActivityIndicator, FlatList, Pressable, StyleSheet, View } from 'react-native';
 import { Chip, SegmentedButtons, Surface, Text, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown } from 'react-native-reanimated';
@@ -12,6 +12,7 @@ import { formatPrice } from '../../theme';
 import type { DisputeCategory, DisputeStatus, Id, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Disputes'>;
+type DisputeViewMode = 'buyer' | 'seller' | 'staff';
 
 interface Dispute {
   _id: Id<'disputes'>;
@@ -69,7 +70,7 @@ function DisputeItem({
   dispute: Dispute;
   index: number;
   onPress: () => void;
-  viewAs: 'buyer' | 'seller';
+  viewAs: DisputeViewMode;
 }) {
   const theme = useTheme();
 
@@ -84,10 +85,18 @@ function DisputeItem({
     return colors[status];
   };
 
-  const otherParty = viewAs === 'buyer' ? dispute.seller : dispute.buyer;
-  const otherPartyName = otherParty
-    ? `${otherParty.firstName} ${otherParty.lastName}`
-    : 'Unknown';
+  const buyerName = dispute.buyer
+    ? `${dispute.buyer.firstName} ${dispute.buyer.lastName}`
+    : 'Unknown buyer';
+  const sellerName = dispute.seller
+    ? `${dispute.seller.firstName} ${dispute.seller.lastName}`
+    : 'Unknown seller';
+  const counterpartyLabel =
+    viewAs === 'buyer'
+      ? `Seller: ${sellerName}`
+      : viewAs === 'seller'
+        ? `Buyer: ${buyerName}`
+        : `Buyer: ${buyerName} • Seller: ${sellerName}`;
 
   return (
     <Animated.View entering={FadeInDown.delay(index * 50).duration(300)}>
@@ -140,7 +149,7 @@ function DisputeItem({
             variant="bodySmall"
             style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
           >
-            {viewAs === 'buyer' ? 'Seller' : 'Buyer'}: {otherPartyName}
+            {counterpartyLabel}
           </Text>
 
           <View style={styles.footer}>
@@ -171,7 +180,8 @@ function DisputeItem({
 export default function DisputesListScreen({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
-  const [viewAs, setViewAs] = useState<'buyer' | 'seller'>('buyer');
+  const isStaffViewer = user?.role === 'moderator' || user?.role === 'admin';
+  const [viewAs, setViewAs] = useState<DisputeViewMode>(isStaffViewer ? 'staff' : 'buyer');
 
   const buyerDisputes = useQuery(
     api.disputes.getBuyerDisputes,
@@ -182,8 +192,26 @@ export default function DisputesListScreen({ navigation }: Props) {
     api.disputes.getSellerDisputes,
     user ? { sellerId: user._id } : 'skip'
   ) as Dispute[] | undefined;
+  const staffDisputes = useQuery(
+    api.disputes.getOpenDisputes,
+    user?._id && isStaffViewer ? { moderatorId: user._id } : 'skip'
+  ) as Dispute[] | undefined;
 
-  const disputes = viewAs === 'buyer' ? buyerDisputes : sellerDisputes;
+  useEffect(() => {
+    if (isStaffViewer) {
+      setViewAs('staff');
+      return;
+    }
+
+    setViewAs('buyer');
+  }, [isStaffViewer]);
+
+  const disputes =
+    viewAs === 'buyer'
+      ? buyerDisputes
+      : viewAs === 'seller'
+        ? sellerDisputes
+        : staffDisputes;
 
   const handleDisputePress = (dispute: Dispute) => {
     navigation.navigate('DisputeDetail', { disputeId: dispute._id });
@@ -196,6 +224,7 @@ export default function DisputesListScreen({ navigation }: Props) {
   const sellerActiveCount = sellerDisputes?.filter(
     (d) => !['resolved', 'closed'].includes(d.status)
   ).length || 0;
+  const staffActiveCount = staffDisputes?.length || 0;
 
   // Loading
   if (disputes === undefined) {
@@ -217,7 +246,7 @@ export default function DisputesListScreen({ navigation }: Props) {
       <View style={styles.toggleContainer}>
         <SegmentedButtons
           value={viewAs}
-          onValueChange={(value) => setViewAs(value as 'buyer' | 'seller')}
+          onValueChange={(value) => setViewAs(value as DisputeViewMode)}
           buttons={[
             {
               value: 'buyer',
@@ -229,6 +258,15 @@ export default function DisputesListScreen({ navigation }: Props) {
               label: `As Seller${sellerActiveCount > 0 ? ` (${sellerActiveCount})` : ''}`,
               icon: 'store',
             },
+            ...(isStaffViewer
+              ? [
+                  {
+                    value: 'staff',
+                    label: `Staff${staffActiveCount > 0 ? ` (${staffActiveCount})` : ''}`,
+                    icon: 'shield-account-outline',
+                  },
+                ]
+              : []),
           ]}
         />
       </View>
@@ -257,7 +295,9 @@ export default function DisputesListScreen({ navigation }: Props) {
             >
               {viewAs === 'buyer'
                 ? "You haven't opened any disputes"
-                : "No disputes have been opened against your orders"}
+                : viewAs === 'seller'
+                  ? 'No disputes have been opened against your orders'
+                  : 'No active disputes currently need staff attention'}
             </Text>
           </Surface>
         </View>

@@ -91,7 +91,7 @@ export function useOrderTotal(
  */
 export function formatZMW(amount: number): string {
   return `K${amount.toLocaleString('en-ZM', {
-    minimumFractionDigits: 2,
+    minimumFractionDigits: Number.isInteger(amount) ? 0 : 2,
     maximumFractionDigits: 2,
   })}`;
 }

@@ -1,5 +1,8 @@
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
 import { mutation, query, internalMutation } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
+import { ensureAdminActor } from "./lib/platform";
 
 // Generate unique transaction reference
 function generateReference(): string {
@@ -8,10 +11,115 @@ function generateReference(): string {
   return `TXN-${timestamp}-${random}`;
 }
 
+function createAdminTransactionCounts() {
+  return {
+    all: 0,
+    pending: 0,
+    processing: 0,
+    successful: 0,
+    failed: 0,
+    cancelled: 0,
+    refunded: 0,
+  };
+}
+
+function createAdminTransactionTypeCounts() {
+  return {
+    all: 0,
+    collection: 0,
+    transfer: 0,
+    refund: 0,
+  };
+}
+
+function isTopUpMetadata(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object") {
+    return false;
+  }
+
+  if (!("topUp" in metadata)) {
+    return false;
+  }
+
+  return metadata.topUp === true;
+}
+
+function getCheckoutOrderIds(metadata: unknown) {
+  if (!metadata || typeof metadata !== "object") {
+    return [];
+  }
+
+  const candidate = "checkoutOrderIds" in metadata
+    ? metadata.checkoutOrderIds
+    : "orderIds" in metadata
+      ? metadata.orderIds
+      : undefined;
+
+  if (!Array.isArray(candidate)) {
+    return [];
+  }
+
+  return candidate.filter((id): id is string => typeof id === "string");
+}
+
+async function markOrderPaidAndCreateEscrow(
+  ctx: MutationCtx,
+  orderId: Id<"orders">,
+  now: number,
+  gatewayFee?: number
+) {
+  const order = await ctx.db.get(orderId);
+  if (!order) {
+    console.error(`❌ Order not found for aggregate payment: ${orderId}`);
+    return;
+  }
+
+  await ctx.db.patch(order._id, {
+    status: "paid",
+    updatedAt: now,
+  });
+
+  const existingEscrow = await ctx.db
+    .query("escrow")
+    .withIndex("by_order", (q) => q.eq("orderId", order._id))
+    .first();
+
+  if (existingEscrow) {
+    return;
+  }
+
+  const grossAmount = order.totalAmount;
+  const platformFee = order.platformFee || 0;
+  const sellerAmount = order.sellerPayout || order.subtotal + order.shippingCost;
+
+  await ctx.db.insert("escrow", {
+    orderId: order._id,
+    buyerId: order.buyerId,
+    sellerId: order.sellerId,
+    grossAmount,
+    platformFee,
+    sellerAmount,
+    amount: grossAmount,
+    status: "held",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await ctx.db.insert("notifications", {
+    userId: order.sellerId,
+    type: "payment_received",
+    title: "Payment Received",
+    message: `Payment received for order ${order.orderNumber}. K${sellerAmount.toLocaleString()} will be released after delivery confirmation.`,
+    data: { orderId: order._id, gatewayFee },
+    isRead: false,
+    createdAt: now,
+  });
+}
+
 // Create a new transaction (for initiating payment)
 export const createTransaction = mutation({
   args: {
-    orderId: v.id("orders"),
+    orderId: v.optional(v.id("orders")),
     userId: v.id("users"),
     type: v.union(
       v.literal("collection"),
@@ -31,13 +139,14 @@ export const createTransaction = mutation({
       v.union(v.literal("mtn"), v.literal("airtel"), v.literal("zamtel"))
     ),
     mobileNumber: v.optional(v.string()),
+    metadata: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
     if (!user) throw new Error("User not found");
 
-    const order = await ctx.db.get(args.orderId);
-    if (!order) throw new Error("Order not found");
+    const order = args.orderId ? await ctx.db.get(args.orderId) : null;
+    if (args.orderId && !order) throw new Error("Order not found");
 
     const reference = generateReference();
     const now = Date.now();
@@ -53,7 +162,10 @@ export const createTransaction = mutation({
       amount: args.amount,
       currency: args.currency,
       status: "pending",
-      description: args.description || `Payment for order ${order.orderNumber}`,
+      description:
+        args.description ||
+        (order ? `Payment for order ${order.orderNumber}` : "Checkout payment"),
+      metadata: args.metadata,
       initiatedAt: now,
       createdAt: now,
       updatedAt: now,
@@ -295,9 +407,23 @@ export const updateTransactionByLencoId = mutation({
       console.log(`✅ Processing successful payment for transaction: ${transaction._id}`);
       console.log(`📦 Order ID: ${transaction.orderId || 'N/A (top-up)'}`);
 
-      // Skip escrow handling for top-ups (no orderId)
+      const checkoutOrderIds = getCheckoutOrderIds(
+        transaction.metadata ?? args.metadata
+      ).map((orderId) => orderId as Id<"orders">);
+
+      if (!transaction.orderId && checkoutOrderIds.length > 0) {
+        await Promise.all(
+          checkoutOrderIds.map((orderId) =>
+            markOrderPaidAndCreateEscrow(ctx, orderId, now, args.fee)
+          )
+        );
+        console.log(`🎉 Aggregate payment processing complete for ${checkoutOrderIds.length} orders`);
+        return await ctx.db.get(transaction._id);
+      }
+
+      // Skip escrow handling for top-ups or transactions without order context.
       if (!transaction.orderId) {
-        console.log(`ℹ️ No order ID - skipping escrow (top-up transaction)`);
+        console.log(`ℹ️ No order ID - skipping escrow`);
         return await ctx.db.get(transaction._id);
       }
 
@@ -474,6 +600,72 @@ export const getUserTransactions = query({
         };
       })
     );
+  },
+});
+
+export const listTransactionsForAdmin = query({
+  args: { adminId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ensureAdminActor(ctx, args.adminId);
+
+    const allTransactions = await ctx.db.query("transactions").collect();
+    const counts = createAdminTransactionCounts();
+    const typeCounts = createAdminTransactionTypeCounts();
+
+    for (const transaction of allTransactions) {
+      counts.all += 1;
+      counts[transaction.status] += 1;
+      typeCounts.all += 1;
+      typeCounts[transaction.type] += 1;
+    }
+
+    const items = await Promise.all(
+      [...allTransactions]
+        .sort((left, right) => right.createdAt - left.createdAt)
+        .map(async (transaction) => {
+          const [user, order] = await Promise.all([
+            ctx.db.get(transaction.userId),
+            transaction.orderId ? ctx.db.get(transaction.orderId) : null,
+          ]);
+
+          const metadata: unknown = transaction.metadata;
+
+          return {
+            _id: transaction._id,
+            reference: transaction.reference,
+            orderId: transaction.orderId,
+            orderNumber: order?.orderNumber,
+            orderStatus: order?.status,
+            userId: transaction.userId,
+            userName: user
+              ? `${user.firstName} ${user.lastName}`.trim()
+              : "Unknown user",
+            userEmail: user?.email ?? "",
+            type: transaction.type,
+            paymentMethod: transaction.paymentMethod,
+            mobileMoneyProvider: transaction.mobileMoneyProvider,
+            amount: transaction.amount,
+            platformFee: transaction.platformFee,
+            gatewayFee: transaction.gatewayFee ?? transaction.fee,
+            netAmount: transaction.netAmount,
+            sellerPayout: transaction.sellerPayout,
+            currency: transaction.currency,
+            status: transaction.status,
+            description: transaction.description ?? "",
+            initiatedAt: transaction.initiatedAt,
+            createdAt: transaction.createdAt,
+            updatedAt: transaction.updatedAt,
+            completedAt: transaction.completedAt,
+            isTopUp: isTopUpMetadata(metadata),
+          };
+        })
+    );
+
+    return {
+      items,
+      counts,
+      typeCounts,
+    };
   },
 });
 

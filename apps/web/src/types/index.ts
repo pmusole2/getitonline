@@ -40,6 +40,7 @@ export type ProductStatus =
   | "draft"
   | "pending_review"
   | "changes_requested"
+  | "rejected"
   | "active"
   | "sold"
   | "suspended";

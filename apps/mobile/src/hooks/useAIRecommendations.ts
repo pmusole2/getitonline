@@ -7,6 +7,7 @@ import { useQuery } from 'convex/react';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../../../convex/_generated/api';
 import { useAppAuth } from '../context/AuthProvider';
+import { hasAIConsent } from '../services/aiConsent';
 import { apiService } from '../services/api';
 import type { Product } from '../types';
 
@@ -54,6 +55,12 @@ export function useAIRecommendations(
     setError(null);
 
     try {
+      if (!(await hasAIConsent())) {
+        setRecommendedIds([]);
+        setReasoning(null);
+        return;
+      }
+
       const response = await apiService.getRecommendations({
         userId: user._id,
         limit,
@@ -130,6 +137,11 @@ export function useSimilarProducts(
       setError(null);
 
       try {
+        if (!(await hasAIConsent())) {
+          setSimilarIds([]);
+          return;
+        }
+
         const ids = await apiService.getSimilarProducts({
           productId,
           limit,

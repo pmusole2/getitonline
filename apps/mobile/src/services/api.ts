@@ -5,6 +5,7 @@
 
 import Constants from 'expo-constants';
 import { Platform } from 'react-native';
+import { requireAIConsent } from './aiConsent';
 
 // Helper to get the correct API URL for the current environment
 function getApiUrl(): string {
@@ -50,6 +51,10 @@ export interface GetSimilarProductsRequest {
   limit?: number;
 }
 
+export interface VisualSearchRequest {
+  imageDataUrl: string;
+}
+
 export interface RephraseMessageRequest {
   message: string;
   senderRole: 'buyer' | 'seller' | 'moderator';
@@ -71,6 +76,17 @@ export interface GenerateResolutionMessageRequest {
   refundAmount?: number;
 }
 
+export interface ModerateListingRequest {
+  reviewerId: string;
+  productId: string;
+  title: string;
+  description: string;
+  price: number;
+  quantity: number;
+  imageUrls: string[];
+  categoryName?: string;
+}
+
 export interface ChatRequest {
   message: string;
   conversationHistory?: Array<{
@@ -89,6 +105,11 @@ export interface ChatRequest {
 export interface RecommendationsResponse {
   productIds: string[];
   reasoning: string;
+}
+
+export interface VisualSearchResponse {
+  query: string;
+  terms: string[];
 }
 
 export interface RephraseResponse {
@@ -138,6 +159,12 @@ export interface ApiHealthResponse {
   status: string;
   aiConfigured: boolean;
   timestamp: string;
+}
+
+export interface ModerateListingResponse {
+  status: string;
+  summary?: string;
+  flags?: string[];
 }
 
 // Error Type
@@ -249,15 +276,25 @@ class ApiService {
   // AI ENDPOINTS
   // ============================================================================
 
+  private async requestAI<T>(
+    endpoint: string,
+    request: Record<string, unknown>,
+  ): Promise<T> {
+    await requireAIConsent();
+    return this.request<T>(endpoint, {
+      method: 'POST',
+      body: JSON.stringify(request),
+    });
+  }
+
   /**
    * Get personalized product recommendations for a user
    */
   async getRecommendations(
     request: GetRecommendationsRequest
   ): Promise<RecommendationsResponse> {
-    return this.request<RecommendationsResponse>('/ai/recommendations', {
-      method: 'POST',
-      body: JSON.stringify(request),
+    return this.requestAI<RecommendationsResponse>('/ai/recommendations', {
+      ...request,
     });
   }
 
@@ -267,9 +304,19 @@ class ApiService {
   async getSimilarProducts(
     request: GetSimilarProductsRequest
   ): Promise<string[]> {
-    return this.request<string[]>('/ai/similar-products', {
-      method: 'POST',
-      body: JSON.stringify(request),
+    return this.requestAI<string[]>('/ai/similar-products', {
+      ...request,
+    });
+  }
+
+  /**
+   * Generate product search terms from a captured image
+   */
+  async visualSearch(
+    request: VisualSearchRequest
+  ): Promise<VisualSearchResponse> {
+    return this.requestAI<VisualSearchResponse>('/ai/visual-search', {
+      ...request,
     });
   }
 
@@ -279,9 +326,8 @@ class ApiService {
   async rephraseMessage(
     request: RephraseMessageRequest
   ): Promise<RephraseResponse> {
-    return this.request<RephraseResponse>('/ai/rephrase-message', {
-      method: 'POST',
-      body: JSON.stringify(request),
+    return this.requestAI<RephraseResponse>('/ai/rephrase-message', {
+      ...request,
     });
   }
 
@@ -291,9 +337,19 @@ class ApiService {
   async analyzeDispute(
     request: AnalyzeDisputeRequest
   ): Promise<DisputeAnalysisResponse> {
-    return this.request<DisputeAnalysisResponse>('/ai/analyze-dispute', {
-      method: 'POST',
-      body: JSON.stringify(request),
+    return this.requestAI<DisputeAnalysisResponse>('/ai/analyze-dispute', {
+      ...request,
+    });
+  }
+
+  /**
+   * Run AI moderation for a listing review item
+   */
+  async moderateListing(
+    request: ModerateListingRequest
+  ): Promise<ModerateListingResponse> {
+    return this.requestAI<ModerateListingResponse>('/ai/moderate-listing', {
+      ...request,
     });
   }
 
@@ -303,9 +359,8 @@ class ApiService {
   async generateResolutionMessage(
     request: GenerateResolutionMessageRequest
   ): Promise<{ message: string }> {
-    return this.request<{ message: string }>('/ai/generate-resolution-message', {
-      method: 'POST',
-      body: JSON.stringify(request),
+    return this.requestAI<{ message: string }>('/ai/generate-resolution-message', {
+      ...request,
     });
   }
 
@@ -313,9 +368,8 @@ class ApiService {
    * General AI chat for the assistant
    */
   async chat(request: ChatRequest): Promise<ChatResponse> {
-    return this.request<ChatResponse>('/ai/chat', {
-      method: 'POST',
-      body: JSON.stringify(request),
+    return this.requestAI<ChatResponse>('/ai/chat', {
+      ...request,
     });
   }
 
@@ -327,13 +381,10 @@ class ApiService {
     respondAs: 'buyer' | 'seller' | 'moderator',
     disputeContext: string
   ): Promise<string[]> {
-    return this.request<string[]>('/ai/suggest-responses', {
-      method: 'POST',
-      body: JSON.stringify({
-        conversationHistory,
-        respondAs,
-        disputeContext,
-      }),
+    return this.requestAI<string[]>('/ai/suggest-responses', {
+      conversationHistory,
+      respondAs,
+      disputeContext,
     });
   }
 

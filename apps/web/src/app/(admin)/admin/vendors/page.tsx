@@ -42,7 +42,7 @@ export default function AdminVendorsPage() {
           <CardTitle>Access Restricted</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          Only admins can review vendor applications.
+          Only Super Admins can review vendor applications.
         </CardContent>
       </Card>
     );

@@ -14,6 +14,8 @@ import { Request } from 'express';
 import { ConvexService } from '../convex/convex.service';
 import {
   InitiateCardPaymentDto,
+  InitiateCheckoutCardPaymentDto,
+  InitiateCheckoutMobileMoneyPaymentDto,
   InitiateMobileMoneyPaymentDto,
   LencoWebhookPayload,
   PaymentInitiationResponseDto,
@@ -181,6 +183,148 @@ export class PaymentsController {
     }
   }
 
+  @Post('checkout/mobile-money')
+  async initiateCheckoutMobileMoneyPayment(
+    @Body() dto: InitiateCheckoutMobileMoneyPaymentDto,
+  ): Promise<PaymentInitiationResponseDto> {
+    if (!this.lencoService.isConfigured()) {
+      throw new HttpException(
+        'Payment gateway not configured',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    try {
+      const metadata = {
+        checkoutOrderIds: dto.orderIds,
+        userId: dto.userId,
+      };
+      const transaction = await this.convexService.createTransaction({
+        userId: dto.userId,
+        type: 'collection',
+        paymentMethod: 'mobile_money',
+        amount: dto.amount,
+        currency: 'ZMW',
+        description: dto.description || 'Getitonline checkout payment',
+        mobileMoneyProvider: dto.provider,
+        mobileNumber: dto.mobileNumber,
+        metadata,
+      });
+
+      const operatorMap: Record<string, 'mtn' | 'airtel' | 'zamtel'> = {
+        mtn: 'mtn',
+        airtel: 'airtel',
+        zamtel: 'zamtel',
+      };
+
+      const lencoResponse = await this.lencoService.collectMobileMoney({
+        amount: dto.amount,
+        currency: 'ZMW',
+        narration: dto.description || 'Getitonline checkout payment',
+        phone: dto.mobileNumber,
+        operator: operatorMap[dto.provider],
+        reference: transaction.reference,
+        metadata: {
+          ...metadata,
+          transactionId: transaction.transactionId,
+        },
+      });
+
+      await this.convexService.updateTransactionLencoIds({
+        transactionId: transaction.transactionId,
+        lencoCollectionId: lencoResponse.data.id,
+        status: 'processing',
+      });
+
+      return {
+        success: true,
+        transactionId: transaction.transactionId,
+        reference: transaction.reference,
+        status: TransactionStatus.PROCESSING,
+        ussdPrompt: true,
+        message: 'Please approve the checkout payment on your phone',
+      };
+    } catch (error) {
+      console.error('Checkout mobile money payment error:', error);
+
+      if (error instanceof HttpException) throw error;
+
+      throw new HttpException(
+        'Failed to initiate checkout payment',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('checkout/card')
+  async initiateCheckoutCardPayment(
+    @Body() dto: InitiateCheckoutCardPaymentDto,
+  ): Promise<PaymentInitiationResponseDto> {
+    if (!this.lencoService.isConfigured()) {
+      throw new HttpException(
+        'Payment gateway not configured',
+        HttpStatus.SERVICE_UNAVAILABLE,
+      );
+    }
+
+    try {
+      const metadata = {
+        checkoutOrderIds: dto.orderIds,
+        userId: dto.userId,
+      };
+      const transaction = await this.convexService.createTransaction({
+        userId: dto.userId,
+        type: 'collection',
+        paymentMethod: 'card',
+        amount: dto.amount,
+        currency: 'ZMW',
+        description: dto.description || 'Getitonline checkout payment',
+        metadata,
+      });
+
+      const callbackUrl =
+        dto.callbackUrl ||
+        `${process.env.APP_URL || 'https://gettitonline.com'}/payment/callback`;
+
+      const lencoResponse = await this.lencoService.collectCard({
+        amount: dto.amount,
+        currency: 'ZMW',
+        narration: dto.description || 'Getitonline checkout payment',
+        email: dto.email,
+        reference: transaction.reference,
+        callbackUrl,
+        metadata: {
+          ...metadata,
+          transactionId: transaction.transactionId,
+        },
+      });
+
+      await this.convexService.updateTransactionLencoIds({
+        transactionId: transaction.transactionId,
+        lencoCollectionId: lencoResponse.data.id,
+        status: 'processing',
+      });
+
+      return {
+        success: true,
+        transactionId: transaction.transactionId,
+        reference: transaction.reference,
+        status: TransactionStatus.PROCESSING,
+        paymentUrl: lencoResponse.data.authorizationUrl,
+        message: 'Redirect user to complete checkout payment',
+      };
+    } catch (error) {
+      console.error('Checkout card payment error:', error);
+
+      if (error instanceof HttpException) throw error;
+
+      throw new HttpException(
+        'Failed to initiate checkout payment',
+        HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
   /**
    * Check payment status
    * GET /payments/status/:reference
@@ -279,30 +423,22 @@ export class PaymentsController {
     @Headers('x-lenco-signature') signature: string,
     @Body() payload: LencoWebhookPayload,
   ): Promise<{ received: boolean }> {
-    console.log('📩 Received Lenco webhook:', payload.event);
+    console.log('Received Lenco webhook event:', payload.event);
 
     try {
       const { event, data } = payload;
+      const rawBody = req.rawBody?.toString() || JSON.stringify(payload);
+
+      if (!this.lencoService.verifyWebhookSignature(rawBody, signature)) {
+        console.warn('Invalid webhook signature');
+        throw new HttpException('Invalid signature', HttpStatus.UNAUTHORIZED);
+      }
 
       // Only handle these two events: transfer.successful and collection.successful
       const handledEvents = ['transfer.successful', 'collection.successful'];
       if (!handledEvents.includes(event)) {
-        console.log(`⏭️ Skipping unhandled event: ${event}`);
+        console.log('Skipping unhandled Lenco webhook event:', event);
         return { received: true };
-      }
-
-      // Verify signature only for events we actually handle
-      const rawBody = req.rawBody?.toString() || JSON.stringify(payload);
-      if (!this.lencoService.verifyWebhookSignature(rawBody, signature)) {
-        console.warn('⚠️ Invalid webhook signature');
-        console.log('📋 Signature details:', {
-          event,
-          reference: data.reference,
-          receivedSignature: signature
-            ? signature.substring(0, 20) + '...'
-            : 'missing',
-        });
-        throw new HttpException('Invalid signature', HttpStatus.UNAUTHORIZED);
       }
 
       // Handle collection.successful - for wallet top-ups
@@ -313,19 +449,16 @@ export class PaymentsController {
         };
 
         const status = statusMap[event];
-        console.log(`📋 Event: ${event} -> Status: ${status}`);
+        console.log(`Lenco webhook event ${event} mapped to ${status}`);
 
         if (status) {
           const feeValue =
             typeof data.fee === 'string' ? parseFloat(data.fee) : data.fee;
 
-          console.log(
-            `🔍 Looking up transaction - lencoId: ${data.id}, reference: ${data.reference}`,
-          );
+          console.log('Looking up transaction for Lenco collection webhook');
 
           // Retry with exponential backoff to handle timing issues
           let result: Record<string, unknown> | undefined;
-          let lastError: Error | null = null;
           const maxRetries = 3;
 
           for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -335,7 +468,7 @@ export class PaymentsController {
               await new Promise((resolve) => setTimeout(resolve, delayMs));
 
               console.log(
-                `📍 Attempt ${attempt + 1}/${maxRetries} to find transaction`,
+                `Attempt ${attempt + 1}/${maxRetries} to find transaction`,
               );
               result = (await this.convexService.updateTransactionByLencoId({
                 lencoCollectionId: data.id,
@@ -346,25 +479,16 @@ export class PaymentsController {
                 metadata: data.metadata,
               })) as Record<string, unknown> | undefined;
 
-              console.log(
-                `✅ Transaction ${data.reference} updated to ${status}`,
-              );
-              console.log(
-                `📋 Mutation result:`,
-                JSON.stringify(result, null, 2),
-              );
+              console.log(`Transaction updated to ${status}`);
               break; // Success, exit retry loop
-            } catch (error) {
-              lastError = error as Error;
+            } catch {
               console.error(
-                `⚠️ Attempt ${attempt + 1}/${maxRetries} failed:`,
-                lastError.message,
+                `Attempt ${attempt + 1}/${maxRetries} failed while processing Lenco collection webhook`,
               );
               if (attempt === maxRetries - 1) {
                 // Last attempt failed, log and continue (don't throw)
                 console.error(
-                  `❌ Final attempt failed for ${data.reference}:`,
-                  lastError,
+                  'Final attempt failed while processing Lenco collection webhook',
                 );
               }
             }
@@ -377,7 +501,7 @@ export class PaymentsController {
             !result?.orderId &&
             (result?.metadata as Record<string, unknown>)?.topUp
           ) {
-            console.log(`💰 Crediting wallet for top-up: ${result.reference}`);
+            console.log('Crediting wallet for successful top-up');
             try {
               await this.convexService.creditWallet({
                 userId: result.userId as string,
@@ -389,12 +513,9 @@ export class PaymentsController {
                 description: `Wallet top-up successful - ${data.reference}`,
                 externalReference: data.id,
               });
-              console.log(`✅ Wallet credited for ${result.reference}`);
-            } catch (walletError) {
-              console.error(
-                `❌ Failed to credit wallet for top-up ${result.reference}:`,
-                walletError,
-              );
+              console.log('Wallet credited for successful top-up');
+            } catch {
+              console.error('Failed to credit wallet for top-up');
               // Continue - don't fail the webhook
             }
           }
@@ -402,14 +523,11 @@ export class PaymentsController {
       }
       // Handle transfer.successful - for wallet withdrawals
       else if (event === 'transfer.successful') {
-        console.log(`📋 Withdrawal Transfer Event: ${event}`);
-        console.log(
-          `🔍 Looking up wallet withdrawal - lencoId: ${data.id}, reference: ${data.reference}`,
-        );
+        console.log(`Lenco withdrawal webhook event: ${event}`);
+        console.log('Looking up wallet withdrawal for Lenco transfer webhook');
 
         // Retry with exponential backoff
         let result: Record<string, unknown> | undefined;
-        let lastError: Error | null = null;
         const maxRetries = 3;
 
         for (let attempt = 0; attempt < maxRetries; attempt++) {
@@ -418,7 +536,7 @@ export class PaymentsController {
             await new Promise((resolve) => setTimeout(resolve, delayMs));
 
             console.log(
-              `📍 Attempt ${attempt + 1}/${maxRetries} to find wallet withdrawal`,
+              `Attempt ${attempt + 1}/${maxRetries} to find wallet withdrawal`,
             );
             // Update wallet transaction by Lenco ID
             result = (await this.convexService.updateWalletTransactionByLencoId(
@@ -430,24 +548,15 @@ export class PaymentsController {
               },
             )) as Record<string, unknown> | undefined;
 
-            console.log(
-              `✅ Wallet withdrawal ${data.reference} marked as completed`,
-            );
-            console.log(
-              `📋 Withdrawal result:`,
-              JSON.stringify(result, null, 2),
-            );
+            console.log('Wallet withdrawal marked as completed');
             break;
-          } catch (error) {
-            lastError = error as Error;
+          } catch {
             console.error(
-              `⚠️ Withdrawal attempt ${attempt + 1}/${maxRetries} failed:`,
-              lastError.message,
+              `Withdrawal attempt ${attempt + 1}/${maxRetries} failed while processing Lenco webhook`,
             );
             if (attempt === maxRetries - 1) {
               console.error(
-                `❌ Final attempt failed for withdrawal ${data.reference}:`,
-                lastError,
+                'Final attempt failed while processing Lenco withdrawal webhook',
               );
             }
           }
@@ -455,19 +564,17 @@ export class PaymentsController {
 
         // Log successful withdrawal completion
         if (result) {
-          console.log(
-            `✅ Withdrawal transfer successful: ${result.transaction}`,
-          );
+          console.log('Withdrawal transfer completed');
         }
       }
 
       return { received: true };
     } catch (error) {
-      console.error('Webhook processing error:', error);
       if (error instanceof HttpException) {
         throw error;
       }
 
+      console.error('Webhook processing error');
       return { received: true };
     }
   }

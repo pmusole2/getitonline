@@ -134,14 +134,7 @@ export class WalletController {
       });
 
       try {
-        console.log(
-          `💳 [Withdrawal] Initiating Lenco mobile money transfer for ${reference}`,
-        );
-        console.log(`💳 [Withdrawal] Request:`, {
-          phone: dto.phone,
-          operator: dto.provider,
-          amount: dto.amount,
-        });
+        console.log('[Withdrawal] Initiating Lenco mobile money transfer');
 
         // Initiate Lenco transfer
         const lencoResponse: LencoTransferResponse =
@@ -153,10 +146,7 @@ export class WalletController {
             narration: `Wallet withdrawal - ${reference}`,
           });
 
-        console.log(`💳 [Withdrawal] Lenco response received:`, {
-          id: lencoResponse.data.id,
-          status: lencoResponse.data.status,
-        });
+        console.log('[Withdrawal] Lenco response received');
 
         // Update transaction with Lenco ID
         await this.convexService.updateWalletTransactionExternal(
@@ -164,9 +154,7 @@ export class WalletController {
           lencoResponse.data.id,
         );
 
-        console.log(
-          `✅ [Withdrawal] Transaction updated with Lenco ID: ${lencoResponse.data.id}`,
-        );
+        console.log('[Withdrawal] Transaction updated with provider response');
 
         return {
           success: true,
@@ -181,14 +169,7 @@ export class WalletController {
         };
       } catch (lencoError) {
         // Lenco transfer failed - reverse the wallet debit
-        console.error('❌ [Withdrawal] Lenco transfer failed:', lencoError);
-        console.error('❌ [Withdrawal] Error details:', {
-          message:
-            lencoError instanceof Error
-              ? lencoError.message
-              : String(lencoError),
-          stack: lencoError instanceof Error ? lencoError.stack : undefined,
-        });
+        console.error('[Withdrawal] Lenco transfer failed');
 
         try {
           await this.convexService.updateWalletWithdrawalStatus(
@@ -201,10 +182,9 @@ export class WalletController {
           console.log(
             `✅ [Withdrawal] Transaction marked as failed and funds reversed`,
           );
-        } catch (updateError) {
+        } catch {
           console.error(
-            '❌ [Withdrawal] Failed to update transaction status:',
-            updateError,
+            '[Withdrawal] Failed to update transaction status after transfer failure',
           );
         }
 
@@ -215,7 +195,7 @@ export class WalletController {
       }
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      console.error('Withdrawal to mobile money failed:', error);
+      console.error('Withdrawal to mobile money failed');
       throw new HttpException(
         'Withdrawal failed',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -270,15 +250,7 @@ export class WalletController {
       });
 
       try {
-        console.log(
-          `💳 [Withdrawal] Initiating Lenco bank transfer for ${reference}`,
-        );
-        console.log(`💳 [Withdrawal] Request:`, {
-          bankCode: dto.bankCode,
-          accountNumber: '****' + dto.accountNumber.slice(-4),
-          accountName: dto.accountName,
-          amount: dto.amount,
-        });
+        console.log('[Withdrawal] Initiating Lenco bank transfer');
 
         // Initiate Lenco transfer
         const lencoResponse: LencoTransferResponse =
@@ -291,10 +263,7 @@ export class WalletController {
             narration: `Wallet withdrawal - ${reference}`,
           });
 
-        console.log(`💳 [Withdrawal] Lenco response received:`, {
-          id: lencoResponse.data.id,
-          status: lencoResponse.data.status,
-        });
+        console.log('[Withdrawal] Lenco response received');
 
         // Update transaction with Lenco ID
         await this.convexService.updateWalletTransactionExternal(
@@ -302,9 +271,7 @@ export class WalletController {
           lencoResponse.data.id,
         );
 
-        console.log(
-          `✅ [Withdrawal] Transaction updated with Lenco ID: ${lencoResponse.data.id}`,
-        );
+        console.log('[Withdrawal] Transaction updated with provider response');
 
         return {
           success: true,
@@ -319,17 +286,7 @@ export class WalletController {
         };
       } catch (lencoError) {
         // Lenco transfer failed - reverse the wallet debit
-        console.error(
-          '❌ [Withdrawal] Lenco bank transfer failed:',
-          lencoError,
-        );
-        console.error('❌ [Withdrawal] Error details:', {
-          message:
-            lencoError instanceof Error
-              ? lencoError.message
-              : String(lencoError),
-          stack: lencoError instanceof Error ? lencoError.stack : undefined,
-        });
+        console.error('[Withdrawal] Lenco bank transfer failed');
 
         try {
           await this.convexService.updateWalletWithdrawalStatus(
@@ -342,10 +299,9 @@ export class WalletController {
           console.log(
             `✅ [Withdrawal] Transaction marked as failed and funds reversed`,
           );
-        } catch (updateError) {
+        } catch {
           console.error(
-            '❌ [Withdrawal] Failed to update transaction status:',
-            updateError,
+            '[Withdrawal] Failed to update transaction status after transfer failure',
           );
         }
 
@@ -356,7 +312,7 @@ export class WalletController {
       }
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      console.error('Withdrawal to bank failed:', error);
+      console.error('Withdrawal to bank failed');
       throw new HttpException(
         'Withdrawal failed',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -459,7 +415,7 @@ export class WalletController {
       }
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      console.error('Top-up failed:', error);
+      console.error('Top-up failed');
       throw new HttpException(
         'Top-up failed',
         HttpStatus.INTERNAL_SERVER_ERROR,
@@ -523,7 +479,7 @@ export class WalletController {
       };
     } catch (error) {
       if (error instanceof HttpException) throw error;
-      console.error('Wallet payment failed:', error);
+      console.error('Wallet payment failed');
       throw new HttpException(
         'Payment failed',
         HttpStatus.INTERNAL_SERVER_ERROR,

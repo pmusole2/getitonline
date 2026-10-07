@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { userRoleValidator } from "./lib/platform";
 
 // Create or update user from Clerk webhook
@@ -250,7 +250,7 @@ export const incrementPurchases = mutation({
 });
 
 // Delete user (for GDPR compliance)
-export const deleteUser = mutation({
+export const deleteUser = internalMutation({
   args: {
     userId: v.id("users"),
     clerkId: v.string(),
@@ -264,6 +264,228 @@ export const deleteUser = mutation({
     // Note: In production, you'd want to handle related data
     // (orders, products, etc.) according to your data retention policy
     await ctx.db.delete(args.userId);
+  },
+});
+
+// Anonymize app-side user data after Clerk confirms account deletion.
+export const anonymizeDeletedUserByClerkId = internalMutation({
+  args: {
+    clerkId: v.string(),
+  },
+  handler: async (ctx, args) => {
+    const user = await ctx.db
+      .query("users")
+      .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkId))
+      .first();
+
+    if (!user) {
+      return { status: "not_found" as const };
+    }
+
+    const now = Date.now();
+    const anonymizedEmail = `deleted-${user._id}@deleted.gettitonline.local`;
+
+    const cartItems = await ctx.db
+      .query("cartItems")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const item of cartItems) {
+      await ctx.db.delete(item._id);
+    }
+
+    const favorites = await ctx.db
+      .query("favorites")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const favorite of favorites) {
+      await ctx.db.delete(favorite._id);
+    }
+
+    const notificationDevices = await ctx.db
+      .query("notificationDevices")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const device of notificationDevices) {
+      await ctx.db.delete(device._id);
+    }
+
+    const notifications = await ctx.db
+      .query("notifications")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const notification of notifications) {
+      await ctx.db.delete(notification._id);
+    }
+
+    const paymentAccounts = await ctx.db
+      .query("paymentAccounts")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const account of paymentAccounts) {
+      await ctx.db.delete(account._id);
+    }
+
+    const loyaltyTransactions = await ctx.db
+      .query("loyaltyTransactions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const transaction of loyaltyTransactions) {
+      await ctx.db.delete(transaction._id);
+    }
+
+    const loyaltyAccounts = await ctx.db
+      .query("loyaltyAccounts")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const account of loyaltyAccounts) {
+      await ctx.db.delete(account._id);
+    }
+
+    const behaviorEvents = await ctx.db
+      .query("behaviorEvents")
+      .withIndex("by_user_created", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const event of behaviorEvents) {
+      await ctx.db.patch(event._id, {
+        userId: undefined,
+        anonymousId: `deleted-user-${user._id}`,
+        metadata: undefined,
+      });
+    }
+
+    const notificationLogs = await ctx.db
+      .query("notificationDeliveryLogs")
+      .withIndex("by_user_created", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const log of notificationLogs) {
+      await ctx.db.delete(log._id);
+    }
+
+    const products = await ctx.db
+      .query("products")
+      .withIndex("by_seller", (q) => q.eq("sellerId", user._id))
+      .collect();
+    for (const product of products) {
+      if (product.status !== "sold") {
+        await ctx.db.patch(product._id, {
+          status: "suspended",
+          reviewNotes: "Seller account was deleted.",
+          updatedAt: now,
+        });
+      }
+    }
+
+    const vendorProfiles = await ctx.db
+      .query("vendorProfiles")
+      .withIndex("by_owner", (q) => q.eq("ownerUserId", user._id))
+      .collect();
+    for (const profile of vendorProfiles) {
+      await ctx.db.patch(profile._id, {
+        storeName: "Deleted Seller",
+        description: "This seller account has been deleted.",
+        contactEmail: anonymizedEmail,
+        contactPhone: undefined,
+        logoUrl: undefined,
+        bannerUrl: undefined,
+        socialLinks: undefined,
+        status: "suspended",
+        reviewNotes: "Owner account was deleted.",
+        updatedAt: now,
+      });
+    }
+
+    const wallets = await ctx.db
+      .query("wallets")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const wallet of wallets) {
+      await ctx.db.patch(wallet._id, {
+        isActive: false,
+        isFrozen: true,
+        freezeReason: "Account deleted",
+        updatedAt: now,
+      });
+    }
+
+    const transactions = await ctx.db
+      .query("transactions")
+      .withIndex("by_user", (q) => q.eq("userId", user._id))
+      .collect();
+    for (const transaction of transactions) {
+      await ctx.db.patch(transaction._id, {
+        mobileNumber: undefined,
+        metadata: undefined,
+        updatedAt: now,
+      });
+    }
+
+    const disputeMessages = await ctx.db
+      .query("messages")
+      .withIndex("by_sender", (q) => q.eq("senderId", user._id))
+      .collect();
+    for (const message of disputeMessages) {
+      await ctx.db.patch(message._id, {
+        content: "Message removed after account deletion.",
+        originalContent: undefined,
+        attachments: undefined,
+      });
+    }
+
+    const conversationMessages = await ctx.db
+      .query("conversationMessages")
+      .withIndex("by_sender", (q) => q.eq("senderId", user._id))
+      .collect();
+    for (const message of conversationMessages) {
+      await ctx.db.patch(message._id, {
+        content: "Message removed after account deletion.",
+        attachments: undefined,
+      });
+    }
+
+    const buyerConversations = await ctx.db
+      .query("conversations")
+      .withIndex("by_buyer", (q) => q.eq("buyerId", user._id))
+      .collect();
+    const sellerConversations = await ctx.db
+      .query("conversations")
+      .withIndex("by_seller", (q) => q.eq("sellerId", user._id))
+      .collect();
+    const conversationIds = new Set([
+      ...buyerConversations.map((conversation) => conversation._id),
+      ...sellerConversations.map((conversation) => conversation._id),
+    ]);
+    for (const conversationId of conversationIds) {
+      await ctx.db.patch(conversationId, {
+        status: "blocked",
+        lastMessagePreview: "Conversation closed after account deletion.",
+        buyerUnreadCount: 0,
+        sellerUnreadCount: 0,
+        updatedAt: now,
+      });
+    }
+
+    await ctx.db.patch(user._id, {
+      clerkId: `deleted:${args.clerkId}`,
+      email: anonymizedEmail,
+      firstName: "Deleted",
+      lastName: "User",
+      phone: undefined,
+      avatar: undefined,
+      interests: undefined,
+      address: undefined,
+      preferences: {
+        themeMode: user.preferences?.themeMode ?? "system",
+        notificationsEnabled: false,
+        language: user.preferences?.language,
+      },
+      isVerified: false,
+      isBanned: true,
+      isDeleted: true,
+      deletedAt: now,
+      updatedAt: now,
+    });
+
+    return { status: "anonymized" as const, userId: user._id };
   },
 });
 

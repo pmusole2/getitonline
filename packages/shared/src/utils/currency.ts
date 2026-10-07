@@ -24,7 +24,7 @@ export function formatZMW(
   const {
     showSymbol = true,
     showCode = false,
-    minimumFractionDigits = 2,
+    minimumFractionDigits = 0,
     maximumFractionDigits = 2,
   } = options;
 

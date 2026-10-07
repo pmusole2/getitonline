@@ -1,25 +1,34 @@
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from 'convex/react';
+import * as ImagePicker from 'expo-image-picker';
+import * as ImageManipulator from 'expo-image-manipulator';
 import React, { useState } from 'react';
-import { Dimensions, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
-import { Chip, Searchbar, Surface, Text, useTheme } from 'react-native-paper';
+import { Alert, Dimensions, Image, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
+import { Chip, IconButton, Searchbar, Surface, Text, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown, SlideInRight } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
-import { AIAssistantFAB, AIAssistantModal, AIInsightCard } from '../../components/ui/AIAssistant';
 import { AnimatedProductCard, ProductGrid } from '../../components/ui/AnimatedProductCard';
 import { TabHeader } from '../../components/ui/Header';
 import { CategoryChipSkeleton, ListSkeleton } from '../../components/ui/Skeleton';
+import { ASSISTANT_NAME } from '../../config/assistant';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useGuestCart } from '../../context/GuestCartProvider';
 import { useAIRecommendations } from '../../hooks/useAIRecommendations';
+import { formatPrice } from '../../theme';
 import type { CategoryTreeItem, RootStackParamList } from '../../types';
 
 const { width } = Dimensions.get('window');
 
 interface Notification {
   isRead: boolean;
+}
+
+function normalizeImageUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  return /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
 }
 
 export default function HomeScreen() {
@@ -29,10 +38,15 @@ export default function HomeScreen() {
   const { summary: guestCartSummary } = useGuestCart();
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
-  const [aiModalVisible, setAIModalVisible] = useState(false);
 
   const categories = useQuery(api.categories.getCategoriesTree);
   const recentProducts = useQuery(api.products.getRecentProducts, { limit: 10 });
+  const trendingProducts = useQuery(api.products.getPopularProducts, { limit: 6 });
+  const monthlyBanners = useQuery(api.promotions.listActiveBanners, { placement: 'home_monthly' });
+  const heroBanners = useQuery(api.promotions.listActiveBanners, { placement: 'home_hero' });
+  const stripBanners = useQuery(api.promotions.listActiveBanners, { placement: 'home_strip' });
+  const deals = useQuery(api.promotions.listActivePromotions, { type: 'deal_of_day', limit: 6 });
+  const monthlyCarouselBanners = monthlyBanners && monthlyBanners.length > 0 ? monthlyBanners : heroBanners;
 
   // AI Recommendations
   const {
@@ -64,6 +78,42 @@ export default function HomeScreen() {
   const handleSearch = () => {
     if (searchQuery.trim()) {
       navigation.navigate('Search', { query: searchQuery });
+    }
+  };
+
+  const handleImageSearch = async () => {
+    const { status } = await ImagePicker.requestCameraPermissionsAsync();
+    if (status !== 'granted') {
+      Alert.alert('Camera permission required', 'Allow camera access to start an image search.');
+      return;
+    }
+
+    const result = await ImagePicker.launchCameraAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.85,
+    });
+
+    const asset = result.canceled ? undefined : result.assets[0];
+    if (asset?.uri) {
+      try {
+        const preparedImage = await ImageManipulator.manipulateAsync(
+          asset.uri,
+          [{ resize: { width: 512 } }],
+          {
+            compress: 0.35,
+            format: ImageManipulator.SaveFormat.JPEG,
+            base64: true,
+          },
+        );
+        navigation.navigate('Search', {
+          imageUri: preparedImage.uri,
+          imageDataUrl: preparedImage.base64
+            ? `data:image/jpeg;base64,${preparedImage.base64}`
+            : undefined,
+        });
+      } catch {
+        navigation.navigate('Search', { imageUri: asset.uri });
+      }
     }
   };
 
@@ -108,11 +158,10 @@ export default function HomeScreen() {
         showCart
         cartCount={cartCount}
         onCartPress={handleCartPress}
+        showAIAssistant
         showNotifications={!!user}
         notificationCount={unreadCount}
         onNotificationPress={handleNotificationPress}
-        showAIAssistant
-        onAIPress={() => setAIModalVisible(true)}
       />
 
       <ScrollView
@@ -130,19 +179,171 @@ export default function HomeScreen() {
             style={[styles.searchBar, { backgroundColor: theme.colors.surfaceVariant }]}
             inputStyle={{ fontSize: 14 }}
             icon="magnify"
+            right={(props) => (
+              <IconButton
+                {...props}
+                icon="camera-outline"
+                onPress={() => void handleImageSearch()}
+                accessibilityLabel="Search by image"
+              />
+            )}
             elevation={0}
           />
         </Animated.View>
 
-        {/* AI Insight Card */}
-        <Animated.View entering={FadeInDown.delay(150).duration(400)} style={styles.aiSection}>
-          <AIInsightCard
-            title="AI Shopping Assistant"
-            description="Ask me about products, track orders, or get help with disputes"
-            icon="robot"
-            onPress={() => setAIModalVisible(true)}
-          />
+        {/* Categories */}
+        <Animated.View entering={FadeInDown.delay(150).duration(400)} style={styles.section}>
+          <View style={styles.sectionHeader}>
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+              Categories
+            </Text>
+            <Pressable onPress={() => navigation.navigate('Browse' as never)}>
+              <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
+                See All
+              </Text>
+            </Pressable>
+          </View>
+
+          {categories === undefined ? (
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoriesContainer}>
+              {[1, 2, 3, 4, 5].map((i) => (
+                <View key={i} style={{ marginRight: 8 }}>
+                  <CategoryChipSkeleton />
+                </View>
+              ))}
+            </ScrollView>
+          ) : (
+            <ScrollView
+              horizontal
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.categoryTilesContainer}
+            >
+              {categories.map((category, index) => (
+                <Animated.View
+                  key={category._id}
+                  entering={SlideInRight.delay(index * 50).duration(300)}
+                  style={styles.categoryTileWrapper}
+                >
+                  <Pressable
+                    onPress={() => handleCategoryPress(category)}
+                    style={[styles.categoryTile, { backgroundColor: theme.colors.surface }]}
+                  >
+                    {category.image ? (
+                      <Image source={{ uri: normalizeImageUrl(category.image) }} style={styles.categoryImage} resizeMode="cover" />
+                    ) : (
+                      <View style={[styles.categoryIconFallback, { backgroundColor: theme.colors.primaryContainer }]}>
+                        <Icon name={getCategoryIcon(category.slug)} size={24} color={theme.colors.primary} />
+                      </View>
+                    )}
+                    <Text
+                      variant="labelMedium"
+                      numberOfLines={2}
+                      style={[styles.categoryTileLabel, { color: theme.colors.onSurface }]}
+                    >
+                      {category.name}
+                    </Text>
+                  </Pressable>
+                </Animated.View>
+              ))}
+            </ScrollView>
+          )}
         </Animated.View>
+
+        {monthlyCarouselBanners && monthlyCarouselBanners.length > 0 && (
+          <Animated.View entering={FadeInDown.delay(165).duration(400)} style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                Monthly Specials
+              </Text>
+              <Text variant="labelSmall" style={{ color: theme.colors.primary }}>
+                Carousel
+              </Text>
+            </View>
+            <ScrollView
+              horizontal
+              pagingEnabled
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.bannerRail}
+            >
+              {monthlyCarouselBanners.slice(0, 5).map((banner) => (
+                <Surface
+                  key={banner._id}
+                  style={[styles.heroBanner, { backgroundColor: theme.colors.surface }]}
+                  elevation={1}
+                >
+                  <Image source={{ uri: normalizeImageUrl(banner.imageUrl) }} style={styles.heroBannerImage} resizeMode="cover" />
+                  <View style={styles.heroBannerOverlay}>
+                    <Text variant="titleMedium" style={styles.heroBannerTitle} numberOfLines={2}>
+                      {banner.title}
+                    </Text>
+                    {banner.subtitle ? (
+                      <Text variant="bodySmall" style={styles.heroBannerSubtitle} numberOfLines={2}>
+                        {banner.subtitle}
+                      </Text>
+                    ) : null}
+                  </View>
+                </Surface>
+              ))}
+            </ScrollView>
+          </Animated.View>
+        )}
+
+        {stripBanners && stripBanners.length > 0 && (
+          <Animated.View entering={FadeInDown.delay(170).duration(400)} style={styles.stripSection}>
+            {stripBanners.slice(0, 1).map((banner) => (
+              <Surface
+                key={banner._id}
+                style={[styles.stripBanner, { backgroundColor: theme.colors.secondaryContainer }]}
+                elevation={0}
+              >
+                <Icon name="bullhorn-outline" size={22} color={theme.colors.secondary} />
+                <View style={{ flex: 1 }}>
+                  <Text variant="titleSmall" style={{ color: theme.colors.onSecondaryContainer }}>
+                    {banner.title}
+                  </Text>
+                  {banner.subtitle ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, marginTop: 2 }}>
+                      {banner.subtitle}
+                    </Text>
+                  ) : null}
+                </View>
+              </Surface>
+            ))}
+          </Animated.View>
+        )}
+
+        {deals && deals.length > 0 && (
+          <Animated.View entering={FadeInDown.delay(172).duration(400)} style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <View style={styles.sectionTitleRow}>
+                <Icon name="flash-outline" size={20} color={theme.colors.error} style={{ marginRight: 8 }} />
+                <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                  Deals of the Day
+                </Text>
+              </View>
+              <Text variant="labelSmall" style={{ color: theme.colors.error }}>
+                Limited time
+              </Text>
+            </View>
+            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.dealsRail}>
+              {deals.map((deal) => (
+                <Surface key={deal._id} style={[styles.dealCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
+                  <Text variant="titleSmall" style={{ color: theme.colors.onSurface }} numberOfLines={2}>
+                    {deal.name}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 6 }}>
+                    {deal.discountType === 'percent'
+                      ? `${deal.discountValue ?? 0}% off`
+                      : deal.discountType === 'fixed_amount'
+                        ? `${formatPrice(deal.discountValue ?? 0)} off`
+                        : 'Compare-at pricing'}
+                  </Text>
+                  <Chip compact style={styles.dealBadge}>{deal.type.replace(/_/g, ' ')}</Chip>
+                </Surface>
+              ))}
+            </ScrollView>
+          </Animated.View>
+        )}
 
         {/* AI Recommendations Section */}
         {user && (
@@ -183,6 +384,7 @@ export default function HomeScreen() {
                     key={product._id}
                     product={product}
                     index={index}
+                    viewerUser={user}
                     onPress={() => handleProductPress(product._id)}
                   />
                 ))}
@@ -200,55 +402,31 @@ export default function HomeScreen() {
           </Animated.View>
         )}
 
-        {/* Categories */}
-        <Animated.View entering={FadeInDown.delay(200).duration(400)} style={styles.section}>
-          <View style={styles.sectionHeader}>
-            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-              Categories
-            </Text>
-            <Pressable onPress={() => navigation.navigate('Browse' as never)}>
-              <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
-                See All
+        {trendingProducts && trendingProducts.length > 0 && (
+          <Animated.View entering={FadeInDown.delay(275).duration(400)} style={styles.section}>
+            <View style={styles.sectionHeader}>
+              <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                Trending Now
               </Text>
-            </Pressable>
-          </View>
-
-          {categories === undefined ? (
-            <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.categoriesContainer}>
-              {[1, 2, 3, 4, 5].map((i) => (
-                <View key={i} style={{ marginRight: 8 }}>
-                  <CategoryChipSkeleton />
-                </View>
+              <Pressable onPress={() => navigation.navigate('Search', {})}>
+                <Text variant="labelLarge" style={{ color: theme.colors.primary }}>
+                  View All
+                </Text>
+              </Pressable>
+            </View>
+            <ProductGrid>
+              {trendingProducts.map((product, index) => (
+                <AnimatedProductCard
+                  key={product._id}
+                  product={product}
+                  index={index}
+                  viewerUser={user}
+                  onPress={() => handleProductPress(product._id)}
+                />
               ))}
-            </ScrollView>
-          ) : (
-            <ScrollView
-              horizontal
-              showsHorizontalScrollIndicator={false}
-              contentContainerStyle={styles.categoriesContainer}
-            >
-              {categories.map((category, index) => (
-                <Animated.View key={category._id} entering={SlideInRight.delay(index * 50).duration(300)}>
-                  <Chip
-                    mode="flat"
-                    onPress={() => handleCategoryPress(category)}
-                    style={[styles.categoryChip, { backgroundColor: theme.colors.surfaceVariant }]}
-                    textStyle={{ color: theme.colors.onSurfaceVariant }}
-                    icon={() => (
-                      <Icon
-                        name={getCategoryIcon(category.slug)}
-                        size={18}
-                        color={theme.colors.primary}
-                      />
-                    )}
-                  >
-                    {category.name}
-                  </Chip>
-                </Animated.View>
-              ))}
-            </ScrollView>
-          )}
-        </Animated.View>
+            </ProductGrid>
+          </Animated.View>
+        )}
 
         {/* Quick Stats */}
         <Animated.View entering={FadeInDown.delay(250).duration(400)} style={styles.statsContainer}>
@@ -273,7 +451,7 @@ export default function HomeScreen() {
           <Surface style={[styles.statCard, { backgroundColor: theme.colors.tertiaryContainer }]}>
             <Icon name="creation" size={24} color={theme.colors.tertiary} />
             <Text variant="titleSmall" style={{ color: theme.colors.onTertiaryContainer, marginTop: 8 }}>
-              AI Support
+              Ask {ASSISTANT_NAME}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, opacity: 0.7 }}>
               24/7 assistance
@@ -310,6 +488,7 @@ export default function HomeScreen() {
                   key={product._id}
                   product={product}
                   index={index}
+                  viewerUser={user}
                   onPress={() => handleProductPress(product._id)}
                 />
               ))}
@@ -318,15 +497,6 @@ export default function HomeScreen() {
         </Animated.View>
       </ScrollView>
 
-      {/* AI Assistant FAB */}
-      <AIAssistantFAB onPress={() => setAIModalVisible(true)} />
-
-      {/* AI Assistant Modal */}
-      <AIAssistantModal
-        visible={aiModalVisible}
-        onClose={() => setAIModalVisible(false)}
-        currentScreen="Home"
-      />
     </View>
   );
 }
@@ -361,10 +531,6 @@ const styles = StyleSheet.create({
     borderRadius: 16,
     elevation: 0,
   },
-  aiSection: {
-    paddingHorizontal: 16,
-    marginBottom: 16,
-  },
   section: {
     marginBottom: 24,
   },
@@ -390,6 +556,93 @@ const styles = StyleSheet.create({
   categoriesContainer: {
     paddingHorizontal: 16,
     gap: 8,
+  },
+  bannerRail: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  heroBanner: {
+    width: width - 32,
+    height: 172,
+    borderRadius: 18,
+    overflow: 'hidden',
+  },
+  heroBannerImage: {
+    ...StyleSheet.absoluteFillObject,
+    width: '100%',
+    height: '100%',
+  },
+  heroBannerOverlay: {
+    ...StyleSheet.absoluteFillObject,
+    justifyContent: 'flex-end',
+    padding: 16,
+    backgroundColor: 'rgba(0,0,0,0.28)',
+  },
+  heroBannerTitle: {
+    color: '#FFFFFF',
+    fontWeight: '800',
+  },
+  heroBannerSubtitle: {
+    color: '#FFFFFF',
+    marginTop: 4,
+  },
+  stripSection: {
+    paddingHorizontal: 16,
+    marginBottom: 18,
+  },
+  stripBanner: {
+    borderRadius: 16,
+    padding: 14,
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+  },
+  dealsRail: {
+    paddingHorizontal: 16,
+    gap: 12,
+  },
+  dealCard: {
+    width: 164,
+    borderRadius: 16,
+    padding: 14,
+  },
+  dealBadge: {
+    marginTop: 12,
+    alignSelf: 'flex-start',
+  },
+  categoryTilesContainer: {
+    paddingHorizontal: 16,
+    gap: 10,
+  },
+  categoryTileWrapper: {
+    width: 108,
+  },
+  categoryTile: {
+    width: 108,
+    height: 118,
+    borderRadius: 16,
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+    paddingHorizontal: 10,
+    paddingVertical: 12,
+  },
+  categoryImage: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+  },
+  categoryIconFallback: {
+    width: 56,
+    height: 56,
+    borderRadius: 14,
+    alignItems: 'center',
+    justifyContent: 'center',
+  },
+  categoryTileLabel: {
+    height: 34,
+    lineHeight: 16,
+    marginTop: 8,
+    textAlign: 'center',
   },
   categoryChip: {
     marginRight: 8,

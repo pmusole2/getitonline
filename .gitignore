@@ -80,3 +80,14 @@ out/
 # Misc
 .claude/
 *.local
+
+# Private release evidence and downloaded app binaries
+/artifacts/
+*.apk
+*.aab
+*.ipa
+.superpowers/
+
+# Local store-service credentials
+*service-account*.json
+*service_account*.json

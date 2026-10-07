@@ -94,6 +94,34 @@ class PaymentService {
     return response;
   }
 
+  async initiateCheckoutMobileMoneyPayment(params: {
+    orderIds: string[];
+    userId: string;
+    amount: number;
+    provider: MobileMoneyProvider;
+    mobileNumber: string;
+    description?: string;
+  }): Promise<PaymentInitiationResponse> {
+    return apiService.post<PaymentInitiationResponse>(
+      '/payments/checkout/mobile-money',
+      params,
+    );
+  }
+
+  async initiateCheckoutCardPayment(params: {
+    orderIds: string[];
+    userId: string;
+    amount: number;
+    email: string;
+    description?: string;
+    callbackUrl?: string;
+  }): Promise<PaymentInitiationResponse> {
+    return apiService.post<PaymentInitiationResponse>(
+      '/payments/checkout/card',
+      params,
+    );
+  }
+
   /**
    * Check payment status
    */

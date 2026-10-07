@@ -1,5 +1,10 @@
 import { z } from "zod";
-import { SelectedShippingSchema } from "./schemas/cart.schema";
+import {
+  SelectedAddOnSchema,
+  SelectedShippingSchema,
+  SelectedVariantSchema,
+  SelectedVariantOptionSchema,
+} from "./schemas/cart.schema";
 import {
   ProductStatusSchema,
   ShippingOptionSchema,
@@ -27,6 +32,10 @@ export const GuestCartItemSchema = z.object({
   productId: z.string().min(1, "Product ID is required"),
   quantity: z.number().int().positive("Quantity must be at least 1"),
   selectedShipping: SelectedShippingSchema,
+  selectedVariantOptions: z.array(SelectedVariantOptionSchema).optional(),
+  selectedVariant: SelectedVariantSchema.optional(),
+  selectedAddOns: z.array(SelectedAddOnSchema).optional(),
+  customizationKey: z.string().optional(),
   product: GuestCartProductSnapshotSchema,
   addedAt: z.number(),
 });
@@ -86,6 +95,27 @@ export function calculateGuestCartSummary(
     total: subtotal + shippingTotal,
     itemCount: items.length,
   };
+}
+
+export function createCartCustomizationKey(input: {
+  productId: string;
+  selectedVariant?: { variantId?: string; sku?: string };
+  selectedVariantOptions?: Array<{ name: string; value: string }>;
+  selectedAddOns?: Array<{ name: string }>;
+}): string {
+  const selectedVariantKey = input.selectedVariant
+    ? input.selectedVariant.variantId ?? input.selectedVariant.sku ?? ""
+    : "";
+  const variantKey = [...(input.selectedVariantOptions ?? [])]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((option) => `${option.name}:${option.value}`)
+    .join("|");
+  const addOnKey = [...(input.selectedAddOns ?? [])]
+    .sort((left, right) => left.name.localeCompare(right.name))
+    .map((addOn) => addOn.name)
+    .join("|");
+
+  return `${input.productId}::variant=${selectedVariantKey}::variants=${variantKey}::addons=${addOnKey}`;
 }
 
 export function getMergeGuestCartSkipReasonMessage(

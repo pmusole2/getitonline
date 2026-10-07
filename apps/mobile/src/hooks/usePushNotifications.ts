@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState, useCallback } from 'react';
 import { Platform } from 'react-native';
+import { useMutation } from 'convex/react';
 import * as Device from 'expo-device';
 import * as Notifications from 'expo-notifications';
 import Constants from 'expo-constants';
+import { api } from '../../../../convex/_generated/api';
 import type { Id } from '../types';
 
 // Configure notification handler
@@ -23,10 +25,11 @@ interface UsePushNotificationsReturn {
   requestPermissions: () => Promise<boolean>;
 }
 
-export function usePushNotifications(_userId?: Id<'users'>): UsePushNotificationsReturn {
+export function usePushNotifications(userId?: Id<'users'>): UsePushNotificationsReturn {
   const [expoPushToken, setExpoPushToken] = useState<string | null>(null);
   const [notification, setNotification] = useState<Notifications.Notification | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const upsertNotificationDevice = useMutation(api.notifications.upsertNotificationDevice);
 
   const notificationListener = useRef<Notifications.Subscription | null>(null);
   const responseListener = useRef<Notifications.Subscription | null>(null);
@@ -99,11 +102,31 @@ export function usePushNotifications(_userId?: Id<'users'>): UsePushNotification
     const token = await registerForPushNotificationsAsync();
     if (token) {
       setExpoPushToken(token);
-      // Note: Token should be saved to backend when user API is extended
+      if (userId) {
+        await upsertNotificationDevice({
+          userId,
+          channel: 'mobile_push',
+          token,
+          platform: Platform.OS,
+          isOptedIn: true,
+        });
+      }
       return true;
     }
     return false;
-  }, [registerForPushNotificationsAsync]);
+  }, [registerForPushNotificationsAsync, upsertNotificationDevice, userId]);
+
+  useEffect(() => {
+    if (!userId || !expoPushToken) return;
+
+    void upsertNotificationDevice({
+      userId,
+      channel: 'mobile_push',
+      token: expoPushToken,
+      platform: Platform.OS,
+      isOptedIn: true,
+    });
+  }, [expoPushToken, upsertNotificationDevice, userId]);
 
   useEffect(() => {
     // Register for push notifications on mount

@@ -1,4 +1,9 @@
 import { z } from "zod";
+import {
+  SelectedAddOnSchema,
+  SelectedVariantOptionSchema,
+  SelectedVariantSchema,
+} from "./cart.schema";
 import { AddressSchema } from "./user.schema";
 
 // Order status
@@ -27,6 +32,10 @@ export const OrderItemSchema = z.object({
   price: z.number(),
   quantity: z.number().int().positive(),
   image: z.string(),
+  selectedVariantOptions: z.array(SelectedVariantOptionSchema).optional(),
+  selectedVariant: SelectedVariantSchema.optional(),
+  selectedAddOns: z.array(SelectedAddOnSchema).optional(),
+  customizationKey: z.string().optional(),
 });
 export type OrderItem = z.infer<typeof OrderItemSchema>;
 
@@ -35,7 +44,19 @@ export const CreateOrderSchema = z.object({
   sellerId: z.string().min(1, "Seller ID is required"),
   items: z.array(OrderItemSchema).min(1, "At least one item is required"),
   subtotal: z.number().positive(),
+  discountAmount: z.number().min(0).optional(),
+  promoCodeId: z.string().optional(),
+  promoCode: z.string().optional(),
   shippingCost: z.number().min(0),
+  deliveryMethodId: z.string().optional(),
+  deliveryMethodName: z.string().optional(),
+  deliveryEta: z
+    .object({
+      minDays: z.number().int().nonnegative(),
+      maxDays: z.number().int().nonnegative(),
+    })
+    .optional(),
+  pickupPointId: z.string().optional(),
   totalAmount: z.number().positive(),
   shippingAddress: ShippingAddressSchema,
 });
@@ -64,7 +85,22 @@ export const OrderSchema = z.object({
   sellerId: z.string(),
   items: z.array(OrderItemSchema),
   subtotal: z.number(),
+  discountAmount: z.number().optional().nullable(),
+  promoCodeId: z.string().optional().nullable(),
+  promoCode: z.string().optional().nullable(),
   shippingCost: z.number(),
+  platformFee: z.number().optional(),
+  sellerPayout: z.number().optional(),
+  deliveryMethodId: z.string().optional().nullable(),
+  deliveryMethodName: z.string().optional().nullable(),
+  deliveryEta: z
+    .object({
+      minDays: z.number(),
+      maxDays: z.number(),
+    })
+    .optional()
+    .nullable(),
+  pickupPointId: z.string().optional().nullable(),
   totalAmount: z.number(),
   shippingAddress: ShippingAddressSchema,
   status: OrderStatusSchema,

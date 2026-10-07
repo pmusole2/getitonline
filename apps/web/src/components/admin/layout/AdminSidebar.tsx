@@ -20,6 +20,8 @@ import {
   Settings,
   ChevronLeft,
   Store,
+  Tags,
+  Truck,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
 
@@ -48,12 +50,12 @@ const sidebarNav = [
         icon: Store,
       },
       {
-        title: "Products",
+        title: "Product Approvals",
         href: ROUTES.ADMIN_PRODUCTS,
         icon: Package,
       },
       {
-        title: "Listing Review",
+        title: "Listing Review Queue",
         href: ROUTES.ADMIN_LISTING_REVIEW,
         icon: ClipboardCheck,
       },
@@ -66,6 +68,16 @@ const sidebarNav = [
         title: "Categories",
         href: ROUTES.ADMIN_CATEGORIES,
         icon: FolderTree,
+      },
+      {
+        title: "Delivery",
+        href: ROUTES.ADMIN_DELIVERY,
+        icon: Truck,
+      },
+      {
+        title: "Promotions",
+        href: ROUTES.ADMIN_PROMOTIONS,
+        icon: Tags,
       },
     ],
   },

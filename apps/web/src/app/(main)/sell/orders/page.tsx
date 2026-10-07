@@ -172,7 +172,7 @@ export default function SellerOrdersPage() {
         <Package className="h-16 w-16 text-muted-foreground" />
         <h1 className="mt-4 text-2xl font-bold">Catalog Access Restricted</h1>
         <p className="mt-2 text-center text-muted-foreground">
-          Only admins and catalog managers can manage storefront orders.
+          Only Super Admins and Product Uploaders can manage storefront orders.
         </p>
       </div>
     );

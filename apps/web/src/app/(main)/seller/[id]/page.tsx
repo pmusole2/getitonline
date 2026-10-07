@@ -12,7 +12,6 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@gettitonline/shared";
 
 export default function SellerStorefrontPage() {
   const params = useParams();
@@ -23,18 +22,14 @@ export default function SellerStorefrontPage() {
     sellerId,
     viewerUserId: user?._id,
   });
-  const products = useQuery(api.products.getProductsBySeller, {
-    sellerId,
-    status: "active",
-    viewerUserId: user?._id,
-  });
+  const reviews = useQuery(api.reviews.getSellerReviews, { sellerId });
 
-  if (storefront === undefined || products === undefined) {
+  if (storefront === undefined || reviews === undefined) {
     return (
       <div className="container space-y-6 py-6">
         <Skeleton className="h-56 w-full" />
         <Skeleton className="h-24 w-full" />
-        <Skeleton className="h-96 w-full" />
+        <Skeleton className="h-64 w-full" />
       </div>
     );
   }
@@ -82,14 +77,27 @@ export default function SellerStorefrontPage() {
               </Badge>
             </div>
             <p className="mt-2 text-muted-foreground">{storefront.description}</p>
-            <div className="mt-3 flex flex-wrap gap-4 text-sm text-muted-foreground">
-              <span>{storefront.contactEmail}</span>
-              {storefront.contactPhone ? <span>{storefront.contactPhone}</span> : null}
-              {storefront.address ? (
-                <span>
-                  {storefront.address.city}, {storefront.address.province}
-                </span>
-              ) : null}
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="mb-6">
+        <CardHeader>
+          <CardTitle>Store Summary</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div className="rounded-lg border p-4">
+              <p className="text-2xl font-bold">{storefront.totalSales}</p>
+              <p className="text-sm text-muted-foreground">Total sales</p>
+            </div>
+            <div className="rounded-lg border p-4">
+              <p className="text-2xl font-bold">
+                {storefront.rating?.toFixed(1) || "N/A"}
+              </p>
+              <p className="text-sm text-muted-foreground">
+                {reviews.length} ratings & reviews
+              </p>
             </div>
           </div>
         </CardContent>
@@ -97,34 +105,32 @@ export default function SellerStorefrontPage() {
 
       <Card>
         <CardHeader>
-          <CardTitle>Available Listings</CardTitle>
+          <CardTitle>Ratings & Reviews</CardTitle>
         </CardHeader>
-        <CardContent>
-          {products.length > 0 ? (
-            <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-              {products.map((product) => (
-                <Link key={product._id} href={ROUTES.PRODUCT(product._id)}>
-                  <div className="overflow-hidden rounded-xl border transition-colors hover:bg-muted/40">
-                    <div className="aspect-square bg-muted">
-                      <img
-                        src={product.images[0] || "/placeholder.png"}
-                        alt={product.title}
-                        className="h-full w-full object-cover"
-                      />
-                    </div>
-                    <div className="space-y-2 p-4">
-                      <p className="font-medium">{product.title}</p>
-                      <p className="text-sm text-muted-foreground">
-                        {formatZMW(product.price)}
-                      </p>
-                    </div>
-                  </div>
-                </Link>
-              ))}
-            </div>
+        <CardContent className="space-y-4">
+          {reviews.length > 0 ? (
+            reviews.map((review) => (
+              <div key={review._id} className="rounded-lg border p-4">
+                <div className="flex items-center justify-between gap-4">
+                  <p className="font-medium">
+                    {review.reviewer
+                      ? `${review.reviewer.firstName} ${review.reviewer.lastName}`
+                      : "Anonymous"}
+                  </p>
+                  <p className="text-sm text-muted-foreground">
+                    {review.rating}/5
+                  </p>
+                </div>
+                {review.comment ? (
+                  <p className="mt-2 text-sm text-muted-foreground">
+                    {review.comment}
+                  </p>
+                ) : null}
+              </div>
+            ))
           ) : (
             <div className="rounded-lg border border-dashed p-8 text-center text-sm text-muted-foreground">
-              No active listings are available from this store yet.
+              No reviews yet.
             </div>
           )}
         </CardContent>

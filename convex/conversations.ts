@@ -1,5 +1,68 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
+
+type RequestCtx = QueryCtx | MutationCtx;
+type ConversationDoc = Doc<"conversations">;
+type ParticipantRole = "buyer" | "seller";
+
+const reportReasonValidator = v.union(
+  v.literal("harassment_or_abuse"),
+  v.literal("spam_or_scam"),
+  v.literal("unsafe_content"),
+  v.literal("other")
+);
+
+async function getAuthenticatedUserId(ctx: RequestCtx): Promise<Id<"users"> | null> {
+  const identity = await ctx.auth.getUserIdentity();
+  if (!identity) return null;
+
+  const user = await ctx.db
+    .query("users")
+    .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
+    .first();
+
+  if (!user) {
+    throw new Error("Authenticated user not found");
+  }
+
+  return user._id;
+}
+
+async function assertRequestUser(ctx: RequestCtx, userId: Id<"users">) {
+  const authenticatedUserId = await getAuthenticatedUserId(ctx);
+  if (authenticatedUserId !== null && authenticatedUserId !== userId) {
+    throw new Error("Unauthorized");
+  }
+}
+
+function getParticipantRole(
+  conversation: ConversationDoc,
+  userId: Id<"users">
+): ParticipantRole | null {
+  if (conversation.buyerId === userId) return "buyer";
+  if (conversation.sellerId === userId) return "seller";
+  return null;
+}
+
+async function requireConversationParticipant(
+  ctx: RequestCtx,
+  conversationId: Id<"conversations">,
+  userId: Id<"users">
+) {
+  await assertRequestUser(ctx, userId);
+
+  const conversation = await ctx.db.get(conversationId);
+  if (!conversation) throw new Error("Conversation not found");
+
+  const role = getParticipantRole(conversation, userId);
+  if (!role) {
+    throw new Error("Unauthorized");
+  }
+
+  return { conversation, role };
+}
 
 // Start or get existing conversation
 export const startConversation = mutation({
@@ -9,6 +72,8 @@ export const startConversation = mutation({
     initialMessage: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.buyerId);
+
     const product = await ctx.db.get(args.productId);
     if (!product) throw new Error("Product not found");
     if (product.status !== "active") throw new Error("Product is not available");
@@ -27,6 +92,10 @@ export const startConversation = mutation({
       .first();
 
     if (existingConversation) {
+      if (existingConversation.status === "blocked") {
+        throw new Error("This conversation has been blocked");
+      }
+
       // Reactivate if archived
       if (existingConversation.status === "archived") {
         await ctx.db.patch(existingConversation._id, {
@@ -98,16 +167,12 @@ export const sendConversationMessage = mutation({
     ),
   },
   handler: async (ctx, args) => {
-    const conversation = await ctx.db.get(args.conversationId);
-    if (!conversation) throw new Error("Conversation not found");
-
-    // Verify sender is participant
-    const isBuyer = conversation.buyerId === args.senderId;
-    const isSeller = conversation.sellerId === args.senderId;
-
-    if (!isBuyer && !isSeller) {
-      throw new Error("You are not a participant in this conversation");
-    }
+    const { conversation, role } = await requireConversationParticipant(
+      ctx,
+      args.conversationId,
+      args.senderId
+    );
+    const isBuyer = role === "buyer";
 
     if (conversation.status === "blocked") {
       throw new Error("This conversation has been blocked");
@@ -164,10 +229,19 @@ export const sendConversationMessage = mutation({
 
 // Get conversation with full details
 export const getConversation = query({
-  args: { conversationId: v.id("conversations") },
+  args: {
+    conversationId: v.id("conversations"),
+    viewerId: v.id("users"),
+  },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.viewerId);
+
     const conversation = await ctx.db.get(args.conversationId);
     if (!conversation) return null;
+
+    if (!getParticipantRole(conversation, args.viewerId)) {
+      throw new Error("Unauthorized");
+    }
 
     const product = await ctx.db.get(conversation.productId);
     const buyer = await ctx.db.get(conversation.buyerId);
@@ -202,10 +276,13 @@ export const getConversation = query({
 export const getConversationMessages = query({
   args: {
     conversationId: v.id("conversations"),
+    viewerId: v.id("users"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const limit = args.limit ?? 50;
+    await requireConversationParticipant(ctx, args.conversationId, args.viewerId);
+
+    const limit = Math.min(args.limit ?? 50, 100);
 
     const messages = await ctx.db
       .query("conversationMessages")
@@ -238,12 +315,16 @@ export const getBuyerConversations = query({
     status: v.optional(v.union(v.literal("active"), v.literal("archived"))),
   },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.buyerId);
+
     let query = ctx.db
       .query("conversations")
       .withIndex("by_buyer", (q) => q.eq("buyerId", args.buyerId));
 
     if (args.status) {
       query = query.filter((q) => q.eq(q.field("status"), args.status));
+    } else {
+      query = query.filter((q) => q.neq(q.field("status"), "blocked"));
     }
 
     const conversations = await query.order("desc").collect();
@@ -280,12 +361,16 @@ export const getSellerConversations = query({
     status: v.optional(v.union(v.literal("active"), v.literal("archived"))),
   },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.sellerId);
+
     let query = ctx.db
       .query("conversations")
       .withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
 
     if (args.status) {
       query = query.filter((q) => q.eq(q.field("status"), args.status));
+    } else {
+      query = query.filter((q) => q.neq(q.field("status"), "blocked"));
     }
 
     const conversations = await query.order("desc").collect();
@@ -319,6 +404,8 @@ export const getSellerConversations = query({
 export const getUserConversations = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.userId);
+
     // Get conversations where user is buyer
     const buyerConversations = await ctx.db
       .query("conversations")
@@ -374,15 +461,12 @@ export const markConversationRead = mutation({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const conversation = await ctx.db.get(args.conversationId);
-    if (!conversation) throw new Error("Conversation not found");
-
-    const isBuyer = conversation.buyerId === args.userId;
-    const isSeller = conversation.sellerId === args.userId;
-
-    if (!isBuyer && !isSeller) {
-      throw new Error("You are not a participant");
-    }
+    const { role } = await requireConversationParticipant(
+      ctx,
+      args.conversationId,
+      args.userId
+    );
+    const isBuyer = role === "buyer";
 
     // Mark all unread messages as read
     const unreadMessages = await ctx.db
@@ -422,11 +506,14 @@ export const archiveConversation = mutation({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const conversation = await ctx.db.get(args.conversationId);
-    if (!conversation) throw new Error("Conversation not found");
+    const { conversation } = await requireConversationParticipant(
+      ctx,
+      args.conversationId,
+      args.userId
+    );
 
-    if (conversation.buyerId !== args.userId && conversation.sellerId !== args.userId) {
-      throw new Error("Unauthorized");
+    if (conversation.status === "blocked") {
+      throw new Error("This conversation has been blocked");
     }
 
     await ctx.db.patch(args.conversationId, {
@@ -438,22 +525,111 @@ export const archiveConversation = mutation({
   },
 });
 
+// Block a buyer/seller conversation
+export const blockConversation = mutation({
+  args: {
+    conversationId: v.id("conversations"),
+    userId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    const { conversation } = await requireConversationParticipant(
+      ctx,
+      args.conversationId,
+      args.userId
+    );
+
+    if (conversation.status === "blocked") {
+      return { success: true };
+    }
+
+    await ctx.db.patch(args.conversationId, {
+      status: "blocked",
+      buyerUnreadCount: 0,
+      sellerUnreadCount: 0,
+      updatedAt: Date.now(),
+    });
+
+    return { success: true };
+  },
+});
+
+// Report a buyer/seller conversation to moderators using the existing notifications table
+export const reportConversation = mutation({
+  args: {
+    conversationId: v.id("conversations"),
+    reporterId: v.id("users"),
+    reason: v.optional(reportReasonValidator),
+  },
+  handler: async (ctx, args) => {
+    const { conversation, role } = await requireConversationParticipant(
+      ctx,
+      args.conversationId,
+      args.reporterId
+    );
+    const reportedUserId = role === "buyer" ? conversation.sellerId : conversation.buyerId;
+    const reason = args.reason ?? "other";
+    const now = Date.now();
+
+    const moderators = await ctx.db
+      .query("users")
+      .withIndex("by_role", (q) => q.eq("role", "moderator"))
+      .collect();
+    const admins = await ctx.db
+      .query("users")
+      .withIndex("by_role", (q) => q.eq("role", "admin"))
+      .collect();
+    const reviewers = [...moderators, ...admins];
+
+    for (const reviewer of reviewers) {
+      await ctx.db.insert("notifications", {
+        userId: reviewer._id,
+        type: "system",
+        title: "Conversation reported",
+        message: "A buyer/seller conversation was reported for moderation.",
+        data: {
+          conversationId: args.conversationId,
+          productId: conversation.productId,
+          reporterId: args.reporterId,
+          reportedUserId,
+          reason,
+        },
+        isRead: false,
+        createdAt: now,
+      });
+    }
+
+    return { success: true, notifiedReviewers: reviewers.length };
+  },
+});
+
 // Get conversation count (for badge)
 export const getUnreadConversationCount = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.userId);
+
     // Count unread as buyer
     const buyerConversations = await ctx.db
       .query("conversations")
       .withIndex("by_buyer", (q) => q.eq("buyerId", args.userId))
-      .filter((q) => q.gt(q.field("buyerUnreadCount"), 0))
+      .filter((q) =>
+        q.and(
+          q.gt(q.field("buyerUnreadCount"), 0),
+          q.neq(q.field("status"), "blocked")
+        )
+      )
       .collect();
 
     // Count unread as seller
     const sellerConversations = await ctx.db
       .query("conversations")
       .withIndex("by_seller", (q) => q.eq("sellerId", args.userId))
-      .filter((q) => q.gt(q.field("sellerUnreadCount"), 0))
+      .filter((q) =>
+        q.and(
+          q.gt(q.field("sellerUnreadCount"), 0),
+          q.neq(q.field("status"), "blocked")
+        )
+      )
       .collect();
 
     return buyerConversations.length + sellerConversations.length;
@@ -467,6 +643,8 @@ export const getProductConversationHistory = query({
     buyerId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.buyerId);
+
     const conversation = await ctx.db
       .query("conversations")
       .withIndex("by_buyer_product", (q) =>
@@ -475,6 +653,9 @@ export const getProductConversationHistory = query({
       .first();
 
     if (!conversation) return null;
+    if (!getParticipantRole(conversation, args.buyerId)) {
+      throw new Error("Unauthorized");
+    }
 
     const messages = await ctx.db
       .query("conversationMessages")
@@ -506,13 +687,25 @@ export const getExistingConversation = query({
   args: {
     productId: v.id("products"),
     buyerId: v.id("users"),
+    viewerId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    return await ctx.db
+    await assertRequestUser(ctx, args.viewerId);
+    if (args.viewerId !== args.buyerId) {
+      throw new Error("Unauthorized");
+    }
+
+    const conversation = await ctx.db
       .query("conversations")
       .withIndex("by_buyer_product", (q) =>
         q.eq("buyerId", args.buyerId).eq("productId", args.productId)
       )
       .first();
+
+    if (conversation && !getParticipantRole(conversation, args.viewerId)) {
+      throw new Error("Unauthorized");
+    }
+
+    return conversation;
   },
 });

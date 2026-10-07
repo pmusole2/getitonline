@@ -5,6 +5,8 @@ import {
   IsOptional,
   IsNotEmpty,
   Min,
+  IsArray,
+  ArrayMinSize,
 } from 'class-validator';
 
 // Payment method types
@@ -62,6 +64,59 @@ export class InitiateCardPaymentDto {
   @IsString()
   @IsNotEmpty()
   orderId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  userId: string;
+
+  @IsNumber()
+  @Min(1)
+  amount: number;
+
+  @IsString()
+  @IsNotEmpty()
+  email: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+
+  @IsString()
+  @IsOptional()
+  callbackUrl?: string;
+}
+
+export class InitiateCheckoutMobileMoneyPaymentDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  orderIds: string[];
+
+  @IsString()
+  @IsNotEmpty()
+  userId: string;
+
+  @IsNumber()
+  @Min(1)
+  amount: number;
+
+  @IsEnum(MobileMoneyProvider)
+  provider: MobileMoneyProvider;
+
+  @IsString()
+  @IsNotEmpty()
+  mobileNumber: string;
+
+  @IsString()
+  @IsOptional()
+  description?: string;
+}
+
+export class InitiateCheckoutCardPaymentDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsString({ each: true })
+  orderIds: string[];
 
   @IsString()
   @IsNotEmpty()

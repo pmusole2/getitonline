@@ -1,20 +1,170 @@
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
+import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
+
+const notificationTypeValidator = v.union(
+  v.literal("order_placed"),
+  v.literal("order_status_update"),
+  v.literal("new_message"),
+  v.literal("dispute_update"),
+  v.literal("funds_released"),
+  v.literal("new_review"),
+  v.literal("product_sold"),
+  v.literal("payment_received"),
+  v.literal("payment_failed"),
+  v.literal("wallet_credit"),
+  v.literal("wallet_debit"),
+  v.literal("withdrawal_initiated"),
+  v.literal("withdrawal_completed"),
+  v.literal("withdrawal_failed"),
+  v.literal("product_submitted"),
+  v.literal("listing_approved"),
+  v.literal("listing_rejected"),
+  v.literal("listing_changes_requested"),
+  v.literal("low_stock"),
+  v.literal("cart_reminder"),
+  v.literal("price_drop"),
+  v.literal("product_recommendation"),
+  v.literal("scarcity_alert"),
+  v.literal("promo_code"),
+  v.literal("flash_sale"),
+  v.literal("delivery_update"),
+  v.literal("return_update"),
+  v.literal("system")
+);
+
+const campaignTypeValidator = v.union(
+  v.literal("cart_reminder"),
+  v.literal("low_stock"),
+  v.literal("price_drop"),
+  v.literal("product_recommendation")
+);
+
+const campaignStatusValidator = v.union(
+  v.literal("draft"),
+  v.literal("active"),
+  v.literal("paused")
+);
+
+const audienceSegmentValidator = v.union(
+  v.literal("all_opted_in"),
+  v.literal("cart_abandoners"),
+  v.literal("product_viewers"),
+  v.literal("category_browsers"),
+  v.literal("past_buyers")
+);
+
+const channelValidator = v.union(
+  v.literal("in_app"),
+  v.literal("mobile_push"),
+  v.literal("web_push")
+);
+
+async function ensureAdmin(ctx: QueryCtx | MutationCtx, userId: Id<"users">) {
+  const user = await ctx.db.get(userId);
+  if (!user || user.role !== "admin") {
+    throw new Error("Unauthorized: Only admins can manage notification campaigns");
+  }
+  return user;
+}
+
+function defaultPreferencesEnabled(
+  user: { preferences?: { notificationsEnabled?: boolean } }
+) {
+  return user.preferences?.notificationsEnabled !== false;
+}
+
+function campaignTypeToNotificationType(
+  type: "cart_reminder" | "low_stock" | "price_drop" | "product_recommendation"
+) {
+  return type === "low_stock" ? "scarcity_alert" : type;
+}
+
+function startOfToday() {
+  const date = new Date();
+  date.setHours(0, 0, 0, 0);
+  return date.getTime();
+}
+
+async function getOptedInUsers(ctx: QueryCtx | MutationCtx) {
+  const users = await ctx.db.query("users").collect();
+  return users.filter(defaultPreferencesEnabled);
+}
+
+async function getCampaignAudience(
+  ctx: QueryCtx | MutationCtx,
+  campaign: {
+    audienceSegment: "all_opted_in" | "cart_abandoners" | "product_viewers" | "category_browsers" | "past_buyers";
+    productId?: Id<"products">;
+    categoryId?: Id<"categories">;
+  }
+) {
+  const optedInUsers = await getOptedInUsers(ctx);
+  const optedInIds = new Set(optedInUsers.map((user) => user._id));
+
+  if (campaign.audienceSegment === "all_opted_in") {
+    return optedInUsers;
+  }
+
+  if (campaign.audienceSegment === "cart_abandoners") {
+    const cartItems = await ctx.db.query("cartItems").collect();
+    const ids = new Set(cartItems.map((item) => item.userId));
+    return optedInUsers.filter((user) => ids.has(user._id));
+  }
+
+  if (campaign.audienceSegment === "past_buyers") {
+    const orders = await ctx.db.query("orders").collect();
+    const ids = new Set(orders.map((order) => order.buyerId));
+    return optedInUsers.filter((user) => ids.has(user._id));
+  }
+
+  const events = await ctx.db
+    .query("behaviorEvents")
+    .withIndex("by_event_created", (q) =>
+      q.eq(
+        "eventType",
+        campaign.audienceSegment === "product_viewers"
+          ? "product_view"
+          : "category_browse"
+      )
+    )
+    .collect();
+  const ids = new Set(
+    events
+      .filter((event) => {
+        if (!event.userId || !optedInIds.has(event.userId)) return false;
+        if (campaign.audienceSegment === "product_viewers" && campaign.productId) {
+          return event.productId === campaign.productId;
+        }
+        if (campaign.audienceSegment === "category_browsers" && campaign.categoryId) {
+          return event.categoryId === campaign.categoryId;
+        }
+        return true;
+      })
+      .map((event) => event.userId as Id<"users">)
+  );
+
+  return optedInUsers.filter((user) => ids.has(user._id));
+}
+
+async function countDeliveriesToday(
+  ctx: QueryCtx | MutationCtx,
+  userId: Id<"users">
+) {
+  const logs = await ctx.db
+    .query("notificationDeliveryLogs")
+    .withIndex("by_user_created", (q) => q.eq("userId", userId))
+    .filter((q) => q.gte(q.field("createdAt"), startOfToday()))
+    .collect();
+  return logs.filter((log) => log.status === "sent" || log.status === "queued").length;
+}
 
 // Create notification
 export const createNotification = mutation({
   args: {
     userId: v.id("users"),
-    type: v.union(
-      v.literal("order_placed"),
-      v.literal("order_status_update"),
-      v.literal("new_message"),
-      v.literal("dispute_update"),
-      v.literal("funds_released"),
-      v.literal("new_review"),
-      v.literal("product_sold"),
-      v.literal("system")
-    ),
+    type: notificationTypeValidator,
     title: v.string(),
     message: v.string(),
     data: v.optional(v.any()),
@@ -29,6 +179,271 @@ export const createNotification = mutation({
       isRead: false,
       createdAt: Date.now(),
     });
+  },
+});
+
+export const recordBehaviorEvent = mutation({
+  args: {
+    userId: v.optional(v.id("users")),
+    anonymousId: v.optional(v.string()),
+    eventType: v.union(
+      v.literal("product_view"),
+      v.literal("product_time_spent"),
+      v.literal("category_browse"),
+      v.literal("add_to_cart"),
+      v.literal("purchase")
+    ),
+    productId: v.optional(v.id("products")),
+    categoryId: v.optional(v.id("categories")),
+    variantId: v.optional(v.string()),
+    durationMs: v.optional(v.number()),
+    quantity: v.optional(v.number()),
+    metadata: v.optional(v.any()),
+  },
+  handler: async (ctx, args) => {
+    return await ctx.db.insert("behaviorEvents", {
+      ...args,
+      createdAt: Date.now(),
+    });
+  },
+});
+
+export const getUserBehaviorSummary = query({
+  args: {
+    userId: v.id("users"),
+    limit: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const limit = args.limit ?? 100;
+    const events = await ctx.db
+      .query("behaviorEvents")
+      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .order("desc")
+      .take(limit);
+
+    const recentlyViewedProductIds: string[] = [];
+    const recentlyViewedCategoryIds: string[] = [];
+    const purchaseCategoryIds: string[] = [];
+    const seenProducts = new Set<string>();
+    const seenViewedCategories = new Set<string>();
+    const seenPurchaseCategories = new Set<string>();
+
+    for (const event of events) {
+      if (event.eventType === "product_view" && event.productId) {
+        if (!seenProducts.has(event.productId)) {
+          seenProducts.add(event.productId);
+          recentlyViewedProductIds.push(event.productId);
+        }
+      }
+
+      if (
+        (event.eventType === "product_view" ||
+          event.eventType === "product_time_spent" ||
+          event.eventType === "category_browse") &&
+        event.categoryId &&
+        !seenViewedCategories.has(event.categoryId)
+      ) {
+        seenViewedCategories.add(event.categoryId);
+        recentlyViewedCategoryIds.push(event.categoryId);
+      }
+
+      if (
+        event.eventType === "purchase" &&
+        event.categoryId &&
+        !seenPurchaseCategories.has(event.categoryId)
+      ) {
+        seenPurchaseCategories.add(event.categoryId);
+        purchaseCategoryIds.push(event.categoryId);
+      }
+    }
+
+    return {
+      recentlyViewedProductIds,
+      recentlyViewedCategoryIds,
+      purchaseCategoryIds,
+    };
+  },
+});
+
+export const upsertNotificationDevice = mutation({
+  args: {
+    userId: v.id("users"),
+    channel: v.union(v.literal("mobile_push"), v.literal("web_push")),
+    token: v.optional(v.string()),
+    subscription: v.optional(v.any()),
+    platform: v.optional(v.string()),
+    isOptedIn: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const existingByToken = args.token
+      ? await ctx.db
+          .query("notificationDevices")
+          .withIndex("by_token", (q) => q.eq("token", args.token))
+          .first()
+      : null;
+
+    if (existingByToken) {
+      await ctx.db.patch(existingByToken._id, {
+        userId: args.userId,
+        channel: args.channel,
+        token: args.token,
+        subscription: args.subscription,
+        platform: args.platform,
+        isOptedIn: args.isOptedIn,
+        lastSeenAt: now,
+        updatedAt: now,
+      });
+      return existingByToken._id;
+    }
+
+    return await ctx.db.insert("notificationDevices", {
+      ...args,
+      lastSeenAt: now,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+
+export const upsertNotificationCampaign = mutation({
+  args: {
+    adminId: v.id("users"),
+    campaignId: v.optional(v.id("notificationCampaigns")),
+    name: v.string(),
+    type: campaignTypeValidator,
+    status: campaignStatusValidator,
+    audienceSegment: audienceSegmentValidator,
+    productId: v.optional(v.id("products")),
+    categoryId: v.optional(v.id("categories")),
+    title: v.string(),
+    message: v.string(),
+    aiSuggestion: v.optional(v.string()),
+    channels: v.array(channelValidator),
+    maxPerUserPerDay: v.optional(v.number()),
+    isAutomatic: v.boolean(),
+  },
+  handler: async (ctx, args) => {
+    await ensureAdmin(ctx, args.adminId);
+    const now = Date.now();
+    const { adminId, campaignId, ...campaignInput } = args;
+
+    if (campaignId) {
+      await ctx.db.patch(campaignId, {
+        ...campaignInput,
+        maxPerUserPerDay: campaignInput.maxPerUserPerDay ?? 3,
+        updatedAt: now,
+      });
+      return await ctx.db.get(campaignId);
+    }
+
+    return await ctx.db.insert("notificationCampaigns", {
+      ...campaignInput,
+      maxPerUserPerDay: campaignInput.maxPerUserPerDay ?? 3,
+      createdByUserId: adminId,
+      createdAt: now,
+      updatedAt: now,
+    });
+  },
+});
+
+export const listNotificationCampaignsForAdmin = query({
+  args: { adminId: v.id("users") },
+  handler: async (ctx, args) => {
+    await ensureAdmin(ctx, args.adminId);
+    return (await ctx.db.query("notificationCampaigns").collect()).sort(
+      (left, right) => right.createdAt - left.createdAt
+    );
+  },
+});
+
+export const sendNotificationCampaign = mutation({
+  args: {
+    adminId: v.id("users"),
+    campaignId: v.id("notificationCampaigns"),
+  },
+  handler: async (ctx, args) => {
+    await ensureAdmin(ctx, args.adminId);
+    const campaign = await ctx.db.get(args.campaignId);
+    if (!campaign) throw new Error("Campaign not found");
+    if (campaign.status === "paused") throw new Error("Campaign is paused");
+
+    const users = await getCampaignAudience(ctx, campaign);
+    const notificationType = campaignTypeToNotificationType(campaign.type);
+    const counts = { sent: 0, skipped: 0, queued: 0 };
+    const now = Date.now();
+
+    for (const user of users) {
+      const sentToday = await countDeliveriesToday(ctx, user._id);
+      if (sentToday >= campaign.maxPerUserPerDay) {
+        await ctx.db.insert("notificationDeliveryLogs", {
+          campaignId: campaign._id,
+          userId: user._id,
+          channel: "in_app",
+          status: "skipped",
+          reason: "daily_cap",
+          createdAt: now,
+        });
+        counts.skipped += 1;
+        continue;
+      }
+
+      const notificationId = await ctx.db.insert("notifications", {
+        userId: user._id,
+        type: notificationType,
+        title: campaign.title,
+        message: campaign.message,
+        data: {
+          campaignId: campaign._id,
+          productId: campaign.productId,
+          categoryId: campaign.categoryId,
+        },
+        isRead: false,
+        createdAt: now,
+      });
+
+      for (const channel of campaign.channels) {
+        if (channel === "in_app") {
+          await ctx.db.insert("notificationDeliveryLogs", {
+            campaignId: campaign._id,
+            userId: user._id,
+            notificationId,
+            channel,
+            status: "sent",
+            createdAt: now,
+          });
+          counts.sent += 1;
+          continue;
+        }
+
+        const devices = await ctx.db
+          .query("notificationDevices")
+          .withIndex("by_user_channel", (q) =>
+            q.eq("userId", user._id).eq("channel", channel)
+          )
+          .collect();
+        const hasOptedInDevice = devices.some((device) => device.isOptedIn);
+
+        await ctx.db.insert("notificationDeliveryLogs", {
+          campaignId: campaign._id,
+          userId: user._id,
+          notificationId,
+          channel,
+          status: hasOptedInDevice ? "queued" : "skipped",
+          reason: hasOptedInDevice ? undefined : "no_opted_in_device",
+          createdAt: now,
+        });
+        if (hasOptedInDevice) counts.queued += 1;
+        else counts.skipped += 1;
+      }
+    }
+
+    await ctx.db.patch(campaign._id, {
+      lastSentAt: now,
+      updatedAt: now,
+    });
+
+    return { audienceCount: users.length, ...counts };
   },
 });
 

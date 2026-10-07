@@ -131,8 +131,13 @@ function ConfigurationErrorScreen({
 }
 
 function PostAuthNavigationHandler() {
-  const { isSignedIn, postAuthDestination, setPostAuthDestination } =
-    useAppAuth();
+  const {
+    authSyncError,
+    isSignedIn,
+    postAuthDestination,
+    setPostAuthDestination,
+    user,
+  } = useAppAuth();
   const { hasPendingMerge, isHydrated, isMerging, mergeFailed } =
     useGuestCart();
 
@@ -140,6 +145,8 @@ function PostAuthNavigationHandler() {
     if (
       !navigationRef.isReady() ||
       !isSignedIn ||
+      !user ||
+      authSyncError ||
       !isHydrated ||
       isMerging ||
       hasPendingMerge
@@ -148,10 +155,9 @@ function PostAuthNavigationHandler() {
     }
 
     const currentRouteName = navigationRef.getCurrentRoute()?.name;
-    const isOnAuthScreen =
-      currentRouteName === 'Welcome' ||
-      currentRouteName === 'SignIn' ||
-      currentRouteName === 'SignUp';
+    const isOnAuthScreen = ['Auth', 'Welcome', 'SignIn', 'SignUp'].includes(
+      String(currentRouteName)
+    );
     const destination = mergeFailed
       ? 'Main'
       : postAuthDestination ?? (isOnAuthScreen ? 'Main' : null);
@@ -166,6 +172,7 @@ function PostAuthNavigationHandler() {
       setPostAuthDestination(null);
     }
   }, [
+    authSyncError,
     hasPendingMerge,
     isHydrated,
     isMerging,
@@ -173,6 +180,7 @@ function PostAuthNavigationHandler() {
     mergeFailed,
     postAuthDestination,
     setPostAuthDestination,
+    user,
   ]);
 
   return null;

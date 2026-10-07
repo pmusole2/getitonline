@@ -106,6 +106,14 @@ export class ConvexService implements OnModuleInit {
     });
   }
 
+  async getUserBehaviorSummary(userId: string, limit: number = 100) {
+    return await this.query<{
+      recentlyViewedProductIds: string[];
+      recentlyViewedCategoryIds: string[];
+      purchaseCategoryIds: string[];
+    }>('notifications:getUserBehaviorSummary', { userId, limit });
+  }
+
   // Category queries
   async getCategories() {
     return await this.query<any[]>('categories:getCategoriesTree', {});
@@ -222,7 +230,7 @@ export class ConvexService implements OnModuleInit {
 
   // Create a new transaction
   async createTransaction(data: {
-    orderId: string;
+    orderId?: string;
     userId: string;
     type: 'collection' | 'transfer' | 'refund';
     paymentMethod: 'mobile_money' | 'card' | 'bank_transfer';
@@ -231,6 +239,7 @@ export class ConvexService implements OnModuleInit {
     description?: string;
     mobileMoneyProvider?: 'mtn' | 'airtel' | 'zamtel';
     mobileNumber?: string;
+    metadata?: Record<string, unknown>;
   }): Promise<{ transactionId: string; reference: string }> {
     return await this.mutation('transactions:createTransaction', data);
   }

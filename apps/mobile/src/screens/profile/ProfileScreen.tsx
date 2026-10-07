@@ -8,19 +8,13 @@ import { Avatar, Divider, Surface, Text, useTheme } from 'react-native-paper';
 import Animated, {
   FadeIn,
   FadeInDown,
-  FadeInRight,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
 } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { TabHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import type { RootStackParamList } from '../../types';
-import { canManageCatalog } from '../../utils/roles';
-
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
+import { canManageCatalog, getRoleDescription, getRoleLabel, isReviewerRole, isStaffRole } from '../../utils/roles';
 
 interface MenuItemProps {
   icon: string;
@@ -32,28 +26,13 @@ interface MenuItemProps {
   index: number;
 }
 
-function AnimatedMenuItem({ icon, label, description, value, badge, onPress, index }: MenuItemProps) {
+function AnimatedMenuItem({ icon, label, description, value, badge, onPress }: MenuItemProps) {
   const theme = useTheme();
-  const scale = useSharedValue(1);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
-  const handlePressIn = () => {
-    scale.value = withSpring(0.98, { damping: 15 });
-  };
-
-  const handlePressOut = () => {
-    scale.value = withSpring(1, { damping: 15 });
-  };
 
   return (
-    <Animated.View entering={FadeInRight.delay(index * 50).duration(300)}>
-      <AnimatedPressable
-        style={[styles.menuItem, animatedStyle]}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
+    <View>
+      <Pressable
+        style={styles.menuItem}
         onPress={onPress}
       >
         <View style={[styles.menuIcon, { backgroundColor: theme.colors.primaryContainer }]}>
@@ -85,8 +64,8 @@ function AnimatedMenuItem({ icon, label, description, value, badge, onPress, ind
           </View>
         )}
         <Icon name="chevron-right" size={20} color={theme.colors.onSurfaceVariant} />
-      </AnimatedPressable>
-    </Animated.View>
+      </Pressable>
+    </View>
   );
 }
 
@@ -95,6 +74,8 @@ export default function ProfileScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user, signOut } = useAppAuth();
   const hasCatalogAccess = canManageCatalog(user?.role);
+  const hasReviewAccess = isReviewerRole(user?.role);
+  const isStaff = isStaffRole(user?.role);
 
   const favorites = useQuery(
     api.favorites.getUserFavorites,
@@ -132,6 +113,12 @@ export default function ProfileScreen() {
       onPress: () => navigation.navigate('Wallet'),
     },
     {
+      icon: 'briefcase-outline',
+      label: 'Workspace',
+      description: 'Open your role tools and operations',
+      onPress: () => navigation.navigate('Workspace'),
+    },
+    {
       icon: 'message-text-outline',
       label: 'Messages',
       description: 'Conversations with sellers/buyers',
@@ -142,7 +129,7 @@ export default function ProfileScreen() {
     {
       icon: 'gavel',
       label: 'Disputes',
-      description: 'Manage order disputes',
+      description: isStaff ? 'Buyer, seller, and staff dispute queues' : 'Manage order disputes',
       onPress: () => navigation.navigate('Disputes'),
     },
     {
@@ -150,7 +137,7 @@ export default function ProfileScreen() {
       label: 'Favorites',
       description: 'Products you saved',
       value: favorites?.length || 0,
-      onPress: () => {},
+      onPress: () => navigation.navigate('Favorites'),
     },
     {
       icon: 'bell-outline',
@@ -160,6 +147,62 @@ export default function ProfileScreen() {
       badge: unreadCount > 0,
       onPress: () => navigation.navigate('Notifications'),
     },
+    ...(user?.role === 'admin'
+      ? [
+          {
+            icon: 'view-dashboard-outline',
+            label: 'Admin Dashboard',
+            description: 'Marketplace stats and admin shortcuts',
+            onPress: () => navigation.navigate('AdminDashboard'),
+          },
+          {
+            icon: 'account-cog-outline',
+            label: 'User Management',
+            description: 'Manage roles, bans, and internal accounts',
+            onPress: () => navigation.navigate('AdminUsers'),
+          },
+          {
+            icon: 'store-cog-outline',
+            label: 'Store Management',
+            description: 'Manage storefronts and vendor approvals',
+            onPress: () => navigation.navigate('AdminStores'),
+          },
+          {
+            icon: 'shopping-outline',
+            label: 'Order Management',
+            description: 'Review and manage marketplace orders',
+            onPress: () => navigation.navigate('AdminOrders'),
+          },
+          {
+            icon: 'shield-lock-outline',
+            label: 'Escrow Oversight',
+            description: 'Track held funds, releases, and refunds',
+            onPress: () => navigation.navigate('AdminEscrow'),
+          },
+          {
+            icon: 'credit-card-multiple-outline',
+            label: 'Transactions',
+            description: 'Monitor collections, refunds, and top-ups',
+            onPress: () => navigation.navigate('AdminTransactions'),
+          },
+          {
+            icon: 'shape-outline',
+            label: 'Category Management',
+            description: 'Create and organize marketplace categories',
+            onPress: () => navigation.navigate('AdminCategories'),
+          },
+        ]
+      : []),
+    ...(hasReviewAccess
+      ? [
+          {
+            icon: 'clipboard-check-outline',
+            label: 'Approve Listings',
+            description: 'Publish pending products to the store',
+            onPress: () => navigation.navigate('ListingReview'),
+          },
+        ]
+      : []),
     {
       icon: 'account-edit-outline',
       label: 'Edit Profile',
@@ -203,7 +246,6 @@ export default function ProfileScreen() {
       <TabHeader
         title="Profile"
         subtitle="Manage your account"
-        showAIAssistant
       />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
@@ -238,11 +280,21 @@ export default function ProfileScreen() {
               </Text>
             </View>
           )}
-          {hasCatalogAccess && (
+          {isStaff && (
             <View style={[styles.verifiedBadge, { backgroundColor: theme.colors.secondaryContainer, marginTop: 8 }]}>
-              <Icon name="store-cog-outline" size={14} color={theme.colors.secondary} />
+              <Icon
+                name={
+                  user.role === 'admin'
+                    ? 'shield-crown-outline'
+                    : user.role === 'catalog_manager'
+                      ? 'store-cog-outline'
+                      : 'gavel'
+                }
+                size={14}
+                color={theme.colors.secondary}
+              />
               <Text variant="labelSmall" style={{ color: theme.colors.secondary, marginLeft: 4, fontWeight: '600' }}>
-                {user.role === 'admin' ? 'Administrator' : 'Catalog Manager'}
+                {getRoleLabel(user.role)}
               </Text>
             </View>
           )}
@@ -299,26 +351,6 @@ export default function ProfileScreen() {
           </Surface>
         </Animated.View>
 
-        {/* AI Insights Card */}
-        <Animated.View entering={FadeInDown.delay(150).duration(400)} style={styles.aiCard}>
-          <Surface style={[styles.aiSurface, { backgroundColor: theme.colors.tertiaryContainer }]} elevation={0}>
-            <View style={styles.aiHeader}>
-              <View style={[styles.aiIcon, { backgroundColor: theme.colors.tertiary + '30' }]}>
-                <Icon name="creation" size={24} color={theme.colors.tertiary} />
-              </View>
-              <View style={{ flex: 1 }}>
-                <Text variant="titleSmall" style={{ color: theme.colors.onTertiaryContainer, fontWeight: '600' }}>
-                  AI Shopping Assistant
-                </Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, opacity: 0.8 }}>
-                  Get personalized recommendations
-                </Text>
-              </View>
-              <Icon name="chevron-right" size={20} color={theme.colors.tertiary} />
-            </View>
-          </Surface>
-        </Animated.View>
-
         {/* Menu Items */}
         <Animated.View entering={FadeInDown.delay(200).duration(400)}>
           <Surface style={[styles.menuCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
@@ -361,16 +393,10 @@ export default function ProfileScreen() {
                 </View>
                 <View style={styles.roleText}>
                   <Text variant="titleMedium" style={{ color: theme.colors.onSecondaryContainer, fontWeight: '600' }}>
-                    {user.role === 'admin'
-                      ? 'Administrator'
-                      : user.role === 'catalog_manager'
-                        ? 'Catalog Manager'
-                        : 'Moderator'}
+                    {getRoleLabel(user.role)}
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, opacity: 0.8 }}>
-                    {user.role === 'catalog_manager'
-                      ? 'You can manage the company catalog'
-                      : 'You have elevated privileges'}
+                    {getRoleDescription(user.role)}
                   </Text>
                 </View>
               </View>

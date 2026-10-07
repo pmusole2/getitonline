@@ -49,7 +49,7 @@ export default function ListingReviewPage() {
           <CardTitle>Access Restricted</CardTitle>
         </CardHeader>
         <CardContent className="text-sm text-muted-foreground">
-          Only admins and moderators can review listings.
+          Only Super Admins and Reviewer-Approvers can review listings.
         </CardContent>
       </Card>
     );
@@ -57,7 +57,7 @@ export default function ListingReviewPage() {
 
   const handleReview = async (
     productId: string,
-    decision: "approved" | "changes_requested" | "suspended"
+    decision: "approved" | "changes_requested" | "rejected" | "suspended"
   ) => {
     try {
       await reviewListing({
@@ -67,6 +67,8 @@ export default function ListingReviewPage() {
         reviewNotes:
           decision === "changes_requested"
             ? "Please improve listing accuracy or image quality and resubmit."
+            : decision === "rejected"
+              ? "Listing rejected because it does not meet Gettitonline publishing standards."
             : undefined,
       });
       toast.success("Listing review updated.");
@@ -83,10 +85,13 @@ export default function ListingReviewPage() {
     }
 
     const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
+    const apiPrefixUrl = apiBaseUrl.endsWith("/api/v1")
+      ? apiBaseUrl
+      : `${apiBaseUrl.replace(/\/$/, "")}/api/v1`;
     setRunningAiFor(listing._id);
 
     try {
-      const response = await fetch(`${apiBaseUrl}/ai/moderate-listing`, {
+      const response = await fetch(`${apiPrefixUrl}/ai/moderate-listing`, {
         method: "POST",
         headers: {
           "Content-Type": "application/json",
@@ -208,6 +213,13 @@ export default function ListingReviewPage() {
                         <Button
                           size="sm"
                           variant="destructive"
+                          onClick={() => handleReview(listing._id, "rejected")}
+                        >
+                          Reject
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="outline"
                           onClick={() => handleReview(listing._id, "suspended")}
                         >
                           Suspend

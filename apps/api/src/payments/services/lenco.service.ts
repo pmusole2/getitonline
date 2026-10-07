@@ -57,7 +57,7 @@ export class LencoService implements OnModuleInit {
       console.log('✅ Lenco payment gateway configured');
       if (!webhookSecret) {
         console.warn(
-          '⚠️ Lenco webhook secret not configured - webhook signature verification is disabled',
+          '⚠️ Lenco webhook secret not configured - signed webhooks will be rejected',
         );
       }
     } else {
@@ -93,11 +93,6 @@ export class LencoService implements OnModuleInit {
     const url = `${this.config.baseUrl}${endpoint}`;
 
     try {
-      console.log(`📤 [Lenco] ${method} ${endpoint}`);
-      if (body) {
-        console.log(`📤 [Lenco] Request Body:`, JSON.stringify(body, null, 2));
-      }
-
       const response = await fetch(url, {
         method,
         headers: this.getHeaders(),
@@ -106,15 +101,11 @@ export class LencoService implements OnModuleInit {
 
       const data = await response.json();
 
-      console.log(`📥 [Lenco] Status: ${response.status}`);
-      console.log(`📥 [Lenco] Response:`, JSON.stringify(data, null, 2));
-
       if (!response.ok) {
         const error = data as LencoApiError;
-        console.error(`❌ [Lenco] Error Response:`, {
+        console.error('❌ [Lenco] Payment request failed', {
           status: response.status,
           statusText: response.statusText,
-          error: error,
         });
         throw new HttpException(
           error.message || 'Payment request failed',
@@ -125,11 +116,10 @@ export class LencoService implements OnModuleInit {
       return data as T;
     } catch (error) {
       if (error instanceof HttpException) {
-        console.error(`❌ [Lenco] HTTP Exception:`, error.message);
         throw error;
       }
 
-      console.error('❌ [Lenco] API error:', error);
+      console.error('❌ [Lenco] API request failed');
       throw new HttpException(
         'Payment service unavailable',
         HttpStatus.SERVICE_UNAVAILABLE,
@@ -200,8 +190,8 @@ export class LencoService implements OnModuleInit {
    */
   verifyWebhookSignature(payload: string, signature: string): boolean {
     if (!this.config.webhookSecret) {
-      console.warn('🔐 Webhook secret not configured - skipping verification');
-      return true;
+      console.warn('🔐 Webhook secret not configured - rejecting webhook');
+      return false;
     }
 
     if (!signature) {
@@ -215,18 +205,14 @@ export class LencoService implements OnModuleInit {
       .update(payload)
       .digest('hex');
 
-    const isValid = signature === expectedSignature;
+    const expectedSignatureBuffer = Buffer.from(expectedSignature, 'hex');
+    const receivedSignatureBuffer = Buffer.from(signature, 'hex');
+    const isValid =
+      expectedSignatureBuffer.length === receivedSignatureBuffer.length &&
+      crypto.timingSafeEqual(expectedSignatureBuffer, receivedSignatureBuffer);
 
     if (!isValid) {
       console.warn('🔐 Signature mismatch');
-      console.log('🔐 Payload length:', payload.length);
-      console.log(
-        '🔐 Expected signature:',
-        expectedSignature.substring(0, 32) + '...',
-      );
-      console.log('🔐 Received signature:', signature.substring(0, 32) + '...');
-    } else {
-      console.log('🔐 Webhook signature verified ✓');
     }
 
     return isValid;

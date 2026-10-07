@@ -1,6 +1,6 @@
 "use client";
 
-import { ChangeEvent, useRef, useState } from "react";
+import { ChangeEvent, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useConvex, useMutation, useQuery } from "convex/react";
@@ -46,7 +46,9 @@ import {
 import { ROUTES, CONDITION_DISPLAY_NAMES, ZAMBIAN_PROVINCES } from "@/lib/constants";
 import { useAuth } from "@/hooks/useAuth";
 import {
+  MIN_PRODUCT_IMAGE_COUNT,
   MAX_PRODUCT_IMAGE_COUNT,
+  validateProductImageDimensions,
   validateProductImageFiles,
 } from "@/lib/product-image-upload";
 import { toast } from "sonner";
@@ -63,6 +65,28 @@ interface Specification {
   value: string;
 }
 
+interface VariantAttribute {
+  name: string;
+  values: string[];
+}
+
+interface VariantOverride {
+  price?: string;
+  stock?: string;
+  status?: "active" | "inactive" | "out_of_stock";
+  primaryImage?: string;
+}
+
+interface VariantCombination {
+  id: string;
+  sku: string;
+  attributes: Array<{ name: string; value: string }>;
+  price: number;
+  stock: number;
+  status: "active" | "inactive" | "out_of_stock";
+  primaryImage?: string;
+}
+
 interface UploadedProductImage {
   id: string;
   fileName: string;
@@ -70,6 +94,96 @@ interface UploadedProductImage {
   url?: string;
   storageId?: Id<"_storage">;
   error?: string;
+}
+
+const VARIANT_ATTRIBUTE_OPTIONS = ["Size", "Storage", "Color", "Material", "Style", "Capacity"];
+const SUGGESTED_SPEC_FIELDS = [
+  "Brand",
+  "Power",
+  "Smart Capability",
+  "Warranty",
+  "Non-Stick",
+  "Model",
+  "Generation",
+  "What's in the box",
+  "Dishwasher Safe",
+  "Appliance Type",
+  "Basic Colours",
+  "Barcode",
+];
+
+function skuToken(value: string) {
+  return value
+    .trim()
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 12);
+}
+
+function parseVariantValues(value: string) {
+  return Array.from(
+    new Set(
+      value
+        .split(/[,\n|]/)
+        .map((item) => item.trim())
+        .filter(Boolean)
+    )
+  ).slice(0, 100);
+}
+
+function filterCategoryOptions<T extends { name: string }>(
+  options: T[] | undefined,
+  query: string
+) {
+  if (!options) return [];
+  if (!query) return options;
+
+  return options.filter((option) =>
+    option.name.toLowerCase().includes(query)
+  );
+}
+
+function buildVariantCombinations(
+  attributes: VariantAttribute[],
+  baseSku: string,
+  basePrice: number,
+  baseStock: number,
+  primaryImage?: string,
+  overrides: Record<string, VariantOverride> = {}
+): VariantCombination[] {
+  if (attributes.length === 0) return [];
+
+  const combinations = attributes.reduce<Array<Array<{ name: string; value: string }>>>(
+    (current, attribute) =>
+      current.flatMap((combination) =>
+        attribute.values.map((value) => [...combination, { name: attribute.name, value }])
+      ),
+    [[]]
+  );
+
+  return combinations.map((attributesForCombination) => {
+    const id = attributesForCombination
+      .map((attribute) => skuToken(attribute.value))
+      .join("-");
+    const override = overrides[id] ?? {};
+    const stock = override.stock ? Number(override.stock) : baseStock;
+    const status =
+      override.status ?? (stock > 0 ? "active" : "out_of_stock");
+
+    return {
+      id,
+      sku: [baseSku || "SKU", ...attributesForCombination.map((attribute) => attribute.value)]
+        .map(skuToken)
+        .filter(Boolean)
+        .join("-"),
+      attributes: attributesForCombination,
+      price: override.price ? Number(override.price) : basePrice,
+      stock: Number.isFinite(stock) ? Math.max(0, stock) : 0,
+      status,
+      primaryImage: override.primaryImage || primaryImage,
+    };
+  });
 }
 
 export default function CreateListingPage() {
@@ -90,13 +204,26 @@ export default function CreateListingPage() {
   const [isUploadingImages, setIsUploadingImages] = useState(false);
   const [formData, setFormData] = useState({
     title: "",
+    brand: "",
+    sku: "",
+    shortDescription: "",
+    keyFeatures: "",
     description: "",
     price: "",
     compareAtPrice: "",
     categoryId: "",
     subcategoryId: "",
+    classificationId: "",
     condition: "new" as "new" | "like_new" | "good" | "fair",
     quantity: "1",
+    lowStockThreshold: "",
+    availabilityStatus: "in_stock" as "in_stock" | "preorder",
+    preorderExpectedShipDate: "",
+    weightKg: "",
+    countryOfOrigin: "",
+    modelNumber: "",
+    warrantyType: "none" as "manufacturer" | "seller" | "none",
+    warrantyDurationDays: "",
     city: "",
     province: "",
     status: "pending_review" as "draft" | "pending_review",
@@ -108,7 +235,14 @@ export default function CreateListingPage() {
   const [specifications, setSpecifications] = useState<Specification[]>([]);
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
+  const [variantAttributeDraft, setVariantAttributeDraft] = useState({
+    name: "Size",
+    values: "",
+  });
+  const [variantAttributes, setVariantAttributes] = useState<VariantAttribute[]>([]);
+  const [variantOverrides, setVariantOverrides] = useState<Record<string, VariantOverride>>({});
   const [errors, setErrors] = useState<Record<string, string>>({});
+  const [categorySearch, setCategorySearch] = useState("");
 
   // Get categories
   const categories = useQuery(api.categories.getParentCategories);
@@ -119,16 +253,59 @@ export default function CreateListingPage() {
     formData.categoryId ? { parentId: formData.categoryId as Id<"categories"> } : "skip"
   );
 
+  const classifications = useQuery(
+    api.categories.getSubcategories,
+    formData.subcategoryId
+      ? { parentId: formData.subcategoryId as Id<"categories"> }
+      : "skip"
+  );
+
   // Mutations
   const createProduct = useMutation(api.products.createProduct);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const uploadedImageUrls = useMemo(
+    () =>
+      images
+        .filter((image) => image.status === "uploaded" && image.url)
+        .map((image) => image.url as string),
+    [images]
+  );
+  const variantCombinations = useMemo(
+    () =>
+      buildVariantCombinations(
+        variantAttributes,
+        formData.sku,
+        Number(formData.price) || 0,
+        Number.parseInt(formData.quantity, 10) || 0,
+        uploadedImageUrls[0],
+        variantOverrides
+      ),
+    [formData.price, formData.quantity, formData.sku, uploadedImageUrls, variantAttributes, variantOverrides]
+  );
+  const normalizedCategorySearch = categorySearch.trim().toLowerCase();
+  const filteredCategories = useMemo(
+    () => filterCategoryOptions(categories, normalizedCategorySearch),
+    [categories, normalizedCategorySearch]
+  );
+  const filteredSubcategories = useMemo(
+    () => filterCategoryOptions(subcategories, normalizedCategorySearch),
+    [normalizedCategorySearch, subcategories]
+  );
+  const filteredClassifications = useMemo(
+    () => filterCategoryOptions(classifications, normalizedCategorySearch),
+    [classifications, normalizedCategorySearch]
+  );
 
-  const validateForm = (): boolean => {
+  const validateForm = (asDraft: boolean): boolean => {
     const newErrors: Record<string, string> = {};
+    const isSubmission = !asDraft;
     const uploadedImageUrls = images
       .filter((image) => image.status === "uploaded" && image.url)
       .map((image) => image.url as string);
-
+    const keyFeatures = formData.keyFeatures
+      .split("\n")
+      .map((feature) => feature.trim())
+      .filter(Boolean);
     if (!formData.title.trim()) {
       newErrors.title = "Title is required";
     } else if (formData.title.length < 5) {
@@ -137,8 +314,24 @@ export default function CreateListingPage() {
 
     if (!formData.description.trim()) {
       newErrors.description = "Description is required";
-    } else if (formData.description.length < 20) {
-      newErrors.description = "Description must be at least 20 characters";
+    } else if (isSubmission && formData.description.length < 50) {
+      newErrors.description = "Description must be at least 50 characters";
+    }
+
+    if (isSubmission && !formData.brand.trim()) {
+      newErrors.brand = "Brand is required";
+    }
+
+    if (isSubmission && !formData.sku.trim()) {
+      newErrors.sku = "SKU is required";
+    }
+
+    if (isSubmission && formData.shortDescription.trim().length < 20) {
+      newErrors.shortDescription = "Short description must be at least 20 characters";
+    }
+
+    if (isSubmission && (keyFeatures.length < 3 || keyFeatures.length > 5)) {
+      newErrors.keyFeatures = "Add 3-5 key features";
     }
 
     if (!formData.price || parseFloat(formData.price) <= 0) {
@@ -149,8 +342,16 @@ export default function CreateListingPage() {
       newErrors.categoryId = "Please select a category";
     }
 
-    if (uploadedImageUrls.length === 0) {
-      newErrors.images = "Please add at least one image";
+    if (isSubmission && !formData.subcategoryId) {
+      newErrors.subcategoryId = "Please select a subcategory";
+    }
+
+    if (isSubmission && !formData.classificationId) {
+      newErrors.classificationId = "Please select a classification";
+    }
+
+    if (isSubmission && uploadedImageUrls.length < MIN_PRODUCT_IMAGE_COUNT) {
+      newErrors.images = `Please add at least ${MIN_PRODUCT_IMAGE_COUNT} images`;
     }
 
     if (images.some((image) => image.status === "uploading")) {
@@ -159,6 +360,21 @@ export default function CreateListingPage() {
 
     if (parseInt(formData.quantity) < 1) {
       newErrors.quantity = "Quantity must be at least 1";
+    }
+
+    if (
+      formData.lowStockThreshold &&
+      parseInt(formData.lowStockThreshold) >= parseInt(formData.quantity)
+    ) {
+      newErrors.lowStockThreshold = "Low-stock threshold must be lower than quantity";
+    }
+
+    if (
+      isSubmission &&
+      formData.availabilityStatus === "preorder" &&
+      !formData.preorderExpectedShipDate
+    ) {
+      newErrors.preorderExpectedShipDate = "Expected ship date is required for preorder items";
     }
 
     // Validate shipping options
@@ -179,7 +395,7 @@ export default function CreateListingPage() {
       return;
     }
 
-    if (!validateForm()) {
+    if (!validateForm(asDraft)) {
       toast.error("Please fix the errors before submitting");
       return;
     }
@@ -190,11 +406,30 @@ export default function CreateListingPage() {
       const uploadedImageUrls = images
         .filter((image) => image.status === "uploaded" && image.url)
         .map((image) => image.url as string);
+      const keyFeatures = formData.keyFeatures
+        .split("\n")
+        .map((feature) => feature.trim())
+        .filter(Boolean);
+      const validSpecifications = specifications.filter(
+        (spec) => spec.key.trim() && spec.value.trim()
+      );
+      const lowStockThreshold = formData.lowStockThreshold
+        ? parseInt(formData.lowStockThreshold)
+        : undefined;
+      const preorderExpectedShipDate =
+        formData.preorderExpectedShipDate &&
+        formData.availabilityStatus === "preorder"
+          ? new Date(formData.preorderExpectedShipDate).getTime()
+          : undefined;
 
       const productId = await createProduct({
         actorUserId: user._id,
         title: formData.title.trim(),
+        brand: formData.brand.trim() || undefined,
+        sku: formData.sku.trim() || undefined,
+        shortDescription: formData.shortDescription.trim() || undefined,
         description: formData.description.trim(),
+        keyFeatures: keyFeatures.length > 0 ? keyFeatures : undefined,
         price: parseFloat(formData.price),
         compareAtPrice: formData.compareAtPrice
           ? parseFloat(formData.compareAtPrice)
@@ -203,12 +438,35 @@ export default function CreateListingPage() {
         subcategoryId: formData.subcategoryId
           ? (formData.subcategoryId as Id<"categories">)
           : undefined,
+        classificationId: formData.classificationId
+          ? (formData.classificationId as Id<"categories">)
+          : undefined,
         images: uploadedImageUrls,
         condition: formData.condition,
         quantity: parseInt(formData.quantity),
-        specifications: specifications.filter(
-          (spec) => spec.key.trim() && spec.value.trim()
-        ),
+        lowStockThreshold,
+        availabilityStatus: formData.availabilityStatus,
+        preorder:
+          formData.availabilityStatus === "preorder"
+            ? {
+                isPreorder: true,
+                expectedShipDate: preorderExpectedShipDate,
+              }
+            : undefined,
+        weightKg: formData.weightKg ? parseFloat(formData.weightKg) : undefined,
+        warranty: {
+          type: formData.warrantyType,
+          durationDays: formData.warrantyDurationDays
+            ? parseInt(formData.warrantyDurationDays)
+            : undefined,
+        },
+        countryOfOrigin: formData.countryOfOrigin.trim() || undefined,
+        modelNumber: formData.modelNumber.trim() || undefined,
+        specifications: validSpecifications,
+        variantAttributes:
+          variantAttributes.length > 0 ? variantAttributes : undefined,
+        variantCombinations:
+          variantCombinations.length > 0 ? variantCombinations : undefined,
         tags: tags.length > 0 ? tags : undefined,
         location:
           formData.city && formData.province
@@ -262,6 +520,26 @@ export default function CreateListingPage() {
     setSpecifications([...specifications, { key: "", value: "" }]);
   };
 
+  const addSuggestedSpecification = (key: string) => {
+    setSpecifications((current) => {
+      const hasField = current.some(
+        (spec) => spec.key.trim().toLowerCase() === key.toLowerCase()
+      );
+      if (hasField) return current;
+
+      const firstEmptyIndex = current.findIndex(
+        (spec) => !spec.key.trim() && !spec.value.trim()
+      );
+      if (firstEmptyIndex >= 0) {
+        return current.map((spec, index) =>
+          index === firstEmptyIndex ? { key, value: "" } : spec
+        );
+      }
+
+      return [...current, { key, value: "" }];
+    });
+  };
+
   const removeSpecification = (index: number) => {
     setSpecifications(specifications.filter((_, i) => i !== index));
   };
@@ -274,6 +552,44 @@ export default function CreateListingPage() {
     const updated = [...specifications];
     updated[index] = { ...updated[index], [field]: value };
     setSpecifications(updated);
+  };
+
+  const addVariantAttribute = () => {
+    const values = parseVariantValues(variantAttributeDraft.values);
+    const name = variantAttributeDraft.name.trim();
+    if (!name || values.length === 0) {
+      toast.error("Choose a variant attribute and add at least one value");
+      return;
+    }
+
+    setVariantAttributes((current) => {
+      const withoutExisting = current.filter(
+        (attribute) => attribute.name.toLowerCase() !== name.toLowerCase()
+      );
+      return [...withoutExisting, { name, values }];
+    });
+    setVariantAttributeDraft({ ...variantAttributeDraft, values: "" });
+  };
+
+  const removeVariantAttribute = (name: string) => {
+    setVariantAttributes((current) =>
+      current.filter((attribute) => attribute.name !== name)
+    );
+    setVariantOverrides({});
+  };
+
+  const updateVariantOverride = (
+    combinationId: string,
+    field: keyof VariantOverride,
+    value: string
+  ) => {
+    setVariantOverrides((current) => ({
+      ...current,
+      [combinationId]: {
+        ...(current[combinationId] ?? {}),
+        [field]: value,
+      },
+    }));
   };
 
   const addTag = () => {
@@ -383,11 +699,36 @@ export default function CreateListingPage() {
       return;
     }
 
+    const inspectedFiles = await Promise.all(
+      acceptedFiles.map(async (file) => ({
+        file,
+        error: await validateProductImageDimensions(file),
+      }))
+    );
+    const dimensionErrors = inspectedFiles
+      .map((result) => result.error)
+      .filter((error): error is string => Boolean(error));
+    const uploadableFiles = inspectedFiles
+      .filter((result) => !result.error)
+      .map((result) => result.file);
+
+    if (dimensionErrors.length > 0) {
+      setErrors((currentErrors) => ({
+        ...currentErrors,
+        images: dimensionErrors[0],
+      }));
+      toast.error(dimensionErrors[0]);
+    }
+
+    if (uploadableFiles.length === 0) {
+      return;
+    }
+
     setIsUploadingImages(true);
 
     let failedUploads = 0;
 
-    for (const file of acceptedFiles) {
+    for (const file of uploadableFiles) {
       const imageId = `${file.name}-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
       setImages((currentImages) => [
@@ -498,6 +839,75 @@ export default function CreateListingPage() {
                 )}
               </div>
 
+              <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2">
+                  <Label htmlFor="brand">Brand *</Label>
+                  <Input
+                    id="brand"
+                    placeholder="e.g., Samsung, Nike, Getitonline"
+                    value={formData.brand}
+                    onChange={(e) =>
+                      setFormData({ ...formData, brand: e.target.value })
+                    }
+                    className={errors.brand ? "border-destructive" : ""}
+                  />
+                  {errors.brand && (
+                    <p className="text-sm text-destructive">{errors.brand}</p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="sku">SKU *</Label>
+                  <Input
+                    id="sku"
+                    placeholder="Unique seller SKU"
+                    value={formData.sku}
+                    onChange={(e) =>
+                      setFormData({ ...formData, sku: e.target.value })
+                    }
+                    className={errors.sku ? "border-destructive" : ""}
+                  />
+                  {errors.sku && (
+                    <p className="text-sm text-destructive">{errors.sku}</p>
+                  )}
+                </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="shortDescription">Short Description *</Label>
+                <Input
+                  id="shortDescription"
+                  placeholder="One-line buyer-facing summary"
+                  value={formData.shortDescription}
+                  onChange={(e) =>
+                    setFormData({ ...formData, shortDescription: e.target.value })
+                  }
+                  className={errors.shortDescription ? "border-destructive" : ""}
+                />
+                {errors.shortDescription && (
+                  <p className="text-sm text-destructive">
+                    {errors.shortDescription}
+                  </p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="keyFeatures">Key Features *</Label>
+                <Textarea
+                  id="keyFeatures"
+                  placeholder="Add one feature per line"
+                  value={formData.keyFeatures}
+                  onChange={(e) =>
+                    setFormData({ ...formData, keyFeatures: e.target.value })
+                  }
+                  rows={4}
+                  className={errors.keyFeatures ? "border-destructive" : ""}
+                />
+                {errors.keyFeatures && (
+                  <p className="text-sm text-destructive">{errors.keyFeatures}</p>
+                )}
+              </div>
+
               <div className="space-y-2">
                 <Label htmlFor="description">Description *</Label>
                 <Textarea
@@ -519,19 +929,34 @@ export default function CreateListingPage() {
               </div>
 
               <div className="grid gap-4 sm:grid-cols-2">
+                <div className="space-y-2 sm:col-span-2">
+                  <Label htmlFor="categorySearch">Search Categories</Label>
+                  <Input
+                    id="categorySearch"
+                    placeholder="Filter category, subcategory, or classification"
+                    value={categorySearch}
+                    onChange={(e) => setCategorySearch(e.target.value)}
+                  />
+                </div>
+
                 <div className="space-y-2">
                   <Label htmlFor="category">Category *</Label>
                   <Select
                     value={formData.categoryId}
                     onValueChange={(value) =>
-                      setFormData({ ...formData, categoryId: value, subcategoryId: "" })
+                      setFormData({
+                        ...formData,
+                        categoryId: value,
+                        subcategoryId: "",
+                        classificationId: "",
+                      })
                     }
                   >
                     <SelectTrigger className={errors.categoryId ? "border-destructive" : ""}>
                       <SelectValue placeholder="Select category" />
                     </SelectTrigger>
                     <SelectContent>
-                      {categories?.map((cat) => (
+                      {filteredCategories.map((cat) => (
                         <SelectItem key={cat._id} value={cat._id}>
                           {cat.name}
                         </SelectItem>
@@ -548,22 +973,54 @@ export default function CreateListingPage() {
                   <Select
                     value={formData.subcategoryId}
                     onValueChange={(value) =>
-                      setFormData({ ...formData, subcategoryId: value })
+                      setFormData({
+                        ...formData,
+                        subcategoryId: value,
+                        classificationId: "",
+                      })
                     }
                     disabled={!formData.categoryId || !subcategories?.length}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className={errors.subcategoryId ? "border-destructive" : ""}>
                       <SelectValue placeholder="Select subcategory" />
                     </SelectTrigger>
                     <SelectContent>
-                      {subcategories?.map((sub) => (
+                      {filteredSubcategories.map((sub) => (
                         <SelectItem key={sub._id} value={sub._id}>
                           {sub.name}
                         </SelectItem>
                       ))}
                     </SelectContent>
                   </Select>
+                  {errors.subcategoryId && (
+                    <p className="text-sm text-destructive">{errors.subcategoryId}</p>
+                  )}
                 </div>
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="classification">Classification *</Label>
+                <Select
+                  value={formData.classificationId}
+                  onValueChange={(value) =>
+                    setFormData({ ...formData, classificationId: value })
+                  }
+                  disabled={!formData.subcategoryId || !classifications?.length}
+                >
+                  <SelectTrigger className={errors.classificationId ? "border-destructive" : ""}>
+                    <SelectValue placeholder="Select classification" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {filteredClassifications.map((classification) => (
+                      <SelectItem key={classification._id} value={classification._id}>
+                        {classification.name}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                {errors.classificationId && (
+                  <p className="text-sm text-destructive">{errors.classificationId}</p>
+                )}
               </div>
 
               <div className="space-y-2">
@@ -594,7 +1051,7 @@ export default function CreateListingPage() {
             <CardHeader>
               <CardTitle>Images</CardTitle>
               <CardDescription>
-                Add up to 10 photos. First image will be the main photo.
+                Add 3-8 JPG or PNG photos. Each image must be at least 1000x1000 and under 5 MB.
               </CardDescription>
             </CardHeader>
             <CardContent>
@@ -650,7 +1107,7 @@ export default function CreateListingPage() {
                     <input
                       ref={fileInputRef}
                       type="file"
-                      accept="image/jpeg,image/png,image/webp,image/heic,image/heif"
+                      accept="image/jpeg,image/png"
                       multiple
                       className="hidden"
                       onChange={handleImageUpload}
@@ -738,6 +1195,94 @@ export default function CreateListingPage() {
                   )}
                 </div>
               </div>
+
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="lowStockThreshold">Low-stock Threshold</Label>
+                  <Input
+                    id="lowStockThreshold"
+                    type="number"
+                    min="0"
+                    placeholder="e.g., 5"
+                    value={formData.lowStockThreshold}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        lowStockThreshold: e.target.value,
+                      })
+                    }
+                    className={errors.lowStockThreshold ? "border-destructive" : ""}
+                  />
+                  {errors.lowStockThreshold && (
+                    <p className="text-sm text-destructive">
+                      {errors.lowStockThreshold}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="availabilityStatus">Availability</Label>
+                  <Select
+                    value={formData.availabilityStatus}
+                    onValueChange={(value) =>
+                      setFormData({
+                        ...formData,
+                        availabilityStatus: value as typeof formData.availabilityStatus,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select availability" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="in_stock">In stock</SelectItem>
+                      <SelectItem value="preorder">Preorder</SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="weightKg">Weight (kg)</Label>
+                  <Input
+                    id="weightKg"
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    placeholder="e.g., 1.25"
+                    value={formData.weightKg}
+                    onChange={(e) =>
+                      setFormData({ ...formData, weightKg: e.target.value })
+                    }
+                  />
+                </div>
+              </div>
+
+              {formData.availabilityStatus === "preorder" && (
+                <div className="space-y-2">
+                  <Label htmlFor="preorderExpectedShipDate">
+                    Expected Ship Date *
+                  </Label>
+                  <Input
+                    id="preorderExpectedShipDate"
+                    type="date"
+                    value={formData.preorderExpectedShipDate}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        preorderExpectedShipDate: e.target.value,
+                      })
+                    }
+                    className={
+                      errors.preorderExpectedShipDate ? "border-destructive" : ""
+                    }
+                  />
+                  {errors.preorderExpectedShipDate && (
+                    <p className="text-sm text-destructive">
+                      {errors.preorderExpectedShipDate}
+                    </p>
+                  )}
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -843,15 +1388,263 @@ export default function CreateListingPage() {
             </CardContent>
           </Card>
 
+          {/* Product Standards */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Product Standards</CardTitle>
+              <CardDescription>
+                Add warranty, origin, and model details for buyer confidence
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-4 sm:grid-cols-3">
+                <div className="space-y-2">
+                  <Label htmlFor="countryOfOrigin">Country of Origin</Label>
+                  <Input
+                    id="countryOfOrigin"
+                    placeholder="e.g., Zambia"
+                    value={formData.countryOfOrigin}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        countryOfOrigin: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="modelNumber">Model Number</Label>
+                  <Input
+                    id="modelNumber"
+                    placeholder="Manufacturer model"
+                    value={formData.modelNumber}
+                    onChange={(e) =>
+                      setFormData({ ...formData, modelNumber: e.target.value })
+                    }
+                  />
+                </div>
+
+                <div className="space-y-2">
+                  <Label htmlFor="warrantyType">Warranty</Label>
+                  <Select
+                    value={formData.warrantyType}
+                    onValueChange={(value) =>
+                      setFormData({
+                        ...formData,
+                        warrantyType: value as typeof formData.warrantyType,
+                      })
+                    }
+                  >
+                    <SelectTrigger>
+                      <SelectValue placeholder="Select warranty" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      <SelectItem value="none">No warranty</SelectItem>
+                      <SelectItem value="seller">Seller warranty</SelectItem>
+                      <SelectItem value="manufacturer">
+                        Manufacturer warranty
+                      </SelectItem>
+                    </SelectContent>
+                  </Select>
+                </div>
+              </div>
+
+              {formData.warrantyType !== "none" && (
+                <div className="space-y-2">
+                  <Label htmlFor="warrantyDurationDays">
+                    Warranty Duration (days)
+                  </Label>
+                  <Input
+                    id="warrantyDurationDays"
+                    type="number"
+                    min="1"
+                    placeholder="e.g., 365"
+                    value={formData.warrantyDurationDays}
+                    onChange={(e) =>
+                      setFormData({
+                        ...formData,
+                        warrantyDurationDays: e.target.value,
+                      })
+                    }
+                  />
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Variants */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Variants</CardTitle>
+              <CardDescription>
+                Generate option combinations with per-variant price, stock, SKU, status, and image.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="grid gap-3 md:grid-cols-[180px_1fr_auto]">
+                <Select
+                  value={variantAttributeDraft.name}
+                  onValueChange={(name) =>
+                    setVariantAttributeDraft({ ...variantAttributeDraft, name })
+                  }
+                >
+                  <SelectTrigger>
+                    <SelectValue placeholder="Attribute" />
+                  </SelectTrigger>
+                  <SelectContent>
+                    {VARIANT_ATTRIBUTE_OPTIONS.map((option) => (
+                      <SelectItem key={option} value={option}>
+                        {option}
+                      </SelectItem>
+                    ))}
+                  </SelectContent>
+                </Select>
+                <Input
+                  value={variantAttributeDraft.values}
+                  onChange={(event) =>
+                    setVariantAttributeDraft({
+                      ...variantAttributeDraft,
+                      values: event.target.value,
+                    })
+                  }
+                  placeholder="Values separated by comma or pipe, e.g. 1|2|3 or Black, Silver"
+                />
+                <Button type="button" variant="outline" onClick={addVariantAttribute}>
+                  <Plus className="mr-2 h-4 w-4" />
+                  Add
+                </Button>
+              </div>
+
+              {variantAttributes.length > 0 && (
+                <div className="flex flex-wrap gap-2">
+                  {variantAttributes.map((attribute) => (
+                    <span
+                      key={attribute.name}
+                      className="inline-flex items-center gap-2 rounded-md border px-3 py-1 text-sm"
+                    >
+                      {attribute.name}: {attribute.values.join(", ")}
+                      <button
+                        type="button"
+                        onClick={() => removeVariantAttribute(attribute.name)}
+                        className="text-muted-foreground hover:text-destructive"
+                      >
+                        <X className="h-3 w-3" />
+                      </button>
+                    </span>
+                  ))}
+                </div>
+              )}
+
+              {variantCombinations.length > 0 && (
+                <div className="overflow-x-auto rounded-lg border">
+                  <div className="grid min-w-[760px] grid-cols-[1.5fr_1fr_110px_110px_140px_1fr] gap-2 border-b bg-muted/40 p-3 text-xs font-medium uppercase text-muted-foreground">
+                    <span>Combination</span>
+                    <span>SKU</span>
+                    <span>Price</span>
+                    <span>Stock</span>
+                    <span>Status</span>
+                    <span>Image</span>
+                  </div>
+                  {variantCombinations.map((combination) => (
+                    <div
+                      key={combination.id}
+                      className="grid min-w-[760px] grid-cols-[1.5fr_1fr_110px_110px_140px_1fr] gap-2 border-b p-3 last:border-b-0"
+                    >
+                      <span className="text-sm">
+                        {combination.attributes
+                          .map((attribute) => `${attribute.name}: ${attribute.value}`)
+                          .join(" • ")}
+                      </span>
+                      <span className="text-xs text-muted-foreground">
+                        {combination.sku}
+                      </span>
+                      <Input
+                        type="number"
+                        min="0"
+                        step="0.01"
+                        value={variantOverrides[combination.id]?.price ?? String(combination.price)}
+                        onChange={(event) =>
+                          updateVariantOverride(combination.id, "price", event.target.value)
+                        }
+                      />
+                      <Input
+                        type="number"
+                        min="0"
+                        value={variantOverrides[combination.id]?.stock ?? String(combination.stock)}
+                        onChange={(event) =>
+                          updateVariantOverride(combination.id, "stock", event.target.value)
+                        }
+                      />
+                      <Select
+                        value={variantOverrides[combination.id]?.status ?? combination.status}
+                        onValueChange={(status) =>
+                          updateVariantOverride(combination.id, "status", status)
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="active">Active</SelectItem>
+                          <SelectItem value="inactive">Inactive</SelectItem>
+                          <SelectItem value="out_of_stock">Out of stock</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select
+                        value={variantOverrides[combination.id]?.primaryImage || combination.primaryImage || "default"}
+                        onValueChange={(primaryImage) =>
+                          updateVariantOverride(
+                            combination.id,
+                            "primaryImage",
+                            primaryImage === "default" ? "" : primaryImage
+                          )
+                        }
+                      >
+                        <SelectTrigger>
+                          <SelectValue placeholder="Default image" />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="default">Default image</SelectItem>
+                          {uploadedImageUrls.map((url, index) => (
+                            <SelectItem key={url} value={url}>
+                              Image {index + 1}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Specifications */}
           <Card>
             <CardHeader>
               <CardTitle>Specifications</CardTitle>
               <CardDescription>
-                Add technical details about your product (Optional)
+                Add technical details about your product
               </CardDescription>
             </CardHeader>
             <CardContent className="space-y-4">
+              <div className="flex flex-wrap gap-2">
+                {SUGGESTED_SPEC_FIELDS.map((field) => (
+                  <Button
+                    key={field}
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    disabled={specifications.some(
+                      (spec) => spec.key.trim().toLowerCase() === field.toLowerCase()
+                    )}
+                    onClick={() => addSuggestedSpecification(field)}
+                  >
+                    {field}
+                  </Button>
+                ))}
+              </div>
               {specifications.map((spec, index) => (
                 <div key={index} className="flex gap-3 items-center">
                   <Input
@@ -881,6 +1674,9 @@ export default function CreateListingPage() {
                 <Plus className="mr-2 h-4 w-4" />
                 Add Specification
               </Button>
+              {errors.specifications && (
+                <p className="text-sm text-destructive">{errors.specifications}</p>
+              )}
             </CardContent>
           </Card>
 

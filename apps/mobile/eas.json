@@ -34,6 +34,9 @@
       "autoIncrement": true,
       "channel": "internal-test",
       "environment": "production",
+      "ios": {
+        "channel": "getitonline-organization"
+      },
       "env": {
         "EXPO_PUBLIC_APP_ENV": "production"
       }
@@ -41,16 +44,37 @@
     "production": {
       "autoIncrement": true,
       "channel": "production",
+      "environment": "production",
+      "ios": {
+        "channel": "getitonline-organization"
+      },
       "env": {
         "EXPO_PUBLIC_APP_ENV": "production"
+      }
+    },
+    "organization-ios": {
+      "extends": "production",
+      "distribution": "store",
+      "channel": "getitonline-organization",
+      "ios": {
+        "scheme": "Gettitonline",
+        "buildConfiguration": "Release"
       }
     }
   },
   "submit": {
     "production": {
       "ios": {
-        "ascAppId": "6762499208"
+        "ascAppId": "6816962475",
+        "appleTeamId": "5THHD5US74"
+      },
+      "android": {
+        "track": "internal",
+        "releaseStatus": "completed"
       }
+    },
+    "organization-ios": {
+      "extends": "production"
     }
   }
 }

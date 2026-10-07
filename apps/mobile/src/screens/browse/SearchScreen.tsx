@@ -1,75 +1,155 @@
-import React, { useState, useEffect } from 'react';
-import { View, StyleSheet, FlatList, Dimensions } from 'react-native';
-import { Text, Searchbar, useTheme, ActivityIndicator, Card, Chip, Menu, Button } from 'react-native-paper';
+import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { Image, View, StyleSheet, FlatList, ScrollView } from 'react-native';
+import { Text, Searchbar, useTheme, ActivityIndicator, Chip, Menu, Button, TextInput } from 'react-native-paper';
 import { useQuery } from 'convex/react';
 import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList, Product, ProductCondition, Id } from '../../types';
-import { formatPrice } from '../../theme';
-import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
-
-const { width } = Dimensions.get('window');
-const CARD_WIDTH = (width - 48) / 2;
+import { AnimatedProductCard } from '../../components/ui/AnimatedProductCard';
+import { useAppAuth } from '../../context/AuthProvider';
+import { requestAIConsent } from '../../services/aiConsent';
+import { apiService } from '../../services/api';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>;
 
-type SortOption = 'newest' | 'price_asc' | 'price_desc';
+type SortOption = 'relevance' | 'newest' | 'price_asc' | 'price_desc' | 'popular' | 'best_rated';
 type ConditionFilter = 'all' | ProductCondition;
+
+function parseOptionalPrice(value: string) {
+  const parsed = Number.parseFloat(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : undefined;
+}
 
 export default function SearchScreen({ route, navigation }: Props) {
   const theme = useTheme();
-  const { query: initialQuery, categoryId } = route.params || {};
+  const { query: initialQuery, categoryId, brand: initialBrand, imageUri, imageDataUrl } = route.params || {};
+  const { user } = useAppAuth();
+  const visualSearchRequestedRef = useRef(false);
 
   const [searchQuery, setSearchQuery] = useState(initialQuery || '');
+  const [visualSearchLoading, setVisualSearchLoading] = useState(false);
+  const [visualSearchError, setVisualSearchError] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('newest');
   const [condition, setCondition] = useState<ConditionFilter>('all');
   const [sortMenuVisible, setSortMenuVisible] = useState(false);
+  const [minPrice, setMinPrice] = useState('');
+  const [maxPrice, setMaxPrice] = useState('');
+  const [brandFilter, setBrandFilter] = useState(initialBrand || '');
+  const [deliveryFilter, setDeliveryFilter] = useState<'all' | 'free' | 'paid'>('all');
 
-  const searchResults = useQuery(
+  const textSearchResults = useQuery(
     api.products.searchProducts,
     searchQuery.trim()
       ? {
           query: searchQuery,
           categoryId: categoryId ? (categoryId as Id<'categories'>) : undefined,
           condition: condition === 'all' ? undefined : condition,
+          minPrice: parseOptionalPrice(minPrice),
+          maxPrice: parseOptionalPrice(maxPrice),
           limit: 50,
         }
       : 'skip'
   );
+  const brandResults = useQuery(
+    api.products.getProductsByBrand,
+    !searchQuery.trim() && brandFilter.trim()
+      ? {
+          brand: brandFilter.trim(),
+          limit: 50,
+        }
+      : 'skip',
+  );
+  const searchResults = searchQuery.trim()
+    ? textSearchResults
+    : brandFilter.trim()
+      ? brandResults
+      : undefined;
+
+  useEffect(() => {
+    if (!imageDataUrl || visualSearchRequestedRef.current || initialQuery || initialBrand) {
+      return;
+    }
+
+    visualSearchRequestedRef.current = true;
+    setVisualSearchLoading(true);
+    setVisualSearchError(null);
+
+    requestAIConsent()
+      .then((hasConsent) => {
+        if (!hasConsent) {
+          setVisualSearchError('AI image search is off until you allow AI features.');
+          return null;
+        }
+        return apiService.visualSearch({ imageDataUrl });
+      })
+      .then((result) => {
+        if (!result) return;
+        if (result.query.trim()) {
+          setSearchQuery(result.query.trim());
+          return;
+        }
+        setVisualSearchError('Add a few words to search from this photo.');
+      })
+      .catch(() => {
+        setVisualSearchError('Image search is unavailable. Add a few words to search from this photo.');
+      })
+      .finally(() => {
+        setVisualSearchLoading(false);
+      });
+  }, [imageDataUrl, initialBrand, initialQuery]);
+
+  const filteredResults = useMemo(() => {
+    const normalizedBrand = brandFilter.trim().toLowerCase();
+    const items = [...(searchResults ?? [])].filter((product) => {
+          if (normalizedBrand && !product.brand?.toLowerCase().includes(normalizedBrand)) {
+            return false;
+          }
+      if (deliveryFilter === 'free') {
+        return product.shippingOptions?.some((option) => option.price === 0);
+      }
+      if (deliveryFilter === 'paid') {
+        return product.shippingOptions?.some((option) => option.price > 0);
+      }
+      return true;
+    });
+
+    switch (sortBy) {
+      case 'newest':
+        return items.sort((left, right) => right.createdAt - left.createdAt);
+      case 'price_asc':
+        return items.sort((left, right) => left.price - right.price);
+      case 'price_desc':
+        return items.sort((left, right) => right.price - left.price);
+      case 'popular':
+        return items.sort((left, right) => right.views - left.views);
+      case 'best_rated':
+        return items;
+      case 'relevance':
+      default:
+        return items;
+    }
+  }, [brandFilter, deliveryFilter, searchResults, sortBy]);
 
   const handleProductPress = (productId: string) => {
     navigation.navigate('ProductDetail', { productId });
   };
 
-  const renderProduct = ({ item }: { item: Product }) => (
-    <Card
-      style={[styles.productCard, { backgroundColor: theme.colors.surface }]}
+  const renderProduct = ({ item, index }: { item: Product; index: number }) => (
+    <AnimatedProductCard
+      product={item}
+      index={index}
+      viewerUser={user}
       onPress={() => handleProductPress(item._id)}
-    >
-      <Card.Cover
-        source={{ uri: item.images[0] || 'https://via.placeholder.com/150' }}
-        style={styles.productImage}
-      />
-      <Card.Content style={styles.productContent}>
-        <Text variant="bodyMedium" numberOfLines={2} style={{ color: theme.colors.onSurface }}>
-          {item.title}
-        </Text>
-        <Text variant="titleMedium" style={{ color: theme.colors.primary, marginTop: 4 }}>
-          {formatPrice(calculateDisplayPrice(item.price))}
-        </Text>
-        <View style={styles.productMeta}>
-          <Chip compact mode="flat" style={styles.conditionChip}>
-            {item.condition.replace('_', ' ')}
-          </Chip>
-        </View>
-      </Card.Content>
-    </Card>
+    />
   );
 
   const sortOptions: { value: SortOption; label: string }[] = [
+    { value: 'relevance', label: 'Relevance' },
     { value: 'newest', label: 'Newest First' },
     { value: 'price_asc', label: 'Price: Low to High' },
     { value: 'price_desc', label: 'Price: High to Low' },
+    { value: 'popular', label: 'Popular' },
+    { value: 'best_rated', label: 'Best Rated' },
   ];
 
   const conditionOptions: { value: ConditionFilter; label: string }[] = [
@@ -79,18 +159,37 @@ export default function SearchScreen({ route, navigation }: Props) {
     { value: 'good', label: 'Good' },
     { value: 'fair', label: 'Fair' },
   ];
+  const hasSearchIntent = Boolean(searchQuery.trim() || brandFilter.trim() || imageUri);
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
       {/* Search Bar */}
       <View style={styles.searchContainer}>
         <Searchbar
-          placeholder="Search products..."
+          placeholder={imageUri ? 'Describe the product in your photo...' : 'Search products...'}
           value={searchQuery}
           onChangeText={setSearchQuery}
           style={[styles.searchBar, { backgroundColor: theme.colors.surfaceVariant }]}
         />
       </View>
+
+      {imageUri ? (
+        <View style={styles.imageSearchPreview}>
+          <Image source={{ uri: imageUri }} style={styles.imageSearchThumb} />
+          <View style={{ flex: 1 }}>
+            <Text variant="labelLarge" style={{ color: theme.colors.onSurface }}>
+              {visualSearchLoading ? 'Analyzing photo...' : 'Image search'}
+            </Text>
+            <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+              {visualSearchError
+                ? visualSearchError
+                : searchQuery.trim()
+                  ? `Searching for "${searchQuery.trim()}"`
+                  : 'Add a few words above to refine matches from this photo.'}
+            </Text>
+          </View>
+        </View>
+      ) : null}
 
       {/* Filters */}
       <View style={styles.filtersContainer}>
@@ -121,27 +220,59 @@ export default function SearchScreen({ route, navigation }: Props) {
           ))}
         </Menu>
 
-        <FlatList
-          horizontal
-          data={conditionOptions}
-          renderItem={({ item }) => (
+        <ScrollView horizontal showsHorizontalScrollIndicator={false} contentContainerStyle={styles.conditionFilters}>
+          {conditionOptions.map((item) => (
+              <Chip
+                key={item.value}
+                mode={condition === item.value ? 'flat' : 'outlined'}
+                selected={condition === item.value}
+                onPress={() => setCondition(item.value)}
+                style={styles.conditionFilterChip}
+              >
+                {item.label}
+              </Chip>
+            ))}
+          {(['all', 'free', 'paid'] as const).map((value) => (
             <Chip
-              mode={condition === item.value ? 'flat' : 'outlined'}
-              selected={condition === item.value}
-              onPress={() => setCondition(item.value)}
+              key={value}
+              mode={deliveryFilter === value ? 'flat' : 'outlined'}
+              selected={deliveryFilter === value}
+              onPress={() => setDeliveryFilter(value)}
               style={styles.conditionFilterChip}
             >
-              {item.label}
+              {value === 'all' ? 'All Delivery' : value === 'free' ? 'Free Delivery' : 'Paid Delivery'}
             </Chip>
-          )}
-          keyExtractor={(item) => item.value}
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={styles.conditionFilters}
-        />
+          ))}
+        </ScrollView>
+        <View style={styles.advancedFilters}>
+          <TextInput
+            mode="outlined"
+            label="Brand"
+            value={brandFilter}
+            onChangeText={setBrandFilter}
+            style={styles.filterInput}
+          />
+          <TextInput
+            mode="outlined"
+            label="Min price"
+            value={minPrice}
+            onChangeText={setMinPrice}
+            keyboardType="decimal-pad"
+            style={styles.priceInput}
+          />
+          <TextInput
+            mode="outlined"
+            label="Max price"
+            value={maxPrice}
+            onChangeText={setMaxPrice}
+            keyboardType="decimal-pad"
+            style={styles.priceInput}
+          />
+        </View>
       </View>
 
       {/* Results */}
-      {!searchQuery.trim() ? (
+      {!hasSearchIntent ? (
         <View style={styles.emptyState}>
           <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
             Enter a search term
@@ -150,9 +281,18 @@ export default function SearchScreen({ route, navigation }: Props) {
             Search for products by name or description
           </Text>
         </View>
-      ) : searchResults === undefined ? (
+      ) : visualSearchLoading || (searchResults === undefined && (searchQuery.trim() || brandFilter.trim())) ? (
         <ActivityIndicator style={styles.loader} />
-      ) : searchResults.length === 0 ? (
+      ) : imageUri && !searchQuery.trim() && !brandFilter.trim() ? (
+        <View style={styles.emptyState}>
+          <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
+            Add search words
+          </Text>
+          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+            Describe the product in the photo to find matching listings.
+          </Text>
+        </View>
+      ) : filteredResults.length === 0 ? (
         <View style={styles.emptyState}>
           <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant }}>
             No products found
@@ -163,7 +303,7 @@ export default function SearchScreen({ route, navigation }: Props) {
         </View>
       ) : (
         <FlatList
-          data={searchResults}
+          data={filteredResults}
           renderItem={renderProduct}
           keyExtractor={(item) => item._id}
           numColumns={2}
@@ -172,7 +312,7 @@ export default function SearchScreen({ route, navigation }: Props) {
           showsVerticalScrollIndicator={false}
           ListHeaderComponent={
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 16 }}>
-              {searchResults.length} results
+              {filteredResults.length} results
             </Text>
           }
         />
@@ -192,6 +332,21 @@ const styles = StyleSheet.create({
   searchBar: {
     borderRadius: 12,
   },
+  imageSearchPreview: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 12,
+    marginHorizontal: 16,
+    marginBottom: 8,
+    padding: 10,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.04)',
+  },
+  imageSearchThumb: {
+    width: 52,
+    height: 52,
+    borderRadius: 8,
+  },
   filtersContainer: {
     paddingHorizontal: 16,
     paddingBottom: 8,
@@ -206,6 +361,17 @@ const styles = StyleSheet.create({
   conditionFilterChip: {
     marginRight: 8,
   },
+  advancedFilters: {
+    flexDirection: 'row',
+    gap: 8,
+    marginTop: 8,
+  },
+  filterInput: {
+    flex: 1.2,
+  },
+  priceInput: {
+    flex: 1,
+  },
   listContent: {
     padding: 16,
     paddingTop: 8,
@@ -213,24 +379,6 @@ const styles = StyleSheet.create({
   row: {
     justifyContent: 'space-between',
     marginBottom: 16,
-  },
-  productCard: {
-    width: CARD_WIDTH,
-    borderRadius: 12,
-    overflow: 'hidden',
-  },
-  productImage: {
-    height: 120,
-  },
-  productContent: {
-    padding: 8,
-  },
-  productMeta: {
-    flexDirection: 'row',
-    marginTop: 8,
-  },
-  conditionChip: {
-    height: 24,
   },
   loader: {
     flex: 1,

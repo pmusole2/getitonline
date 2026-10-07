@@ -1,21 +1,17 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, FlatList, Dimensions, Pressable } from 'react-native';
-import { Text, useTheme, Card, Chip, Surface } from 'react-native-paper';
+import { Text, useTheme, Chip, Surface } from 'react-native-paper';
 import Animated, {
   FadeIn,
   FadeInDown,
-  useSharedValue,
-  useAnimatedStyle,
-  withSpring,
 } from 'react-native-reanimated';
-import { useQuery } from 'convex/react';
+import { useMutation, useQuery } from 'convex/react';
 import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList, Product, Id } from '../../types';
-import { formatPrice } from '../../theme';
-import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { MotiView } from 'moti';
+import { AnimatedProductCard } from '../../components/ui/AnimatedProductCard';
 import { StackHeader } from '../../components/ui/Header';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { useAppAuth } from '../../context/AuthProvider';
@@ -24,70 +20,7 @@ import { canManageCatalog } from '../../utils/roles';
 const { width } = Dimensions.get('window');
 const CARD_WIDTH = (width - 48) / 2;
 
-const AnimatedPressable = Animated.createAnimatedComponent(Pressable);
-
 type Props = NativeStackScreenProps<RootStackParamList, 'CategoryProducts'>;
-
-interface ProductCardProps {
-  product: Product;
-  index: number;
-  onPress: () => void;
-}
-
-function AnimatedProductCard({ product, index, onPress }: ProductCardProps) {
-  const theme = useTheme();
-  const scale = useSharedValue(1);
-
-  const animatedStyle = useAnimatedStyle(() => ({
-    transform: [{ scale: scale.value }],
-  }));
-
-  const handlePressIn = () => {
-    scale.value = withSpring(0.96, { damping: 15 });
-  };
-
-  const handlePressOut = () => {
-    scale.value = withSpring(1, { damping: 15 });
-  };
-
-  return (
-    <Animated.View entering={FadeInDown.delay(index * 50).duration(300)}>
-      <AnimatedPressable
-        style={[styles.productCard, animatedStyle, { backgroundColor: theme.colors.surface }]}
-        onPress={onPress}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-      >
-        <Surface style={styles.cardSurface} elevation={2}>
-          {product.images[0] ? (
-            <Card.Cover
-              source={{ uri: product.images[0] }}
-              style={styles.productImage}
-            />
-          ) : (
-            <View style={[styles.productImage, styles.imagePlaceholder, { backgroundColor: theme.colors.surfaceVariant }]}>
-              <Icon name="image-off" size={32} color={theme.colors.onSurfaceVariant} />
-            </View>
-          )}
-          <View style={styles.productContent}>
-            <Text variant="bodyMedium" numberOfLines={2} style={{ color: theme.colors.onSurface, fontWeight: '500' }}>
-              {product.title}
-            </Text>
-            <Text variant="titleMedium" style={{ color: theme.colors.primary, marginTop: 4, fontWeight: '700' }}>
-              {formatPrice(calculateDisplayPrice(product.price))}
-            </Text>
-            <View style={styles.locationRow}>
-              <Icon name="map-marker-outline" size={14} color={theme.colors.onSurfaceVariant} />
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 4 }}>
-                {typeof product.location === 'string' ? product.location : product.location?.city || 'Zambia'}
-              </Text>
-            </View>
-          </View>
-        </Surface>
-      </AnimatedPressable>
-    </Animated.View>
-  );
-}
 
 export default function CategoryProductsScreen({ route, navigation }: Props) {
   const theme = useTheme();
@@ -99,10 +32,38 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
   const category = useQuery(api.categories.getCategoryWithSubcategories, {
     categoryId: categoryId as Id<'categories'>
   });
-  const products = useQuery(api.products.getProductsByCategory, {
-    categoryId: (selectedSubcategory || categoryId) as Id<'categories'>,
-    limit: 50,
-  });
+  const recordBehaviorEvent = useMutation(api.notifications.recordBehaviorEvent);
+  const categoryProducts = useQuery(
+    api.products.getProductsByCategory,
+    selectedSubcategory
+      ? 'skip'
+      : {
+          categoryId: categoryId as Id<'categories'>,
+          limit: 50,
+        },
+  );
+  const subcategoryProducts = useQuery(
+    api.products.getProductsBySubcategory,
+    selectedSubcategory
+      ? {
+          subcategoryId: selectedSubcategory as Id<'categories'>,
+          limit: 50,
+        }
+      : 'skip',
+  );
+  const products = selectedSubcategory
+    ? subcategoryProducts === undefined
+      ? undefined
+      : { items: subcategoryProducts, hasMore: false, nextCursor: null }
+    : categoryProducts;
+
+  useEffect(() => {
+    void recordBehaviorEvent({
+      userId: user?._id,
+      eventType: 'category_browse',
+      categoryId: (selectedSubcategory ?? categoryId) as Id<'categories'>,
+    });
+  }, [categoryId, recordBehaviorEvent, selectedSubcategory, user?._id]);
 
   const handleProductPress = (productId: string) => {
     navigation.navigate('ProductDetail', { productId });
@@ -112,6 +73,7 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
     <AnimatedProductCard
       product={item}
       index={index}
+      viewerUser={user}
       onPress={() => handleProductPress(item._id)}
     />
   );
@@ -259,32 +221,6 @@ const styles = StyleSheet.create({
   row: {
     justifyContent: 'space-between',
     marginBottom: 16,
-  },
-  productCard: {
-    width: CARD_WIDTH,
-    borderRadius: 16,
-    overflow: 'hidden',
-  },
-  cardSurface: {
-    borderRadius: 16,
-    overflow: 'hidden',
-  },
-  productImage: {
-    height: 120,
-    borderTopLeftRadius: 16,
-    borderTopRightRadius: 16,
-  },
-  imagePlaceholder: {
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  productContent: {
-    padding: 12,
-  },
-  locationRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    marginTop: 4,
   },
   loadingContainer: {
     padding: 16,

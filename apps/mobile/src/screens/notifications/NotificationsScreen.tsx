@@ -31,23 +31,42 @@ interface NotificationItemProps {
 function getNotificationIcon(type: string): { name: string; color: string; bgColor: string } {
   switch (type) {
     case 'order_placed':
-    case 'order_confirmed':
+    case 'order_status_update':
+    case 'product_sold':
       return { name: 'package-variant', color: '#3B82F6', bgColor: '#DBEAFE' };
-    case 'order_shipped':
+    case 'delivery_update':
       return { name: 'truck-delivery', color: '#8B5CF6', bgColor: '#EDE9FE' };
-    case 'order_delivered':
+    case 'return_update':
+      return { name: 'keyboard-return', color: '#0EA5E9', bgColor: '#E0F2FE' };
+    case 'listing_approved':
       return { name: 'check-circle', color: '#10B981', bgColor: '#D1FAE5' };
+    case 'listing_rejected':
+    case 'listing_changes_requested':
+      return { name: 'clipboard-alert-outline', color: '#F59E0B', bgColor: '#FEF3C7' };
+    case 'product_submitted':
+      return { name: 'clipboard-clock-outline', color: '#3B82F6', bgColor: '#DBEAFE' };
     case 'payment_received':
+    case 'funds_released':
+    case 'wallet_credit':
       return { name: 'credit-card-check', color: '#10B981', bgColor: '#D1FAE5' };
-    case 'payment_released':
-      return { name: 'cash-check', color: '#10B981', bgColor: '#D1FAE5' };
-    case 'dispute_opened':
-    case 'dispute_resolved':
+    case 'payment_failed':
+    case 'withdrawal_failed':
+      return { name: 'credit-card-remove-outline', color: '#DC2626', bgColor: '#FEE2E2' };
+    case 'withdrawal_initiated':
+    case 'withdrawal_completed':
+    case 'wallet_debit':
+      return { name: 'bank-transfer', color: '#10B981', bgColor: '#D1FAE5' };
+    case 'dispute_update':
       return { name: 'alert-circle', color: '#F59E0B', bgColor: '#FEF3C7' };
-    case 'review_received':
+    case 'new_review':
       return { name: 'star', color: '#F59E0B', bgColor: '#FEF3C7' };
-    case 'message_received':
+    case 'new_message':
       return { name: 'message-text', color: '#0EA5E9', bgColor: '#E0F2FE' };
+    case 'low_stock':
+      return { name: 'warehouse', color: '#DC2626', bgColor: '#FEE2E2' };
+    case 'promo_code':
+    case 'flash_sale':
+      return { name: 'ticket-percent', color: '#8B5CF6', bgColor: '#EDE9FE' };
     default:
       return { name: 'bell', color: '#64748B', bgColor: '#F1F5F9' };
   }

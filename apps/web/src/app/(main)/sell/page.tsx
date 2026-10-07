@@ -64,6 +64,7 @@ type ProductStatus =
   | "draft"
   | "pending_review"
   | "changes_requested"
+  | "rejected"
   | "active"
   | "sold"
   | "suspended";
@@ -85,6 +86,7 @@ const productStatusCopy: Record<
   draft: { label: "Draft", variant: "outline" },
   pending_review: { label: "Pending Review", variant: "secondary" },
   changes_requested: { label: "Changes Requested", variant: "secondary" },
+  rejected: { label: "Rejected", variant: "destructive" },
   active: { label: "Active", variant: "default" },
   sold: { label: "Sold", variant: "secondary" },
   suspended: { label: "Suspended", variant: "destructive" },
@@ -121,6 +123,23 @@ const emptyVendorForm: VendorApplicationForm = {
   instagram: "",
   facebook: "",
 };
+
+function normalizeOptionalUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return trimmed;
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
 
 function ListingTable({
   products,
@@ -345,8 +364,8 @@ export default function SellDashboardPage() {
         ownerUserId: user._id,
         storeName: form.storeName.trim(),
         description: form.description.trim(),
-        logoUrl: form.logoUrl.trim() || undefined,
-        bannerUrl: form.bannerUrl.trim() || undefined,
+        logoUrl: normalizeOptionalUrl(form.logoUrl),
+        bannerUrl: normalizeOptionalUrl(form.bannerUrl),
         contactEmail: form.contactEmail.trim(),
         contactPhone: form.contactPhone.trim() || undefined,
         address: {
@@ -356,9 +375,9 @@ export default function SellDashboardPage() {
           country: form.country.trim(),
         },
         socialLinks: {
-          website: form.website.trim() || undefined,
-          instagram: form.instagram.trim() || undefined,
-          facebook: form.facebook.trim() || undefined,
+          website: normalizeOptionalUrl(form.website),
+          instagram: normalizeOptionalUrl(form.instagram),
+          facebook: normalizeOptionalUrl(form.facebook),
         },
       });
 
@@ -433,7 +452,7 @@ export default function SellDashboardPage() {
           <CardHeader>
             <CardTitle>Review Operations</CardTitle>
             <CardDescription>
-              Moderators handle vendor and listing review from the admin tools.
+              Reviewer-Approvers handle vendor and listing review from the admin tools.
             </CardDescription>
           </CardHeader>
           <CardContent className="flex flex-col gap-3 sm:flex-row">
@@ -723,6 +742,17 @@ export default function SellDashboardPage() {
               <div className="space-y-2">
                 <Label>Store Banner</Label>
                 <Input
+                  id="bannerUrl"
+                  placeholder="https://example.com/banner.jpg"
+                  value={form.bannerUrl}
+                  onChange={(event) =>
+                    setForm((current) => ({
+                      ...current,
+                      bannerUrl: event.target.value,
+                    }))
+                  }
+                />
+                <Input
                   type="file"
                   accept="image/*"
                   onChange={(event) => void uploadBrandAsset(event, "bannerUrl")}
@@ -732,7 +762,7 @@ export default function SellDashboardPage() {
                 )}
                 {form.bannerUrl && (
                   <img
-                    src={form.bannerUrl}
+                    src={normalizeOptionalUrl(form.bannerUrl) ?? form.bannerUrl}
                     alt="Store banner preview"
                     className="h-24 w-full rounded-lg border object-cover"
                   />
@@ -779,7 +809,7 @@ export default function SellDashboardPage() {
             <CardContent className="space-y-3 text-sm text-muted-foreground">
               <div className="flex items-start gap-3">
                 <Building2 className="mt-0.5 h-4 w-4 text-primary" />
-                <p>Admins review your store identity, branding, and contact details.</p>
+                <p>Super Admins review your store identity, branding, and contact details.</p>
               </div>
               <div className="flex items-start gap-3">
                 <ShieldCheck className="mt-0.5 h-4 w-4 text-primary" />

@@ -3,17 +3,20 @@ import { useMutation, useQuery } from 'convex/react';
 import { MotiView } from 'moti';
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Avatar, Button, Card, Chip, Dialog, Divider, Portal, Surface, Text, useTheme } from 'react-native-paper';
+import { Avatar, Button, Card, Chip, Dialog, Divider, Portal, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { ASSISTANT_NAME } from '../../config/assistant';
 import { useAppAuth } from '../../context/AuthProvider';
+import { requestAIConsent } from '../../services/aiConsent';
 import { apiService, DisputeAnalysisResponse } from '../../services/api';
 import { formatPrice } from '../../theme';
 import type { DisputeCategory, DisputeStatus, Id, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'DisputeDetail'>;
+type ModeratorResolution = 'full_refund' | 'partial_refund' | 'no_refund';
 
 const categoryLabels: Record<DisputeCategory, string> = {
   not_received: 'Item Not Received',
@@ -39,10 +42,19 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
   const [loadingAnalysis, setLoadingAnalysis] = useState(false);
   const [analysisError, setAnalysisError] = useState<string | null>(null);
   const [resolveDialogVisible, setResolveDialogVisible] = useState(false);
+  const [moderationDialogVisible, setModerationDialogVisible] = useState(false);
   const [resolving, setResolving] = useState(false);
+  const [moderationOutcome, setModerationOutcome] = useState<ModeratorResolution>('no_refund');
+  const [moderationNotes, setModerationNotes] = useState('');
+  const [partialRefundAmount, setPartialRefundAmount] = useState('');
+  const [assigningModerator, setAssigningModerator] = useState(false);
+  const [closingCase, setClosingCase] = useState(false);
 
   const dispute = useQuery(api.disputes.getDispute, { disputeId: disputeId as Id<'disputes'> });
   const buyerResolveDispute = useMutation(api.disputes.buyerResolveDispute);
+  const assignModerator = useMutation(api.disputes.assignModerator);
+  const resolveDisputeMutation = useMutation(api.disputes.resolveDispute);
+  const updateDisputeStatus = useMutation(api.disputes.updateDisputeStatus);
 
   const handleOpenChat = () => {
     navigation.navigate('Chat', { disputeId });
@@ -111,6 +123,12 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
     setAnalysisError(null);
 
     try {
+      const hasConsent = await requestAIConsent();
+      if (!hasConsent) {
+        setAnalysisError(`${ASSISTANT_NAME} is off until you allow AI features.`);
+        return;
+      }
+
       const viewerRole = getViewerRole();
       const analysis = await apiService.analyzeDispute({
         disputeId,
@@ -119,7 +137,7 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
       });
       setAiAnalysis(analysis);
     } catch (error) {
-      setAnalysisError('Unable to generate AI analysis at this time');
+      setAnalysisError(`${ASSISTANT_NAME} couldn't analyze this dispute right now`);
       console.error('AI Analysis error:', error);
     } finally {
       setLoadingAnalysis(false);
@@ -183,6 +201,105 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
   const isBuyer = user?._id === dispute.buyerId;
   const isSeller = user?._id === dispute.sellerId;
   const isModerator = user?.role === 'moderator' || user?.role === 'admin';
+  const moderatorName = dispute.moderator
+    ? `${dispute.moderator.firstName} ${dispute.moderator.lastName}`
+    : null;
+  const assignedToCurrentModerator = dispute.moderator?._id === user?._id;
+  const moderationLimit =
+    dispute.escrow?.grossAmount ?? dispute.escrow?.amount ?? dispute.order?.totalAmount ?? 0;
+
+  const handleAssignToMe = async () => {
+    if (!user || !isModerator) {
+      return;
+    }
+
+    setAssigningModerator(true);
+
+    try {
+      await assignModerator({
+        disputeId: disputeId as Id<'disputes'>,
+        moderatorId: user._id,
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to assign Reviewer-Approver';
+      Alert.alert('Error', message);
+    } finally {
+      setAssigningModerator(false);
+    }
+  };
+
+  const handleSubmitModeration = async () => {
+    if (!user || !isModerator) {
+      return;
+    }
+
+    const trimmedNotes = moderationNotes.trim();
+
+    if (!trimmedNotes) {
+      Alert.alert('Add notes', 'Provide resolution notes before submitting.');
+      return;
+    }
+
+    const parsedRefund =
+      moderationOutcome === 'partial_refund'
+        ? Number.parseFloat(partialRefundAmount.trim())
+        : undefined;
+
+    if (
+      moderationOutcome === 'partial_refund' &&
+      (!Number.isFinite(parsedRefund) || !parsedRefund || parsedRefund <= 0 || parsedRefund > moderationLimit)
+    ) {
+      Alert.alert(
+        'Invalid refund amount',
+        `Enter a partial refund between 0 and ${formatPrice(moderationLimit)}.`
+      );
+      return;
+    }
+
+    setResolving(true);
+
+    try {
+      await resolveDisputeMutation({
+        disputeId: disputeId as Id<'disputes'>,
+        moderatorId: user._id,
+        resolutionType: moderationOutcome,
+        refundAmount: moderationOutcome === 'partial_refund' ? parsedRefund : undefined,
+        notes: trimmedNotes,
+      });
+
+      setModerationDialogVisible(false);
+      setModerationNotes('');
+      setPartialRefundAmount('');
+      setModerationOutcome('no_refund');
+      Alert.alert('Dispute resolved', 'The dispute resolution was applied successfully.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to resolve dispute';
+      Alert.alert('Error', message);
+    } finally {
+      setResolving(false);
+    }
+  };
+
+  const handleCloseCase = async () => {
+    if (!user || !isModerator) {
+      return;
+    }
+
+    setClosingCase(true);
+
+    try {
+      await updateDisputeStatus({
+        disputeId: disputeId as Id<'disputes'>,
+        userId: user._id,
+        status: 'closed',
+      });
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to close dispute';
+      Alert.alert('Error', message);
+    } finally {
+      setClosingCase(false);
+    }
+  };
 
   // Determine the viewer's role for display
   const viewerRole = getViewerRole();
@@ -262,17 +379,22 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
                 <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginBottom: 12 }}>
                   Related Order
                 </Text>
-                <View style={styles.orderInfo}>
-                  <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-                    Order #{dispute.order.orderNumber}
-                  </Text>
-                  <Text variant="titleSmall" style={{ color: theme.colors.primary }}>
-                    {formatPrice(dispute.order.totalAmount)}
-                  </Text>
-                </View>
-              </Card.Content>
-            </Card>
-          </Animated.View>
+              <View style={styles.orderInfo}>
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
+                  Order #{dispute.order.orderNumber}
+                </Text>
+                <Text variant="titleSmall" style={{ color: theme.colors.primary }}>
+                  {formatPrice(dispute.order.totalAmount)}
+                </Text>
+              </View>
+              {moderatorName ? (
+                <Chip compact icon="gavel" style={styles.moderatorChip}>
+                  Assigned to {moderatorName}
+                </Chip>
+              ) : null}
+            </Card.Content>
+          </Card>
+        </Animated.View>
         )}
 
         {/* Parties */}
@@ -372,7 +494,7 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
                     <Icon name="creation" size={24} color={theme.colors.tertiary} />
                   </MotiView>
                   <Text variant="titleMedium" style={{ color: theme.colors.onTertiaryContainer, marginLeft: 8, flex: 1 }}>
-                    AI Analysis
+                    {ASSISTANT_NAME}'s Analysis
                   </Text>
                   {displayAnalysis.riskLevel && (
                     <Chip
@@ -524,10 +646,10 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
               <Card.Content style={styles.noAnalysisCard}>
                 <Icon name="robot-outline" size={48} color={theme.colors.onSurfaceVariant} />
                 <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginTop: 12 }}>
-                  AI Analysis Available
+                  {ASSISTANT_NAME}'s Analysis Available
                 </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center', marginTop: 8 }}>
-                  Get AI-powered insights about this dispute including suggested resolutions
+                  Ask {ASSISTANT_NAME} for insights about this dispute, including suggested resolutions
                 </Text>
                 {analysisError && (
                   <Text variant="bodySmall" style={{ color: theme.colors.error, marginTop: 8 }}>
@@ -562,6 +684,11 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSecondaryContainer, marginTop: 12 }}>
                   {dispute.resolution.type.replace(/_/g, ' ').charAt(0).toUpperCase() + dispute.resolution.type.replace(/_/g, ' ').slice(1)}
                 </Text>
+                {typeof dispute.resolution.refundAmount === 'number' ? (
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, marginTop: 8 }}>
+                    Refund Amount: {formatPrice(dispute.resolution.refundAmount)}
+                  </Text>
+                ) : null}
                 {dispute.resolution.notes && (
                   <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, marginTop: 8 }}>
                     {dispute.resolution.notes}
@@ -595,6 +722,46 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
                 Resolve Dispute
               </Button>
             )}
+
+            {isModerator && !assignedToCurrentModerator && (
+              <Button
+                mode="outlined"
+                onPress={() => void handleAssignToMe()}
+                style={[styles.actionButton, { marginTop: 12 }]}
+                icon="account-plus-outline"
+                loading={assigningModerator}
+                disabled={assigningModerator || resolving}
+              >
+                {moderatorName ? 'Take Over Review' : 'Assign to Me'}
+              </Button>
+            )}
+
+            {isModerator && (
+              <Button
+                mode="contained-tonal"
+                onPress={() => setModerationDialogVisible(true)}
+                style={[styles.actionButton, { marginTop: 12 }]}
+                icon="gavel"
+                disabled={assigningModerator || resolving}
+              >
+                Resolve as Reviewer-Approver
+              </Button>
+            )}
+          </Animated.View>
+        )}
+
+        {isModerator && dispute.status === 'resolved' && (
+          <Animated.View entering={FadeInDown.delay(425).duration(400)} style={styles.actions}>
+            <Button
+              mode="outlined"
+              onPress={() => void handleCloseCase()}
+              style={styles.actionButton}
+              icon="archive-outline"
+              loading={closingCase}
+              disabled={closingCase}
+            >
+              Close Case
+            </Button>
           </Animated.View>
         )}
       </ScrollView>
@@ -696,6 +863,79 @@ export default function DisputeDetailScreen({ route, navigation }: Props) {
             </Button>
           </Dialog.Actions>
         </Dialog>
+
+        <Dialog
+          visible={moderationDialogVisible}
+          onDismiss={() => {
+            if (!resolving) {
+              setModerationDialogVisible(false);
+            }
+          }}
+        >
+          <Dialog.Title>Reviewer-Approver Resolution</Dialog.Title>
+          <Dialog.Content>
+            <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+              Resolve this dispute using a supported escrow outcome.
+            </Text>
+
+            <View style={styles.moderationChips}>
+              <Chip
+                selected={moderationOutcome === 'no_refund'}
+                onPress={() => setModerationOutcome('no_refund')}
+              >
+                No Refund
+              </Chip>
+              <Chip
+                selected={moderationOutcome === 'partial_refund'}
+                onPress={() => setModerationOutcome('partial_refund')}
+              >
+                Partial Refund
+              </Chip>
+              <Chip
+                selected={moderationOutcome === 'full_refund'}
+                onPress={() => setModerationOutcome('full_refund')}
+              >
+                Full Refund
+              </Chip>
+            </View>
+
+            {moderationOutcome === 'partial_refund' ? (
+              <TextInput
+                mode="outlined"
+                label={`Refund Amount (max ${formatPrice(moderationLimit)})`}
+                value={partialRefundAmount}
+                onChangeText={setPartialRefundAmount}
+                keyboardType="decimal-pad"
+                style={styles.moderationInput}
+              />
+            ) : null}
+
+            <TextInput
+              mode="outlined"
+              label="Resolution Notes"
+              value={moderationNotes}
+              onChangeText={setModerationNotes}
+              multiline
+              numberOfLines={4}
+              style={styles.moderationInput}
+            />
+          </Dialog.Content>
+          <Dialog.Actions>
+            <Button
+              onPress={() => setModerationDialogVisible(false)}
+              disabled={resolving}
+            >
+              Cancel
+            </Button>
+            <Button
+              onPress={() => void handleSubmitModeration()}
+              loading={resolving}
+              disabled={resolving}
+            >
+              Submit
+            </Button>
+          </Dialog.Actions>
+        </Dialog>
       </Portal>
     </View>
   );
@@ -732,6 +972,10 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+  },
+  moderatorChip: {
+    alignSelf: 'flex-start',
+    marginTop: 12,
   },
   partyRow: {
     flexDirection: 'row',
@@ -828,5 +1072,14 @@ const styles = StyleSheet.create({
     justifyContent: 'center',
     alignItems: 'center',
     borderRadius: 12,
+  },
+  moderationChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 16,
+  },
+  moderationInput: {
+    marginTop: 16,
   },
 });

@@ -39,6 +39,8 @@ export default defineSchema({
     totalPurchases: v.number(),
     isVerified: v.boolean(),
     isBanned: v.boolean(),
+    isDeleted: v.optional(v.boolean()),
+    deletedAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -46,13 +48,17 @@ export default defineSchema({
     .index("by_email", ["email"])
     .index("by_role", ["role"]),
 
-  // Categories table (supports subcategories via parentId)
+  // Categories table (supports PRD L1/L2/L3 taxonomy via parentId)
   categories: defineTable({
     name: v.string(),
     slug: v.string(),
     description: v.optional(v.string()),
     image: v.optional(v.string()),
     parentId: v.optional(v.id("categories")),
+    level: v.optional(v.union(v.literal("l1"), v.literal("l2"), v.literal("l3"))),
+    requiresApproval: v.optional(v.boolean()),
+    approvedByUserId: v.optional(v.id("users")),
+    approvedAt: v.optional(v.number()),
     isActive: v.boolean(),
     sortOrder: v.number(),
     createdAt: v.number(),
@@ -67,12 +73,30 @@ export default defineSchema({
     sellerId: v.id("users"),
     managedByUserId: v.optional(v.id("users")),
     title: v.string(),
+    brand: v.optional(v.string()),
+    sku: v.optional(v.string()),
+    shortDescription: v.optional(v.string()),
     description: v.string(),
+    keyFeatures: v.optional(v.array(v.string())),
     price: v.number(), // in ZMW
     compareAtPrice: v.optional(v.number()),
     categoryId: v.id("categories"),
     subcategoryId: v.optional(v.id("categories")),
+    classificationId: v.optional(v.id("categories")),
     images: v.array(v.string()),
+    imageMetadata: v.optional(
+      v.array(
+        v.object({
+          url: v.string(),
+          width: v.optional(v.number()),
+          height: v.optional(v.number()),
+          sizeBytes: v.optional(v.number()),
+          mimeType: v.optional(v.string()),
+          isPrimary: v.boolean(),
+          hasWhiteBackground: v.optional(v.boolean()),
+        })
+      )
+    ),
     condition: v.union(
       v.literal("new"),
       v.literal("like_new"),
@@ -80,6 +104,121 @@ export default defineSchema({
       v.literal("fair")
     ),
     quantity: v.number(),
+    lowStockThreshold: v.optional(v.number()),
+    availabilityStatus: v.optional(
+      v.union(
+        v.literal("in_stock"),
+        v.literal("low_stock"),
+        v.literal("out_of_stock"),
+        v.literal("preorder")
+      )
+    ),
+    preorder: v.optional(
+      v.object({
+        isPreorder: v.boolean(),
+        expectedShipDate: v.optional(v.number()),
+        depositPercent: v.optional(v.number()),
+      })
+    ),
+    variants: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          options: v.array(
+            v.object({
+              name: v.string(),
+              value: v.string(),
+              sku: v.optional(v.string()),
+              priceDelta: v.optional(v.number()),
+              quantity: v.optional(v.number()),
+              imageUrl: v.optional(v.string()),
+            })
+          ),
+        })
+      )
+    ),
+    variantAttributes: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          values: v.array(v.string()),
+        })
+      )
+    ),
+    variantCombinations: v.optional(
+      v.array(
+        v.object({
+          id: v.string(),
+          sku: v.string(),
+          attributes: v.array(
+            v.object({
+              name: v.string(),
+              value: v.string(),
+            })
+          ),
+          price: v.number(),
+          stock: v.number(),
+          status: v.union(
+            v.literal("active"),
+            v.literal("inactive"),
+            v.literal("out_of_stock")
+          ),
+          primaryImage: v.optional(v.string()),
+          galleryImages: v.optional(v.array(v.string())),
+        })
+      )
+    ),
+    addOns: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          description: v.optional(v.string()),
+          price: v.number(),
+          isRequired: v.boolean(),
+        })
+      )
+    ),
+    bulkPricing: v.optional(
+      v.array(
+        v.object({
+          minQuantity: v.number(),
+          unitPrice: v.number(),
+        })
+      )
+    ),
+    dimensions: v.optional(
+      v.object({
+        lengthCm: v.number(),
+        widthCm: v.number(),
+        heightCm: v.number(),
+      })
+    ),
+    weightKg: v.optional(v.number()),
+    packageDimensions: v.optional(
+      v.object({
+        lengthCm: v.number(),
+        widthCm: v.number(),
+        heightCm: v.number(),
+      })
+    ),
+    packageWeightKg: v.optional(v.number()),
+    warranty: v.optional(
+      v.object({
+        type: v.union(
+          v.literal("manufacturer"),
+          v.literal("seller"),
+          v.literal("none")
+        ),
+        durationDays: v.optional(v.number()),
+        provider: v.optional(v.string()),
+        terms: v.optional(v.string()),
+      })
+    ),
+    countryOfOrigin: v.optional(v.string()),
+    modelNumber: v.optional(v.string()),
+    manufacturerPartNumber: v.optional(v.string()),
+    material: v.optional(v.string()),
+    color: v.optional(v.string()),
     specifications: v.optional(
       v.array(
         v.object({
@@ -118,12 +257,13 @@ export default defineSchema({
     .index("by_manager", ["managedByUserId"])
     .index("by_category", ["categoryId"])
     .index("by_subcategory", ["subcategoryId"])
+    .index("by_classification", ["classificationId"])
     .index("by_status", ["status"])
     .index("by_created", ["createdAt"])
     .index("by_status_created", ["status", "createdAt"])
     .searchIndex("search_products", {
       searchField: "title",
-      filterFields: ["categoryId", "subcategoryId", "status", "condition"],
+      filterFields: ["categoryId", "subcategoryId", "classificationId", "status", "condition"],
     }),
 
   // Singleton platform settings
@@ -177,6 +317,40 @@ export default defineSchema({
       name: v.string(),
       price: v.number(),
     }),
+    selectedVariantOptions: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          value: v.string(),
+          sku: v.optional(v.string()),
+          priceDelta: v.optional(v.number()),
+        })
+      )
+    ),
+    selectedVariant: v.optional(
+      v.object({
+        variantId: v.string(),
+        sku: v.string(),
+        attributes: v.array(
+          v.object({
+            name: v.string(),
+            value: v.string(),
+          })
+        ),
+        price: v.number(),
+        image: v.optional(v.string()),
+      })
+    ),
+    selectedAddOns: v.optional(
+      v.array(
+        v.object({
+          name: v.string(),
+          description: v.optional(v.string()),
+          price: v.number(),
+        })
+      )
+    ),
+    customizationKey: v.optional(v.string()),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -195,14 +369,60 @@ export default defineSchema({
         price: v.number(), // Original seller price
         quantity: v.number(),
         image: v.string(),
+        selectedVariantOptions: v.optional(
+          v.array(
+            v.object({
+              name: v.string(),
+              value: v.string(),
+              sku: v.optional(v.string()),
+              priceDelta: v.optional(v.number()),
+            })
+          )
+        ),
+        selectedVariant: v.optional(
+          v.object({
+            variantId: v.string(),
+            sku: v.string(),
+            attributes: v.array(
+              v.object({
+                name: v.string(),
+                value: v.string(),
+              })
+            ),
+            price: v.number(),
+            image: v.optional(v.string()),
+          })
+        ),
+        selectedAddOns: v.optional(
+          v.array(
+            v.object({
+              name: v.string(),
+              description: v.optional(v.string()),
+              price: v.number(),
+            })
+          )
+        ),
+        customizationKey: v.optional(v.string()),
       })
     ),
     // Financial breakdown
     subtotal: v.number(), // Sum of (price * quantity) for all items
+    discountAmount: v.optional(v.number()),
+    promoCodeId: v.optional(v.id("promoCodes")),
+    promoCode: v.optional(v.string()),
     shippingCost: v.number(),
     platformFee: v.number(), // 5% of subtotal for transaction fees
     totalAmount: v.number(), // subtotal + shippingCost + platformFee (buyer pays this)
     sellerPayout: v.number(), // subtotal + shippingCost (seller receives this)
+    deliveryMethodId: v.optional(v.id("deliveryMethods")),
+    deliveryMethodName: v.optional(v.string()),
+    deliveryEta: v.optional(
+      v.object({
+        minDays: v.number(),
+        maxDays: v.number(),
+      })
+    ),
+    pickupPointId: v.optional(v.id("pickupPoints")),
 
     shippingAddress: v.object({
       street: v.string(),
@@ -364,6 +584,7 @@ export default defineSchema({
     rating: v.number(), // 1-5
     title: v.optional(v.string()),
     comment: v.optional(v.string()),
+    photoUrls: v.optional(v.array(v.string())),
     createdAt: v.number(),
   })
     .index("by_reviewee", ["revieweeId"])
@@ -389,6 +610,19 @@ export default defineSchema({
       v.literal("withdrawal_initiated"),
       v.literal("withdrawal_completed"),
       v.literal("withdrawal_failed"),
+      v.literal("product_submitted"),
+      v.literal("listing_approved"),
+      v.literal("listing_rejected"),
+      v.literal("listing_changes_requested"),
+      v.literal("low_stock"),
+      v.literal("cart_reminder"),
+      v.literal("price_drop"),
+      v.literal("product_recommendation"),
+      v.literal("scarcity_alert"),
+      v.literal("promo_code"),
+      v.literal("flash_sale"),
+      v.literal("delivery_update"),
+      v.literal("return_update"),
       v.literal("system")
     ),
     title: v.string(),
@@ -399,6 +633,91 @@ export default defineSchema({
   })
     .index("by_user", ["userId"])
     .index("by_user_read", ["userId", "isRead"])
+    .index("by_user_created", ["userId", "createdAt"]),
+
+  behaviorEvents: defineTable({
+    userId: v.optional(v.id("users")),
+    anonymousId: v.optional(v.string()),
+    eventType: v.union(
+      v.literal("product_view"),
+      v.literal("product_time_spent"),
+      v.literal("category_browse"),
+      v.literal("add_to_cart"),
+      v.literal("purchase")
+    ),
+    productId: v.optional(v.id("products")),
+    categoryId: v.optional(v.id("categories")),
+    variantId: v.optional(v.string()),
+    durationMs: v.optional(v.number()),
+    quantity: v.optional(v.number()),
+    metadata: v.optional(v.any()),
+    createdAt: v.number(),
+  })
+    .index("by_user_created", ["userId", "createdAt"])
+    .index("by_product_created", ["productId", "createdAt"])
+    .index("by_category_created", ["categoryId", "createdAt"])
+    .index("by_event_created", ["eventType", "createdAt"]),
+
+  notificationDevices: defineTable({
+    userId: v.id("users"),
+    channel: v.union(v.literal("mobile_push"), v.literal("web_push")),
+    token: v.optional(v.string()),
+    subscription: v.optional(v.any()),
+    platform: v.optional(v.string()),
+    isOptedIn: v.boolean(),
+    lastSeenAt: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_user_channel", ["userId", "channel"])
+    .index("by_token", ["token"]),
+
+  notificationCampaigns: defineTable({
+    name: v.string(),
+    type: v.union(
+      v.literal("cart_reminder"),
+      v.literal("low_stock"),
+      v.literal("price_drop"),
+      v.literal("product_recommendation")
+    ),
+    status: v.union(v.literal("draft"), v.literal("active"), v.literal("paused")),
+    audienceSegment: v.union(
+      v.literal("all_opted_in"),
+      v.literal("cart_abandoners"),
+      v.literal("product_viewers"),
+      v.literal("category_browsers"),
+      v.literal("past_buyers")
+    ),
+    productId: v.optional(v.id("products")),
+    categoryId: v.optional(v.id("categories")),
+    title: v.string(),
+    message: v.string(),
+    aiSuggestion: v.optional(v.string()),
+    channels: v.array(
+      v.union(v.literal("in_app"), v.literal("mobile_push"), v.literal("web_push"))
+    ),
+    maxPerUserPerDay: v.number(),
+    isAutomatic: v.boolean(),
+    createdByUserId: v.id("users"),
+    lastSentAt: v.optional(v.number()),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_status", ["status"])
+    .index("by_type", ["type"])
+    .index("by_created_by", ["createdByUserId"]),
+
+  notificationDeliveryLogs: defineTable({
+    campaignId: v.optional(v.id("notificationCampaigns")),
+    userId: v.id("users"),
+    notificationId: v.optional(v.id("notifications")),
+    channel: v.union(v.literal("in_app"), v.literal("mobile_push"), v.literal("web_push")),
+    status: v.union(v.literal("queued"), v.literal("sent"), v.literal("skipped"), v.literal("failed")),
+    reason: v.optional(v.string()),
+    createdAt: v.number(),
+  })
+    .index("by_campaign", ["campaignId"])
     .index("by_user_created", ["userId", "createdAt"]),
 
   // Wallets table - one wallet per user
@@ -619,6 +938,282 @@ export default defineSchema({
     .index("by_user", ["userId"])
     .index("by_user_default", ["userId", "isDefault"])
     .index("by_lenco_recipient", ["lencoRecipientId"]),
+
+  // Delivery zones for PRD zone-based delivery and pickup
+  deliveryZones: defineTable({
+    name: v.string(),
+    slug: v.string(),
+    province: v.optional(v.string()),
+    city: v.optional(v.string()),
+    postalCodePattern: v.optional(v.string()),
+    isActive: v.boolean(),
+    sortOrder: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_slug", ["slug"])
+    .index("by_active", ["isActive"])
+    .index("by_province_city", ["province", "city"]),
+
+  deliveryMethods: defineTable({
+    zoneId: v.optional(v.id("deliveryZones")),
+    name: v.string(),
+    code: v.string(),
+    type: v.union(
+      v.literal("standard"),
+      v.literal("express"),
+      v.literal("same_day"),
+      v.literal("pickup")
+    ),
+    baseFee: v.number(),
+    perKgFee: v.optional(v.number()),
+    freeAboveSubtotal: v.optional(v.number()),
+    minDays: v.number(),
+    maxDays: v.number(),
+    courierName: v.optional(v.string()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_code", ["code"])
+    .index("by_active", ["isActive"])
+    .index("by_zone", ["zoneId"]),
+
+  pickupPoints: defineTable({
+    zoneId: v.optional(v.id("deliveryZones")),
+    name: v.string(),
+    code: v.string(),
+    address: v.object({
+      street: v.string(),
+      city: v.string(),
+      province: v.string(),
+      country: v.string(),
+    }),
+    contactPhone: v.optional(v.string()),
+    openingHours: v.optional(v.string()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_code", ["code"])
+    .index("by_active", ["isActive"])
+    .index("by_zone", ["zoneId"]),
+
+  orderTrackingEvents: defineTable({
+    orderId: v.id("orders"),
+    status: v.union(
+      v.literal("order_placed"),
+      v.literal("payment_confirmed"),
+      v.literal("processing"),
+      v.literal("ready_for_pickup"),
+      v.literal("picked_up"),
+      v.literal("in_transit"),
+      v.literal("out_for_delivery"),
+      v.literal("delivered"),
+      v.literal("delivery_failed"),
+      v.literal("return_requested"),
+      v.literal("return_received"),
+      v.literal("refunded")
+    ),
+    message: v.string(),
+    location: v.optional(
+      v.object({
+        city: v.string(),
+        province: v.string(),
+      })
+    ),
+    carrier: v.optional(v.string()),
+    trackingNumber: v.optional(v.string()),
+    createdByUserId: v.optional(v.id("users")),
+    occurredAt: v.number(),
+    createdAt: v.number(),
+  })
+    .index("by_order", ["orderId"])
+    .index("by_status", ["status"])
+    .index("by_order_occurred", ["orderId", "occurredAt"]),
+
+  returnRequests: defineTable({
+    orderId: v.id("orders"),
+    buyerId: v.id("users"),
+    sellerId: v.id("users"),
+    status: v.union(
+      v.literal("requested"),
+      v.literal("approved"),
+      v.literal("rejected"),
+      v.literal("in_transit"),
+      v.literal("received"),
+      v.literal("refunded"),
+      v.literal("closed")
+    ),
+    reason: v.union(
+      v.literal("wrong_item"),
+      v.literal("defective"),
+      v.literal("not_as_described"),
+      v.literal("damaged_in_transit"),
+      v.literal("changed_mind"),
+      v.literal("other")
+    ),
+    requestedItems: v.array(
+      v.object({
+        productId: v.id("products"),
+        quantity: v.number(),
+      })
+    ),
+    description: v.string(),
+    evidenceUrls: v.optional(v.array(v.string())),
+    resolution: v.optional(
+      v.object({
+        type: v.union(
+          v.literal("refund"),
+          v.literal("replacement"),
+          v.literal("store_credit"),
+          v.literal("rejected")
+        ),
+        amount: v.optional(v.number()),
+        notes: v.optional(v.string()),
+        resolvedByUserId: v.optional(v.id("users")),
+        resolvedAt: v.optional(v.number()),
+      })
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_order", ["orderId"])
+    .index("by_buyer", ["buyerId"])
+    .index("by_seller", ["sellerId"])
+    .index("by_status", ["status"]),
+
+  promotionBanners: defineTable({
+    title: v.string(),
+    subtitle: v.optional(v.string()),
+    imageUrl: v.string(),
+    targetUrl: v.optional(v.string()),
+    placement: v.union(
+      v.literal("home_hero"),
+      v.literal("home_monthly"),
+      v.literal("home_strip"),
+      v.literal("category"),
+      v.literal("pdp")
+    ),
+    categoryId: v.optional(v.id("categories")),
+    startsAt: v.number(),
+    endsAt: v.optional(v.number()),
+    isActive: v.boolean(),
+    sortOrder: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_active", ["isActive"])
+    .index("by_placement", ["placement"])
+    .index("by_category", ["categoryId"]),
+
+  promotions: defineTable({
+    name: v.string(),
+    type: v.union(
+      v.literal("deal_of_day"),
+      v.literal("flash_sale"),
+      v.literal("weekend_sale"),
+      v.literal("sponsored_product"),
+      v.literal("seller_campaign")
+    ),
+    sellerId: v.optional(v.id("users")),
+    categoryId: v.optional(v.id("categories")),
+    productIds: v.array(v.id("products")),
+    discountType: v.union(
+      v.literal("percent"),
+      v.literal("fixed_amount"),
+      v.literal("compare_at")
+    ),
+    discountValue: v.optional(v.number()),
+    startsAt: v.number(),
+    endsAt: v.optional(v.number()),
+    isActive: v.boolean(),
+    priority: v.number(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_active", ["isActive"])
+    .index("by_type", ["type"])
+    .index("by_seller", ["sellerId"])
+    .index("by_category", ["categoryId"]),
+
+  promoCodes: defineTable({
+    code: v.string(),
+    title: v.string(),
+    description: v.optional(v.string()),
+    scope: v.union(
+      v.literal("platform"),
+      v.literal("seller"),
+      v.literal("category"),
+      v.literal("product")
+    ),
+    sellerId: v.optional(v.id("users")),
+    categoryId: v.optional(v.id("categories")),
+    productId: v.optional(v.id("products")),
+    discountType: v.union(v.literal("percent"), v.literal("fixed_amount")),
+    discountValue: v.number(),
+    minimumSubtotal: v.optional(v.number()),
+    maxDiscount: v.optional(v.number()),
+    usageLimit: v.optional(v.number()),
+    perUserLimit: v.optional(v.number()),
+    startsAt: v.number(),
+    endsAt: v.optional(v.number()),
+    isActive: v.boolean(),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_code", ["code"])
+    .index("by_active", ["isActive"])
+    .index("by_seller", ["sellerId"])
+    .index("by_category", ["categoryId"])
+    .index("by_product", ["productId"]),
+
+  promoCodeRedemptions: defineTable({
+    promoCodeId: v.id("promoCodes"),
+    userId: v.id("users"),
+    orderId: v.optional(v.id("orders")),
+    discountAmount: v.number(),
+    redeemedAt: v.number(),
+  })
+    .index("by_promo_code", ["promoCodeId"])
+    .index("by_user", ["userId"])
+    .index("by_order", ["orderId"]),
+
+  loyaltyAccounts: defineTable({
+    userId: v.id("users"),
+    pointsBalance: v.number(),
+    lifetimeEarned: v.number(),
+    lifetimeRedeemed: v.number(),
+    tier: v.union(
+      v.literal("bronze"),
+      v.literal("silver"),
+      v.literal("gold"),
+      v.literal("platinum")
+    ),
+    createdAt: v.number(),
+    updatedAt: v.number(),
+  })
+    .index("by_user", ["userId"])
+    .index("by_tier", ["tier"]),
+
+  loyaltyTransactions: defineTable({
+    accountId: v.id("loyaltyAccounts"),
+    userId: v.id("users"),
+    type: v.union(
+      v.literal("earn"),
+      v.literal("redeem"),
+      v.literal("expire"),
+      v.literal("adjust")
+    ),
+    points: v.number(),
+    orderId: v.optional(v.id("orders")),
+    reason: v.string(),
+    createdAt: v.number(),
+  })
+    .index("by_account", ["accountId"])
+    .index("by_user", ["userId"])
+    .index("by_order", ["orderId"])
+    .index("by_created", ["createdAt"]),
 
   // Conversations table (pre-purchase messaging between buyer and seller)
   conversations: defineTable({

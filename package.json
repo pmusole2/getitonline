@@ -15,6 +15,7 @@
     "typecheck": "npm run typecheck --workspace=packages/shared && npm run typecheck --workspace=apps/api && npm run typecheck --workspace=apps/web && npm run typecheck --workspace=apps/mobile",
     "lint": "npm run lint --workspace=apps/api && npm run lint --workspace=apps/web",
     "test": "npm run test --workspace=apps/api",
+    "test:app-review": "tsx --test apps/mobile/src/components/auth/appleSignInPolicy.test.ts apps/mobile/src/screens/admin/categoryHierarchyPolicy.test.ts apps/mobile/src/screens/product/productVariantDomain.test.ts apps/mobile/src/screens/product/vendorApplicationValidation.test.ts apps/mobile/src/screens/workspace/workspaceNavigationPolicy.test.ts apps/mobile/src/services/aiConsentPolicy.test.ts apps/api/src/ai/services/chat-context-policy.test.ts apps/api/src/ai/assistant-identity.test.ts convex/lib/clerkWebhook.test.ts",
     "verify": "npm run typecheck && npm run lint && npm run test && npm run build --workspace=apps/api && npm run build --workspace=apps/web",
     "db:dev": "npx convex dev",
     "db:push": "npx convex deploy",
@@ -22,12 +23,15 @@
     "db:create-admin": "npx convex run seed:createInitialAdmin"
   },
   "devDependencies": {
-    "convex": "^1.21.0"
+    "convex": "^1.21.0",
+    "tsx": "^4.23.1"
   },
   "engines": {
     "node": "20.19.4",
     "npm": "10.9.0"
   },
   "packageManager": "npm@10.9.0",
-  "dependencies": {}
+  "dependencies": {
+    "@clerk/backend": "^2.24.0"
+  }
 }

@@ -16,11 +16,9 @@ import type { MainTabParamList } from '../types';
 
 import HomeScreen from '../screens/home/HomeScreen';
 import BrowseScreen from '../screens/browse/BrowseScreen';
-import SellScreen from '../screens/product/SellScreen';
+import FavoritesScreen from '../screens/favorites/FavoritesScreen';
 import OrdersScreen from '../screens/orders/OrdersScreen';
 import ProfileScreen from '../screens/profile/ProfileScreen';
-import { useAppAuth } from '../context/AuthProvider';
-import { canAccessSellerSurface } from '../utils/roles';
 
 const Tab = createBottomTabNavigator<MainTabParamList>();
 
@@ -28,7 +26,7 @@ const Tab = createBottomTabNavigator<MainTabParamList>();
 const TAB_ICONS: Record<keyof MainTabParamList, { focused: string; unfocused: string }> = {
   Home: { focused: 'home', unfocused: 'home-outline' },
   Browse: { focused: 'compass', unfocused: 'compass-outline' },
-  Sell: { focused: 'plus-circle', unfocused: 'plus-circle-outline' },
+  Favorites: { focused: 'heart', unfocused: 'heart-outline' },
   Orders: { focused: 'package-variant-closed', unfocused: 'package-variant' },
   Profile: { focused: 'account-circle', unfocused: 'account-circle-outline' },
 };
@@ -150,8 +148,6 @@ function CustomTabBarBackground({ isDark }: CustomTabBarBackgroundProps) {
 export function MainTabNavigator() {
   const theme = useTheme();
   const isDark = theme.dark;
-  const { user } = useAppAuth();
-  const canAccessSell = canAccessSellerSurface(user?.role);
 
   return (
     <Tab.Navigator
@@ -163,7 +159,7 @@ export function MainTabNavigator() {
         tabBarIcon: ({ focused, color, size }) => {
           const icons = TAB_ICONS[route.name];
           const iconName = focused ? icons.focused : icons.unfocused;
-          const isCenter = route.name === 'Sell';
+          const isCenter = route.name === 'Favorites';
 
           return (
             <AnimatedTabIcon
@@ -205,7 +201,7 @@ export function MainTabNavigator() {
         },
 
         // Hide label for center tab
-        tabBarShowLabel: route.name !== 'Sell',
+        tabBarShowLabel: route.name !== 'Favorites',
       })}
     >
       <Tab.Screen
@@ -218,13 +214,11 @@ export function MainTabNavigator() {
         component={BrowseScreen}
         options={{ title: 'Browse' }}
       />
-      {canAccessSell && (
-        <Tab.Screen
-          name="Sell"
-          component={SellScreen}
-          options={{ title: '' }}
-        />
-      )}
+      <Tab.Screen
+        name="Favorites"
+        component={FavoritesScreen}
+        options={{ title: '' }}
+      />
       <Tab.Screen
         name="Orders"
         component={OrdersScreen}

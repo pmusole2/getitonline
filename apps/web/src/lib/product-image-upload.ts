@@ -1,12 +1,12 @@
-export const MAX_PRODUCT_IMAGE_COUNT = 10;
-export const MAX_PRODUCT_IMAGE_SIZE_BYTES = 8 * 1024 * 1024;
+export const MIN_PRODUCT_IMAGE_COUNT = 3;
+export const MAX_PRODUCT_IMAGE_COUNT = 8;
+export const MIN_PRODUCT_IMAGE_WIDTH = 1000;
+export const MIN_PRODUCT_IMAGE_HEIGHT = 1000;
+export const MAX_PRODUCT_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 
 const ACCEPTED_PRODUCT_IMAGE_TYPES = new Set([
   'image/jpeg',
   'image/png',
-  'image/webp',
-  'image/heic',
-  'image/heif',
 ]);
 
 export interface ProductImageFileLike {
@@ -48,7 +48,7 @@ export function validateProductImageFiles<T extends ProductImageFileLike>(
     }
 
     if (file.size > MAX_PRODUCT_IMAGE_SIZE_BYTES) {
-      errors.push(`${file.name}: exceeds the 8 MB upload limit.`);
+      errors.push(`${file.name}: exceeds the 5 MB upload limit.`);
       continue;
     }
 
@@ -56,4 +56,35 @@ export function validateProductImageFiles<T extends ProductImageFileLike>(
   }
 
   return { acceptedFiles, errors };
+}
+
+export async function validateProductImageDimensions(
+  file: File
+): Promise<string | null> {
+  const objectUrl = URL.createObjectURL(file);
+
+  try {
+    const dimensions = await new Promise<{ width: number; height: number }>(
+      (resolve, reject) => {
+        const image = new Image();
+        image.onload = () =>
+          resolve({ width: image.naturalWidth, height: image.naturalHeight });
+        image.onerror = () => reject(new Error("Could not inspect image"));
+        image.src = objectUrl;
+      }
+    );
+
+    if (
+      dimensions.width < MIN_PRODUCT_IMAGE_WIDTH ||
+      dimensions.height < MIN_PRODUCT_IMAGE_HEIGHT
+    ) {
+      return `${file.name}: must be at least ${MIN_PRODUCT_IMAGE_WIDTH}x${MIN_PRODUCT_IMAGE_HEIGHT}px.`;
+    }
+
+    return null;
+  } catch {
+    return `${file.name}: could not be inspected.`;
+  } finally {
+    URL.revokeObjectURL(objectUrl);
+  }
 }

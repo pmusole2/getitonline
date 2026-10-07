@@ -3,19 +3,36 @@ import { useMutation, useQuery } from 'convex/react';
 import { LinearGradient } from 'expo-linear-gradient';
 import React, { useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, View } from 'react-native';
-import { Divider, Modal, Portal, Surface, Text, TextInput, useTheme } from 'react-native-paper';
+import { Button, Divider, Modal, Portal, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
+import { useImageUpload } from '../../hooks/useImageUpload';
 import { detectProvider, formatZambianPhoneNumber, getProviderColor, usePayment } from '../../hooks/usePayment';
 import { MobileMoneyProvider } from '../../services/payments';
 import { formatPrice } from '../../theme';
 import type { Id, OrderStatus, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OrderDetail'>;
+type ReturnReason =
+  | 'wrong_item'
+  | 'defective'
+  | 'not_as_described'
+  | 'damaged_in_transit'
+  | 'changed_mind'
+  | 'other';
+
+const returnReasons: Array<{ value: ReturnReason; label: string }> = [
+  { value: 'wrong_item', label: 'Wrong item' },
+  { value: 'defective', label: 'Defective' },
+  { value: 'not_as_described', label: 'Not as described' },
+  { value: 'damaged_in_transit', label: 'Damaged in transit' },
+  { value: 'changed_mind', label: 'Changed mind' },
+  { value: 'other', label: 'Other' },
+];
 
 const statusConfig: Record<OrderStatus, { label: string; icon: string; color: string }> = {
   pending_payment: { label: 'Pending Payment', icon: 'clock-outline', color: '#F59E0B' },
@@ -46,6 +63,18 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
   const { orderId } = route.params;
   const { user } = useAppAuth();
   const [loading, setLoading] = useState(false);
+  const [showTrackingModal, setShowTrackingModal] = useState(false);
+  const [trackingNumber, setTrackingNumber] = useState('');
+  const [trackingCarrier, setTrackingCarrier] = useState('');
+  const [showReturnModal, setShowReturnModal] = useState(false);
+  const [returnReason, setReturnReason] = useState<ReturnReason>('not_as_described');
+  const [returnDescription, setReturnDescription] = useState('');
+  const [showReviewModal, setShowReviewModal] = useState(false);
+  const [reviewRating, setReviewRating] = useState(5);
+  const [reviewTitle, setReviewTitle] = useState('');
+  const [reviewComment, setReviewComment] = useState('');
+  const reviewImages = useImageUpload();
+  const returnImages = useImageUpload();
 
   // Payment state
   const [showPaymentModal, setShowPaymentModal] = useState(false);
@@ -62,8 +91,29 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     api.disputes.getDisputeByOrder,
     order ? { orderId: order._id } : 'skip'
   );
+  const trackingEvents = useQuery(
+    api.delivery.getOrderTrackingEvents,
+    user && order ? { orderId: order._id, viewerUserId: user._id } : 'skip',
+  );
+  const returnRequests = useQuery(
+    api.delivery.getOrderReturnRequests,
+    user && order ? { orderId: order._id, viewerUserId: user._id } : 'skip',
+  );
+  const canReviewOrder = useQuery(
+    api.reviews.canReviewOrder,
+    user && order ? { orderId: order._id, userId: user._id } : 'skip',
+  );
+  const existingReview = useQuery(
+    api.reviews.getReviewByOrder,
+    order ? { orderId: order._id } : 'skip',
+  );
 
   const updateOrderStatus = useMutation(api.orders.updateOrderStatus);
+  const cancelOrder = useMutation(api.orders.cancelOrder);
+  const markAsShipped = useMutation(api.orders.markAsShipped);
+  const addTrackingEvent = useMutation(api.delivery.addOrderTrackingEvent);
+  const requestReturn = useMutation(api.delivery.requestReturn);
+  const createReview = useMutation(api.reviews.createReview);
 
   // Payment hook
   const {
@@ -86,6 +136,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
 
   const isBuyer = user?._id === order?.buyerId;
   const isSeller = user?._id === order?.sellerId;
+  const isAdmin = user?.role === 'admin';
 
   // Auto-detect provider from phone number
   const handlePhoneChange = (text: string) => {
@@ -138,6 +189,14 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
         status: newStatus as 'paid' | 'processing' | 'shipped' | 'delivered' | 'completed' | 'cancelled' | 'disputed',
         userId: user._id,
       });
+      if ((isSeller || isAdmin) && newStatus === 'processing') {
+        await addTrackingEvent({
+          actorUserId: user._id,
+          orderId: order._id,
+          status: 'processing',
+          message: `Order ${order.orderNumber} is being prepared by the seller.`,
+        });
+      }
       Alert.alert('Success', 'Order status updated');
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to update order status';
@@ -147,10 +206,149 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     }
   };
 
+  const handleMarkAsShipped = async () => {
+    if (!order || !user) return;
+
+    setLoading(true);
+    try {
+      await markAsShipped({
+        orderId: order._id,
+        sellerId: user._id,
+        trackingNumber: trackingNumber.trim() || undefined,
+        shippingCarrier: trackingCarrier.trim() || undefined,
+      });
+      await addTrackingEvent({
+        actorUserId: user._id,
+        orderId: order._id,
+        status: 'in_transit',
+        message: trackingCarrier.trim()
+          ? `Order ${order.orderNumber} is in transit with ${trackingCarrier.trim()}.`
+          : `Order ${order.orderNumber} has been shipped.`,
+        carrier: trackingCarrier.trim() || undefined,
+        trackingNumber: trackingNumber.trim() || undefined,
+      });
+      setShowTrackingModal(false);
+      setTrackingNumber('');
+      setTrackingCarrier('');
+      Alert.alert('Order shipped', 'Tracking details were saved and the buyer was notified.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to mark order as shipped';
+      Alert.alert('Error', message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleRequestReturn = async () => {
+    if (!order || !user) return;
+    if (returnDescription.trim().length < 15) {
+      Alert.alert('More detail needed', 'Describe the return reason in at least 15 characters.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await requestReturn({
+        buyerId: user._id,
+        orderId: order._id,
+        reason: returnReason,
+        requestedItems: order.items.map((item) => ({
+          productId: item.productId,
+          quantity: item.quantity,
+        })),
+        description: returnDescription.trim(),
+        evidenceUrls: returnImages.getImageUrls(),
+      });
+      await addTrackingEvent({
+        actorUserId: user._id,
+        orderId: order._id,
+        status: 'return_requested',
+        message: `Return requested for order ${order.orderNumber}.`,
+      }).catch(() => undefined);
+      setShowReturnModal(false);
+      setReturnDescription('');
+      returnImages.clearImages();
+      Alert.alert('Return requested', 'The seller will review your request.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to request return';
+      Alert.alert('Error', message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSubmitReview = async () => {
+    if (!order || !user) return;
+    if (reviewRating < 1 || reviewRating > 5) {
+      Alert.alert('Rating required', 'Choose a rating from 1 to 5 stars.');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await createReview({
+        orderId: order._id,
+        reviewerId: user._id,
+        rating: reviewRating,
+        title: reviewTitle.trim() || undefined,
+        comment: reviewComment.trim() || undefined,
+        photoUrls: reviewImages.getImageUrls(),
+      });
+      setShowReviewModal(false);
+      setReviewTitle('');
+      setReviewComment('');
+      reviewImages.clearImages();
+      Alert.alert('Review posted', 'Your review is now visible to shoppers.');
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : 'Failed to post review';
+      Alert.alert('Error', message);
+    } finally {
+      setLoading(false);
+    }
+  };
+
   const handleOpenDispute = () => {
     if (order) {
       navigation.navigate('CreateDispute', { orderId: order._id });
     }
+  };
+
+  const handleAdminCancelOrder = () => {
+    if (!order || !user || user.role !== 'admin') {
+      return;
+    }
+
+    const requiresRefund = ['paid', 'processing'].includes(order.status);
+
+    Alert.alert(
+      requiresRefund ? 'Cancel and Refund Order' : 'Cancel Order',
+      requiresRefund
+        ? 'This will cancel the order, refund any escrowed funds, and mark linked transactions accordingly.'
+        : 'This will cancel the order before payment is collected.',
+      [
+        { text: 'Keep Order', style: 'cancel' },
+        {
+          text: 'Cancel Order',
+          style: 'destructive',
+          onPress: async () => {
+            setLoading(true);
+            try {
+              await cancelOrder({
+                orderId: order._id,
+                userId: user._id,
+                reason: 'Cancelled by admin from the mobile order management flow.',
+              });
+              Alert.alert('Order cancelled', 'The order and related payment state were updated.');
+            } catch (error: unknown) {
+              const message = error instanceof Error ? error.message : 'Failed to cancel order';
+              Alert.alert('Error', message);
+            } finally {
+              setLoading(false);
+            }
+          },
+        },
+      ]
+    );
   };
 
   if (order === undefined) {
@@ -180,6 +378,22 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
 
   const currentStepIndex = statusSteps.indexOf(order.status);
   const currentStatus = statusConfig[order.status];
+  const canAdminCancel = isAdmin && ['pending_payment', 'paid', 'processing'].includes(order.status);
+  const activeReturnRequest = returnRequests?.find((request) =>
+    ['requested', 'approved', 'in_transit', 'received'].includes(request.status),
+  );
+  const returnWindowEndsAt = ['delivered', 'completed'].includes(order.status)
+    ? order.updatedAt + 7 * 24 * 60 * 60 * 1000
+    : null;
+  const canRequestReturn = Boolean(
+    isBuyer &&
+      returnWindowEndsAt &&
+      Date.now() <= returnWindowEndsAt &&
+      !activeReturnRequest,
+  );
+  const canWriteReview = Boolean(
+    isBuyer && canReviewOrder?.canReview && !existingReview,
+  );
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -328,6 +542,16 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                       {formatPrice(calculateDisplayPrice(item.price))} each
                     </Text>
                   </View>
+                  {item.selectedVariantOptions && item.selectedVariantOptions.length > 0 ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }} numberOfLines={1}>
+                      {item.selectedVariantOptions.map((option) => `${option.name}: ${option.value}`).join(' • ')}
+                    </Text>
+                  ) : null}
+                  {item.selectedAddOns && item.selectedAddOns.length > 0 ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }} numberOfLines={1}>
+                      Add-ons: {item.selectedAddOns.map((addOn) => addOn.name).join(', ')}
+                    </Text>
+                  ) : null}
                 </View>
                 <Text variant="titleMedium" style={{ color: theme.colors.primary, fontWeight: '700' }}>
                   {formatPrice(calculateDisplayPrice(item.price) * item.quantity)}
@@ -397,6 +621,146 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
           </Animated.View>
         )}
 
+        <Animated.View entering={FadeInDown.delay(260).duration(400)}>
+          <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+            <View style={styles.sectionHeader}>
+              <Icon name="truck-fast-outline" size={20} color={theme.colors.primary} />
+              <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+                Delivery Tracking
+              </Text>
+            </View>
+            {order.deliveryMethodName || order.deliveryEta ? (
+              <View style={styles.deliverySummary}>
+                <Icon name="map-clock-outline" size={18} color={theme.colors.primary} />
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+                  {order.deliveryMethodName ?? 'Seller delivery'}
+                  {order.deliveryEta ? ` • ETA ${order.deliveryEta.minDays}-${order.deliveryEta.maxDays} days` : ''}
+                </Text>
+              </View>
+            ) : null}
+            {order.trackingNumber || order.shippingCarrier ? (
+              <View style={styles.deliverySummary}>
+                <Icon name="barcode-scan" size={18} color={theme.colors.primary} />
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+                  {order.shippingCarrier ? `${order.shippingCarrier} • ` : ''}
+                  {order.trackingNumber ?? 'Tracking pending'}
+                </Text>
+              </View>
+            ) : null}
+            {trackingEvents && trackingEvents.length > 0 ? (
+              <View style={styles.trackingList}>
+                {trackingEvents.map((event) => (
+                  <View key={event._id} style={styles.trackingEvent}>
+                    <View style={[styles.trackingDot, { backgroundColor: theme.colors.primary }]} />
+                    <View style={{ flex: 1 }}>
+                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                        {event.status.replace(/_/g, ' ')}
+                      </Text>
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                        {event.message}
+                      </Text>
+                      <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
+                        {new Date(event.occurredAt).toLocaleString()}
+                      </Text>
+                    </View>
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                Tracking updates will appear as the seller and courier process the order.
+              </Text>
+            )}
+          </Surface>
+        </Animated.View>
+
+        {(returnRequests && returnRequests.length > 0) || canRequestReturn ? (
+          <Animated.View entering={FadeInDown.delay(265).duration(400)}>
+            <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+              <View style={styles.sectionHeader}>
+                <Icon name="keyboard-return" size={20} color={theme.colors.primary} />
+                <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+                  Returns
+                </Text>
+              </View>
+              {returnRequests?.map((request) => (
+                <View key={request._id} style={styles.returnCard}>
+                  <Text variant="labelLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                    {request.status.replace(/_/g, ' ').toUpperCase()}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                    {request.reason.replace(/_/g, ' ')} • {request.description}
+                  </Text>
+                  {request.evidenceUrls && request.evidenceUrls.length > 0 ? (
+                    <View style={styles.photoRow}>
+                      {request.evidenceUrls.slice(0, 4).map((url) => (
+                        <Image key={url} source={{ uri: url }} style={styles.reviewPhoto} />
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ))}
+              {canRequestReturn ? (
+                <Button mode="contained-tonal" icon="keyboard-return" onPress={() => setShowReturnModal(true)}>
+                  Request Return
+                </Button>
+              ) : returnWindowEndsAt ? (
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                  Return window closes {new Date(returnWindowEndsAt).toLocaleDateString()}.
+                </Text>
+              ) : null}
+            </Surface>
+          </Animated.View>
+        ) : null}
+
+        {(existingReview || canWriteReview) && (
+          <Animated.View entering={FadeInDown.delay(270).duration(400)}>
+            <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+              <View style={styles.sectionHeader}>
+                <Icon name="star-outline" size={20} color={theme.colors.primary} />
+                <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+                  Review
+                </Text>
+              </View>
+              {existingReview ? (
+                <View>
+                  <View style={styles.starRow}>
+                    {[1, 2, 3, 4, 5].map((star) => (
+                      <Icon
+                        key={star}
+                        name={star <= existingReview.rating ? 'star' : 'star-outline'}
+                        size={20}
+                        color="#F59E0B"
+                      />
+                    ))}
+                  </View>
+                  {existingReview.title ? (
+                    <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginTop: 8 }}>
+                      {existingReview.title}
+                    </Text>
+                  ) : null}
+                  {existingReview.comment ? (
+                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
+                      {existingReview.comment}
+                    </Text>
+                  ) : null}
+                  {existingReview.photoUrls && existingReview.photoUrls.length > 0 ? (
+                    <View style={styles.photoRow}>
+                      {existingReview.photoUrls.slice(0, 4).map((url) => (
+                        <Image key={url} source={{ uri: url }} style={styles.reviewPhoto} />
+                      ))}
+                    </View>
+                  ) : null}
+                </View>
+              ) : (
+                <Button mode="contained-tonal" icon="star-plus-outline" onPress={() => setShowReviewModal(true)}>
+                  Leave Photo Review
+                </Button>
+              )}
+            </Surface>
+          </Animated.View>
+        )}
+
         {/* Dispute Info Card - shown to both buyer and seller */}
         {dispute && (
           <Animated.View entering={FadeInDown.delay(275).duration(400)}>
@@ -448,6 +812,63 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                 )}
               </Surface>
             </Pressable>
+          </Animated.View>
+        )}
+
+        {isAdmin && (canAdminCancel || Boolean(dispute)) && (
+          <Animated.View entering={FadeInDown.delay(290).duration(400)}>
+            <Surface style={[styles.section, { backgroundColor: theme.colors.surface }]} elevation={1}>
+              <View style={styles.sectionHeader}>
+                <Icon name="shield-crown-outline" size={20} color={theme.colors.primary} />
+                <Text variant="titleMedium" style={[styles.sectionTitle, { color: theme.colors.onSurface }]}>
+                  Admin Controls
+                </Text>
+              </View>
+
+              <View style={styles.adminMetaRow}>
+                <Icon name="account-outline" size={16} color={theme.colors.onSurfaceVariant} />
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+                  Buyer: {order.buyer?.firstName} {order.buyer?.lastName}
+                </Text>
+              </View>
+
+              <View style={styles.adminMetaRow}>
+                <Icon name="store-outline" size={16} color={theme.colors.onSurfaceVariant} />
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
+                  Seller: {order.seller?.displayName ?? `${order.seller?.firstName ?? ''} ${order.seller?.lastName ?? ''}`.trim()}
+                </Text>
+              </View>
+
+              <Text variant="bodySmall" style={[styles.adminNote, { color: theme.colors.onSurfaceVariant }]}>
+                Marketplace actions here are administrative overrides. Use disputes for refund resolutions after delivery issues.
+              </Text>
+
+              <View style={styles.adminActionRow}>
+                {dispute ? (
+                  <Pressable
+                    onPress={() => navigation.navigate('DisputeDetail', { disputeId: dispute._id })}
+                    style={[styles.outlineButton, { borderColor: theme.colors.primary }]}
+                  >
+                    <Icon name="gavel" size={20} color={theme.colors.primary} />
+                    <Text style={[styles.outlineButtonText, { color: theme.colors.primary }]}>
+                      Open Dispute Case
+                    </Text>
+                  </Pressable>
+                ) : null}
+
+                {canAdminCancel ? (
+                  <Pressable
+                    onPress={handleAdminCancelOrder}
+                    style={[styles.outlineButton, { borderColor: theme.colors.error }]}
+                  >
+                    <Icon name="cancel" size={20} color={theme.colors.error} />
+                    <Text style={[styles.outlineButtonText, { color: theme.colors.error }]}>
+                      Cancel Order
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            </Surface>
           </Animated.View>
         )}
 
@@ -532,7 +953,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
           )}
 
           {isSeller && order.status === 'processing' && (
-            <Pressable onPress={() => handleStatusUpdate('shipped')} disabled={loading}>
+            <Pressable onPress={() => setShowTrackingModal(true)} disabled={loading}>
               <LinearGradient
                 colors={[theme.colors.primary, theme.colors.tertiary]}
                 start={{ x: 0, y: 0 }}
@@ -609,6 +1030,164 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
 
       {/* Payment Modal */}
       <Portal>
+        <Modal
+          visible={showTrackingModal}
+          onDismiss={() => setShowTrackingModal(false)}
+          contentContainerStyle={[styles.simpleModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+            Shipping Details
+          </Text>
+          <TextInput
+            mode="outlined"
+            label="Courier"
+            value={trackingCarrier}
+            onChangeText={setTrackingCarrier}
+            style={styles.modalInput}
+          />
+          <TextInput
+            mode="outlined"
+            label="Tracking number"
+            value={trackingNumber}
+            onChangeText={setTrackingNumber}
+            style={styles.modalInput}
+          />
+          <View style={styles.modalActionRow}>
+            <Button mode="text" onPress={() => setShowTrackingModal(false)}>
+              Cancel
+            </Button>
+            <Button mode="contained" onPress={handleMarkAsShipped} loading={loading}>
+              Mark Shipped
+            </Button>
+          </View>
+        </Modal>
+
+        <Modal
+          visible={showReturnModal}
+          onDismiss={() => setShowReturnModal(false)}
+          contentContainerStyle={[styles.paymentModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.paymentModalContent}>
+            <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+              Request Return
+            </Text>
+            <View style={styles.reasonGrid}>
+              {returnReasons.map((reason) => (
+                <Pressable
+                  key={reason.value}
+                  onPress={() => setReturnReason(reason.value)}
+                  style={[
+                    styles.reasonChip,
+                    {
+                      backgroundColor: returnReason === reason.value ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
+                      borderColor: returnReason === reason.value ? theme.colors.primary : 'transparent',
+                    },
+                  ]}
+                >
+                  <Text variant="labelMedium" style={{ color: returnReason === reason.value ? theme.colors.primary : theme.colors.onSurface }}>
+                    {reason.label}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+            <TextInput
+              mode="outlined"
+              label="Describe the issue"
+              value={returnDescription}
+              onChangeText={setReturnDescription}
+              multiline
+              numberOfLines={4}
+            />
+            <Button
+              mode="contained-tonal"
+              icon="camera-plus-outline"
+              onPress={() => returnImages.pickImages(5)}
+              loading={returnImages.isUploading}
+            >
+              Add Evidence Photos ({returnImages.images.length}/5)
+            </Button>
+            {returnImages.images.length > 0 ? (
+              <View style={styles.photoRow}>
+                {returnImages.images.map((image, index) => (
+                  <Pressable key={image.url} onPress={() => returnImages.removeImage(index)}>
+                    <Image source={{ uri: image.url }} style={styles.reviewPhoto} />
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            <View style={styles.modalActionRow}>
+              <Button mode="text" onPress={() => setShowReturnModal(false)}>
+                Cancel
+              </Button>
+              <Button mode="contained" onPress={handleRequestReturn} loading={loading}>
+                Submit Return
+              </Button>
+            </View>
+          </ScrollView>
+        </Modal>
+
+        <Modal
+          visible={showReviewModal}
+          onDismiss={() => setShowReviewModal(false)}
+          contentContainerStyle={[styles.paymentModal, { backgroundColor: theme.colors.surface }]}
+        >
+          <ScrollView keyboardShouldPersistTaps="handled" contentContainerStyle={styles.paymentModalContent}>
+            <Text variant="titleLarge" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+              Leave Review
+            </Text>
+            <View style={styles.starRow}>
+              {[1, 2, 3, 4, 5].map((star) => (
+                <Pressable key={star} onPress={() => setReviewRating(star)} hitSlop={8}>
+                  <Icon
+                    name={star <= reviewRating ? 'star' : 'star-outline'}
+                    size={34}
+                    color="#F59E0B"
+                  />
+                </Pressable>
+              ))}
+            </View>
+            <TextInput
+              mode="outlined"
+              label="Review title"
+              value={reviewTitle}
+              onChangeText={setReviewTitle}
+            />
+            <TextInput
+              mode="outlined"
+              label="Comment"
+              value={reviewComment}
+              onChangeText={setReviewComment}
+              multiline
+              numberOfLines={4}
+            />
+            <Button
+              mode="contained-tonal"
+              icon="camera-plus-outline"
+              onPress={() => reviewImages.pickImages(5)}
+              loading={reviewImages.isUploading}
+            >
+              Add Photos ({reviewImages.images.length}/5)
+            </Button>
+            {reviewImages.images.length > 0 ? (
+              <View style={styles.photoRow}>
+                {reviewImages.images.map((image, index) => (
+                  <Pressable key={image.url} onPress={() => reviewImages.removeImage(index)}>
+                    <Image source={{ uri: image.url }} style={styles.reviewPhoto} />
+                  </Pressable>
+                ))}
+              </View>
+            ) : null}
+            <View style={styles.modalActionRow}>
+              <Button mode="text" onPress={() => setShowReviewModal(false)}>
+                Cancel
+              </Button>
+              <Button mode="contained" onPress={handleSubmitReview} loading={loading}>
+                Post Review
+              </Button>
+            </View>
+          </ScrollView>
+        </Modal>
+
         <Modal
           visible={showPaymentModal}
           onDismiss={() => setShowPaymentModal(false)}
@@ -936,6 +1515,47 @@ const styles = StyleSheet.create({
     flex: 1,
     marginLeft: 14,
   },
+  deliverySummary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 10,
+  },
+  trackingList: {
+    gap: 12,
+  },
+  trackingEvent: {
+    flexDirection: 'row',
+    gap: 10,
+  },
+  trackingDot: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginTop: 5,
+  },
+  returnCard: {
+    padding: 12,
+    borderRadius: 12,
+    backgroundColor: 'rgba(0,0,0,0.04)',
+    marginBottom: 10,
+  },
+  starRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+  },
+  photoRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 10,
+  },
+  reviewPhoto: {
+    width: 58,
+    height: 58,
+    borderRadius: 10,
+  },
   disputeCard: {
     padding: 16,
     borderRadius: 16,
@@ -992,6 +1612,22 @@ const styles = StyleSheet.create({
     borderTopWidth: 1,
     borderTopColor: 'rgba(0,0,0,0.05)',
   },
+  adminMetaRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+    marginBottom: 8,
+  },
+  adminNote: {
+    marginTop: 8,
+    lineHeight: 20,
+  },
+  adminActionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 10,
+    marginTop: 16,
+  },
   actions: {
     gap: 12,
     marginTop: 8,
@@ -1033,9 +1669,36 @@ const styles = StyleSheet.create({
     borderRadius: 24,
     maxHeight: '85%',
   },
+  simpleModal: {
+    margin: 20,
+    borderRadius: 20,
+    padding: 18,
+  },
   paymentModalContent: {
     padding: 24,
     paddingBottom: 24,
+  },
+  modalInput: {
+    marginTop: 12,
+  },
+  modalActionRow: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    alignItems: 'center',
+    gap: 10,
+    marginTop: 16,
+  },
+  reasonGrid: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginVertical: 12,
+  },
+  reasonChip: {
+    borderRadius: 18,
+    borderWidth: 1,
+    paddingHorizontal: 12,
+    paddingVertical: 8,
   },
   paymentModalHeader: {
     flexDirection: 'row',

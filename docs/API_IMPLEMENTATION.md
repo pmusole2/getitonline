@@ -247,7 +247,7 @@ POST /api/v1/payments/mobile-money
   "userId": "user_456",
   "amount": 1500,
   "provider": "MTN",
-  "mobileNumber": "260971234567",
+  "mobileNumber": "[ZAMBIAN_MOBILE_NUMBER]",
   "description": "Order #12345"
 }
 ```
@@ -399,7 +399,7 @@ POST /api/v1/wallet/withdraw/mobile-money
 {
   "userId": "user_456",
   "amount": 1000,
-  "phone": "260971234567",
+  "phone": "[ZAMBIAN_MOBILE_NUMBER]",
   "provider": "MTN",
   "description": "Withdrawal request"
 }
@@ -442,7 +442,7 @@ POST /api/v1/wallet/top-up
   "userId": "user_456",
   "amount": 500,
   "paymentMethod": "mobile_money",
-  "mobileNumber": "260971234567",
+  "mobileNumber": "[ZAMBIAN_MOBILE_NUMBER]",
   "provider": "MTN"
 }
 ```

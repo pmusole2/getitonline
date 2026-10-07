@@ -10,6 +10,7 @@ import {
   getUserOrThrow,
   getVendorProfileByOwnerId,
   isStaffViewer,
+  normalizeOptionalExternalUrl,
   vendorStatusValidator,
 } from "./lib/platform";
 
@@ -86,10 +87,22 @@ export const submitApplication = mutation({
 
     const nextStatus =
       existingProfile?.status === "approved" ? "approved" : "pending";
+    const normalizedArgs = {
+      ...args,
+      logoUrl: normalizeOptionalExternalUrl(args.logoUrl),
+      bannerUrl: normalizeOptionalExternalUrl(args.bannerUrl),
+      socialLinks: args.socialLinks
+        ? {
+            website: normalizeOptionalExternalUrl(args.socialLinks.website),
+            instagram: normalizeOptionalExternalUrl(args.socialLinks.instagram),
+            facebook: normalizeOptionalExternalUrl(args.socialLinks.facebook),
+          }
+        : undefined,
+    };
 
     if (existingProfile) {
       await ctx.db.patch(existingProfile._id, {
-        ...args,
+        ...normalizedArgs,
         slug,
         status: nextStatus,
         updatedAt: now,
@@ -99,7 +112,7 @@ export const submitApplication = mutation({
     }
 
     const vendorProfileId = await ctx.db.insert("vendorProfiles", {
-      ...args,
+      ...normalizedArgs,
       slug,
       status: "pending",
       createdAt: now,
@@ -141,9 +154,6 @@ export const getVendorStorefront = query({
         logoUrl: seller.avatar,
         bannerUrl: undefined,
         slug: "official-store",
-        contactEmail: seller.email,
-        contactPhone: seller.phone,
-        address: seller.address ?? null,
         socialLinks: undefined,
         status: "approved" as const,
         isCompanyStore: true,
@@ -171,12 +181,9 @@ export const getVendorStorefront = query({
       storeName: vendorProfile.storeName,
       displayName: vendorProfile.storeName,
       description: vendorProfile.description,
-      logoUrl: vendorProfile.logoUrl ?? seller.avatar,
-      bannerUrl: vendorProfile.bannerUrl,
+      logoUrl: normalizeOptionalExternalUrl(vendorProfile.logoUrl) ?? seller.avatar,
+      bannerUrl: normalizeOptionalExternalUrl(vendorProfile.bannerUrl),
       slug: vendorProfile.slug,
-      contactEmail: vendorProfile.contactEmail,
-      contactPhone: vendorProfile.contactPhone,
-      address: vendorProfile.address,
       socialLinks: vendorProfile.socialLinks,
       status: vendorProfile.status,
       reviewNotes: vendorProfile.reviewNotes,
@@ -184,6 +191,72 @@ export const getVendorStorefront = query({
       rating: seller.rating,
       totalSales: seller.totalSales,
     };
+  },
+});
+
+export const listPublicStorefronts = query({
+  args: {},
+  handler: async (ctx) => {
+    const settings = await getPlatformSettings(ctx);
+    const approvedVendorProfiles = await ctx.db
+      .query("vendorProfiles")
+      .withIndex("by_status", (q) => q.eq("status", "approved"))
+      .collect();
+
+    const companyStore = settings?.companySellerUserId
+      ? await ctx.db.get(settings.companySellerUserId)
+      : null;
+
+    const vendorStores = await Promise.all(
+      approvedVendorProfiles
+        .filter(
+          (vendorProfile) =>
+            vendorProfile.ownerUserId !== settings?.companySellerUserId
+        )
+        .map(async (vendorProfile) => {
+          const owner = await ctx.db.get(vendorProfile.ownerUserId);
+          if (!owner) {
+            return null;
+          }
+
+          return {
+            sellerId: vendorProfile.ownerUserId,
+            displayName: vendorProfile.storeName,
+            description: vendorProfile.description,
+            logoUrl: normalizeOptionalExternalUrl(vendorProfile.logoUrl) ?? owner.avatar,
+            bannerUrl: normalizeOptionalExternalUrl(vendorProfile.bannerUrl),
+            slug: vendorProfile.slug,
+            isCompanyStore: false,
+            rating: owner.rating,
+            totalSales: owner.totalSales,
+          };
+        })
+    );
+
+    const publicStores = vendorStores
+      .filter((storefront) => storefront !== null)
+      .sort((left, right) =>
+        left.displayName.localeCompare(right.displayName)
+      );
+
+    if (!settings?.companySellerUserId || !companyStore) {
+      return publicStores;
+    }
+
+    return [
+      {
+        sellerId: settings.companySellerUserId,
+        displayName: settings.companyDisplayName,
+        description: `${settings.companyDisplayName} official storefront`,
+        logoUrl: companyStore.avatar,
+        bannerUrl: undefined,
+        slug: "official-store",
+        isCompanyStore: true,
+        rating: companyStore.rating,
+        totalSales: companyStore.totalSales,
+      },
+      ...publicStores,
+    ];
   },
 });
 
@@ -208,6 +281,59 @@ export const getPendingApplications = query({
         owner: await ctx.db.get(application.ownerUserId),
       }))
     );
+  },
+});
+
+export const listVendorStoresForAdmin = query({
+  args: {
+    adminId: v.id("users"),
+  },
+  handler: async (ctx, args) => {
+    await ensureAdminActor(ctx, args.adminId);
+
+    const vendorProfiles = await ctx.db.query("vendorProfiles").collect();
+    const counts = {
+      all: vendorProfiles.length,
+      pending: 0,
+      approved: 0,
+      changes_requested: 0,
+      suspended: 0,
+    };
+
+    const items = await Promise.all(
+      vendorProfiles.map(async (vendorProfile) => {
+        counts[vendorProfile.status] += 1;
+
+        const owner = await ctx.db.get(vendorProfile.ownerUserId);
+        const ownerName = owner
+          ? `${owner.firstName} ${owner.lastName}`.trim() || "Unknown user"
+          : "Unknown user";
+
+        return {
+          vendorProfileId: vendorProfile._id,
+          ownerUserId: vendorProfile.ownerUserId,
+          ownerName,
+          ownerEmail: owner?.email ?? vendorProfile.contactEmail,
+          storeName: vendorProfile.storeName,
+          description: vendorProfile.description,
+          logoUrl: normalizeOptionalExternalUrl(vendorProfile.logoUrl),
+          bannerUrl: normalizeOptionalExternalUrl(vendorProfile.bannerUrl),
+          status: vendorProfile.status,
+          reviewNotes: vendorProfile.reviewNotes,
+          reviewedAt: vendorProfile.reviewedAt,
+          contactEmail: vendorProfile.contactEmail,
+          contactPhone: vendorProfile.contactPhone,
+          address: vendorProfile.address,
+          slug: vendorProfile.slug,
+          updatedAt: vendorProfile.updatedAt,
+        };
+      })
+    );
+
+    return {
+      counts,
+      items: items.sort((left, right) => right.updatedAt - left.updatedAt),
+    };
   },
 });
 

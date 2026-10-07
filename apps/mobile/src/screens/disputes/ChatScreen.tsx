@@ -7,7 +7,9 @@ import Animated, { FadeIn, FadeOut, SlideInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { ASSISTANT_NAME } from '../../config/assistant';
 import { useAppAuth } from '../../context/AuthProvider';
+import { requestAIConsent } from '../../services/aiConsent';
 import { apiService, RephraseResponse } from '../../services/api';
 import type { Id, MessageWithSender, RootStackParamList } from '../../types';
 
@@ -76,6 +78,13 @@ export default function ChatScreen({ route, navigation }: Props) {
 
     setRephrasing(true);
     try {
+      const hasConsent = await requestAIConsent();
+      if (!hasConsent) {
+        setSnackbarMessage(`${ASSISTANT_NAME} is off until you allow AI features.`);
+        setSnackbarVisible(true);
+        return;
+      }
+
       // Determine user's role in the dispute
       const senderRole = user?._id === dispute?.buyerId ? 'buyer' :
                         user?._id === dispute?.sellerId ? 'seller' : 'buyer';
@@ -89,7 +98,7 @@ export default function ChatScreen({ route, navigation }: Props) {
       setRephraseResult(result);
 
       if (!result.isProfessional && result.rephrased !== messageText) {
-        setSnackbarMessage('AI suggests a clearer message');
+        setSnackbarMessage(`${ASSISTANT_NAME} suggests a clearer message`);
       } else {
         setSnackbarMessage('Your message looks professional!');
       }
@@ -116,6 +125,12 @@ export default function ChatScreen({ route, navigation }: Props) {
     setShowSuggestions(true);
 
     try {
+      const hasConsent = await requestAIConsent();
+      if (!hasConsent) {
+        setResponseSuggestions([]);
+        return;
+      }
+
       const conversationHistory = messages.slice(-10).map(m => ({
         sender: m.senderId === dispute.buyerId ? 'buyer' :
                 m.senderId === dispute.sellerId ? 'seller' : 'moderator',
@@ -196,7 +211,7 @@ export default function ChatScreen({ route, navigation }: Props) {
             <View style={styles.rephrasedBadge}>
               <Icon name="robot" size={12} color={theme.colors.tertiary} />
               <Text variant="labelSmall" style={{ color: theme.colors.tertiary, marginLeft: 4 }}>
-                AI enhanced
+                Enhanced by {ASSISTANT_NAME}
               </Text>
             </View>
           )}
@@ -271,7 +286,7 @@ export default function ChatScreen({ route, navigation }: Props) {
             <View style={styles.suggestionsHeader}>
               <Icon name="robot" size={20} color={theme.colors.tertiary} />
               <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginLeft: 8, flex: 1 }}>
-                AI Suggestions
+                {ASSISTANT_NAME}'s Suggestions
               </Text>
               <IconButton icon="close" size={18} onPress={() => setShowSuggestions(false)} />
             </View>
@@ -347,7 +362,7 @@ export default function ChatScreen({ route, navigation }: Props) {
             <Card.Content style={styles.aiCardContent}>
               <Icon name="shield-check" size={18} color={theme.colors.tertiary} />
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1, marginHorizontal: 8 }}>
-                AI can help make your message clearer
+                {ASSISTANT_NAME} can help make your message clearer
               </Text>
               <Button
                 mode="text"

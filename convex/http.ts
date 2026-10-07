@@ -1,6 +1,7 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
+import { verifyClerkWebhookRequest } from "./lib/clerkWebhook";
 
 const http = httpRouter();
 
@@ -9,13 +10,25 @@ http.route({
   path: "/clerk-webhook",
   method: "POST",
   handler: httpAction(async (ctx, request) => {
-    const payload = await request.json();
-    const eventType = payload.type;
+    let event;
 
     try {
-      switch (eventType) {
+      event = await verifyClerkWebhookRequest(request);
+    } catch (error) {
+      console.error("Clerk webhook verification failed:", error);
+      return new Response(
+        JSON.stringify({ error: "Webhook verification failed" }),
+        {
+          status: 400,
+          headers: { "Content-Type": "application/json" },
+        }
+      );
+    }
+
+    try {
+      switch (event.type) {
         case "user.created": {
-          const { id, email_addresses, first_name, last_name, image_url } = payload.data;
+          const { id, email_addresses, first_name, last_name, image_url } = event.data;
           const primaryEmail = email_addresses?.[0]?.email_address;
 
           if (primaryEmail) {
@@ -31,7 +44,7 @@ http.route({
         }
 
         case "user.updated": {
-          const { id, email_addresses, first_name, last_name, image_url } = payload.data;
+          const { id, email_addresses, first_name, last_name, image_url } = event.data;
           const primaryEmail = email_addresses?.[0]?.email_address;
 
           if (primaryEmail) {
@@ -47,9 +60,12 @@ http.route({
         }
 
         case "user.deleted": {
-          // Handle user deletion if needed
-          // Note: You might want to soft-delete or anonymize instead
-          console.log("User deleted:", payload.data.id);
+          const clerkId = event.data.id;
+          if (clerkId) {
+            await ctx.runMutation(internal.users.anonymizeDeletedUserByClerkId, {
+              clerkId,
+            });
+          }
           break;
         }
       }

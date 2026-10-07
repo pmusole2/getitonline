@@ -39,7 +39,7 @@ import {
 import { ROUTES } from "@/lib/constants";
 import { useAuth } from "@/hooks/useAuth";
 import { format } from "date-fns";
-import { canManageCatalog } from "@/lib/roles";
+import { canManageCatalog, getRoleLabel } from "@/lib/roles";
 
 export default function ProfilePage() {
   const { user, isSignedIn, isLoading: authLoading, clerkUser } = useAuth();
@@ -125,14 +125,10 @@ export default function ProfilePage() {
                       Verified
                     </Badge>
                   )}
-                  {user.role === "admin" && (
-                    <Badge variant="default">Admin</Badge>
-                  )}
-                  {user.role === "catalog_manager" && (
-                    <Badge variant="secondary">Catalog Manager</Badge>
-                  )}
-                  {user.role === "moderator" && (
-                    <Badge variant="secondary">Moderator</Badge>
+                  {user.role !== "user" && (
+                    <Badge variant={user.role === "admin" ? "default" : "secondary"}>
+                      {getRoleLabel(user.role)}
+                    </Badge>
                   )}
                 </div>
 

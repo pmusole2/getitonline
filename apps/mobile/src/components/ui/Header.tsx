@@ -20,6 +20,8 @@ import Animated, {
 } from 'react-native-reanimated';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { ASSISTANT_NAME } from '../../config/assistant';
+import { AIAssistantModal } from './AIAssistant';
 
 // ============================================================================
 // TYPES
@@ -119,7 +121,7 @@ function AIStatusIndicator() {
         variant="labelSmall"
         style={[styles.aiIndicatorText, { color: theme.colors.primary }]}
       >
-        AI
+        {ASSISTANT_NAME}
       </Text>
     </MotiView>
   );
@@ -215,23 +217,6 @@ function BackButton({
   );
 }
 
-function GradientOrb() {
-  const theme = useTheme();
-
-  return (
-    <MotiView
-      from={{ translateX: -50, translateY: -30, opacity: 0.3 }}
-      animate={{ translateX: 30, translateY: 20, opacity: 0.5 }}
-      transition={{
-        translateX: { type: 'timing', duration: 8000, loop: true },
-        translateY: { type: 'timing', duration: 6000, loop: true },
-        opacity: { type: 'timing', duration: 4000, loop: true },
-      }}
-      style={[styles.gradientOrb, { backgroundColor: theme.colors.primary + '30' }]}
-    />
-  );
-}
-
 // ============================================================================
 // TAB HEADER - For main tab screens (Home, Browse, etc.)
 // ============================================================================
@@ -254,10 +239,12 @@ export function TabHeader({
 }: TabHeaderProps) {
   const theme = useTheme();
   const insets = useSafeAreaInsets();
+  const [isAssistantVisible, setIsAssistantVisible] = React.useState(false);
+  const handleAIPress = onAIPress ?? (() => setIsAssistantVisible(true));
 
   return (
     <View style={[styles.tabHeaderContainer, { paddingTop: insets.top }, style]}>
-      {/* Animated background gradient */}
+      {/* Static background gradient */}
       <LinearGradient
         colors={[
           theme.colors.surface,
@@ -266,9 +253,6 @@ export function TabHeader({
         ]}
         style={StyleSheet.absoluteFillObject}
       />
-
-      {/* Floating gradient orb for futuristic effect */}
-      <GradientOrb />
 
       <Animated.View
         entering={FadeIn.duration(400)}
@@ -291,7 +275,6 @@ export function TabHeader({
                 >
                   {userName || 'Welcome'}
                 </Text>
-                {showAIAssistant && <AIStatusIndicator />}
               </View>
             </>
           ) : (
@@ -303,7 +286,6 @@ export function TabHeader({
                 >
                   {title}
                 </Text>
-                {showAIAssistant && <AIStatusIndicator />}
               </View>
               {subtitle && (
                 <Text
@@ -321,10 +303,12 @@ export function TabHeader({
         <View style={styles.tabHeaderActions}>
           {rightContent}
 
-          {showAIAssistant && onAIPress && (
+          {showAIAssistant && (
             <Pressable
-              onPress={onAIPress}
+              onPress={handleAIPress}
               style={[styles.aiButton, { backgroundColor: theme.colors.primaryContainer }]}
+              accessibilityRole="button"
+              accessibilityLabel={`Open ${ASSISTANT_NAME}`}
             >
               <MotiView
                 from={{ rotate: '0deg' }}
@@ -370,6 +354,14 @@ export function TabHeader({
         end={{ x: 1, y: 0 }}
         style={styles.accentLine}
       />
+
+      {showAIAssistant && !onAIPress && (
+        <AIAssistantModal
+          visible={isAssistantVisible}
+          onClose={() => setIsAssistantVisible(false)}
+          currentScreen={title}
+        />
+      )}
     </View>
   );
 }
@@ -460,7 +452,6 @@ export function StackHeader({
           colors={[theme.colors.surface, theme.colors.background]}
           style={StyleSheet.absoluteFillObject}
         />
-        <GradientOrb />
         {renderContent()}
         <LinearGradient
           colors={[
@@ -642,26 +633,6 @@ export function LargeHeader({
         end={{ x: 1, y: 1 }}
         style={[styles.largeHeaderGradient, { paddingTop: insets.top }]}
       >
-        {/* Decorative elements */}
-        <MotiView
-          from={{ opacity: 0.1, scale: 0.8 }}
-          animate={{ opacity: 0.2, scale: 1.2 }}
-          transition={{
-            opacity: { type: 'timing', duration: 3000, loop: true },
-            scale: { type: 'timing', duration: 4000, loop: true },
-          }}
-          style={[styles.decorativeCircle, styles.decorativeCircle1]}
-        />
-        <MotiView
-          from={{ opacity: 0.1, scale: 1 }}
-          animate={{ opacity: 0.15, scale: 0.8 }}
-          transition={{
-            opacity: { type: 'timing', duration: 2500, loop: true },
-            scale: { type: 'timing', duration: 3500, loop: true },
-          }}
-          style={[styles.decorativeCircle, styles.decorativeCircle2]}
-        />
-
         {/* Top navigation row */}
         <View style={styles.largeHeaderNav}>
           {showBackButton && onBackPress ? (
@@ -877,24 +848,6 @@ const styles = StyleSheet.create({
     color: 'rgba(255,255,255,0.8)',
     marginTop: 4,
   },
-  decorativeCircle: {
-    position: 'absolute',
-    borderRadius: 999,
-    backgroundColor: 'rgba(255,255,255,0.1)',
-  },
-  decorativeCircle1: {
-    width: 200,
-    height: 200,
-    top: -50,
-    right: -50,
-  },
-  decorativeCircle2: {
-    width: 150,
-    height: 150,
-    bottom: -30,
-    left: -30,
-  },
-
   // Action Buttons
   actionButton: {
     position: 'relative',
@@ -948,16 +901,6 @@ const styles = StyleSheet.create({
     alignItems: 'center',
   },
 
-  // Gradient Orb
-  gradientOrb: {
-    position: 'absolute',
-    width: 120,
-    height: 120,
-    borderRadius: 60,
-    top: -20,
-    right: -20,
-    opacity: 0.3,
-  },
 });
 
 export default {

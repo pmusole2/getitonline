@@ -18,34 +18,22 @@ import { TabHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { formatPrice } from '../../theme';
-import type { Id, RootStackParamList } from '../../types';
+import type { RootStackParamList } from '../../types';
 import {
   canManageCatalog,
   canManageListings,
   isReviewerRole,
 } from '../../utils/roles';
+import {
+  getVendorApplicationValidationMessage,
+  type VendorApplicationForm,
+} from './vendorApplicationValidation';
 
 type VendorStatus =
   | 'pending'
   | 'approved'
   | 'changes_requested'
   | 'suspended';
-
-type VendorApplicationForm = {
-  storeName: string;
-  description: string;
-  logoUrl: string;
-  bannerUrl: string;
-  contactEmail: string;
-  contactPhone: string;
-  street: string;
-  city: string;
-  province: string;
-  country: string;
-  website: string;
-  instagram: string;
-  facebook: string;
-};
 
 const emptyForm: VendorApplicationForm = {
   storeName: '',
@@ -70,13 +58,37 @@ const vendorStatusCopy: Record<VendorStatus, string> = {
   suspended: 'Suspended',
 };
 
+function normalizeOptionalUrl(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return undefined;
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
+    ? trimmed
+    : `https://${trimmed}`;
+  try {
+    const parsed = new URL(withProtocol);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      return trimmed;
+    }
+    return parsed.toString();
+  } catch {
+    return trimmed;
+  }
+}
+
 const productStatusCopy: Record<
-  'draft' | 'pending_review' | 'changes_requested' | 'active' | 'sold' | 'suspended',
+  | 'draft'
+  | 'pending_review'
+  | 'changes_requested'
+  | 'rejected'
+  | 'active'
+  | 'sold'
+  | 'suspended',
   string
 > = {
   draft: 'Draft',
   pending_review: 'Pending Review',
   changes_requested: 'Changes Requested',
+  rejected: 'Rejected',
   active: 'Active',
   sold: 'Sold',
   suspended: 'Suspended',
@@ -91,18 +103,7 @@ export default function SellScreen() {
     api.vendors.getMyVendorProfile,
     user?._id ? { ownerUserId: user._id } : 'skip'
   );
-  const adminStorefrontSettings = useQuery(
-    api.platform.getPlatformSettingsForAdmin,
-    user?._id && user.role === 'admin' ? { adminId: user._id } : 'skip'
-  );
-  const adminUsersResult = useQuery(
-    api.users.getAllUsers,
-    user?._id && user.role === 'admin'
-      ? { adminId: user._id, limit: 100 }
-      : 'skip'
-  );
   const submitApplication = useMutation(api.vendors.submitApplication);
-  const updatePlatformSettings = useMutation(api.platform.updatePlatformSettings);
 
   const logoUpload = useImageUpload();
   const bannerUpload = useImageUpload();
@@ -124,9 +125,6 @@ export default function SellScreen() {
 
   const [form, setForm] = useState<VendorApplicationForm>(emptyForm);
   const [submitting, setSubmitting] = useState(false);
-  const [companyDisplayName, setCompanyDisplayName] = useState('Gettitonline');
-  const [selectedCompanySellerId, setSelectedCompanySellerId] = useState<Id<'users'> | null>(null);
-  const [savingStorefront, setSavingStorefront] = useState(false);
 
   useEffect(() => {
     if (!vendorProfile) {
@@ -164,15 +162,6 @@ export default function SellScreen() {
     }
   }, [bannerUpload.images]);
 
-  useEffect(() => {
-    if (!adminStorefrontSettings) {
-      return;
-    }
-
-    setCompanyDisplayName(adminStorefrontSettings.companyDisplayName);
-    setSelectedCompanySellerId(adminStorefrontSettings.companySellerUserId ?? null);
-  }, [adminStorefrontSettings]);
-
   const listings = useMemo(
     () => (isCompanyCatalogManager ? companyListings ?? [] : vendorListings ?? []),
     [companyListings, isCompanyCatalogManager, vendorListings]
@@ -188,42 +177,17 @@ export default function SellScreen() {
     [listings]
   );
 
-  const adminUsers = adminUsersResult?.items;
-  const sortedAdminUsers = useMemo(() => {
-    if (!adminUsers) {
-      return [];
-    }
-
-    return [...adminUsers].sort((left, right) =>
-      `${left.firstName} ${left.lastName}`.localeCompare(
-        `${right.firstName} ${right.lastName}`
-      )
-    );
-  }, [adminUsers]);
-
   const isStorefrontConfigured = storefront?.isConfigured ?? false;
   const storefrontBlockedForCompanyCatalog = isCompanyCatalogManager && !isStorefrontConfigured;
-
-  const currentCompanySellerSummary = adminStorefrontSettings?.companySeller
-    ? `${adminStorefrontSettings.companySeller.firstName} ${adminStorefrontSettings.companySeller.lastName} (${adminStorefrontSettings.companySeller.email})`
-    : storefront?.companySellerUserId
-      ? 'Configured company seller account'
-      : 'No company seller configured yet';
 
   const handleSubmitApplication = async () => {
     if (!user) {
       return;
     }
 
-    if (
-      !form.storeName.trim() ||
-      !form.description.trim() ||
-      !form.contactEmail.trim() ||
-      !form.street.trim() ||
-      !form.city.trim() ||
-      !form.province.trim() ||
-      !form.country.trim()
-    ) {
+    const validationMessage = getVendorApplicationValidationMessage(form);
+    if (validationMessage) {
+      Alert.alert('Missing required details', validationMessage);
       return;
     }
 
@@ -234,8 +198,8 @@ export default function SellScreen() {
         ownerUserId: user._id,
         storeName: form.storeName.trim(),
         description: form.description.trim(),
-        logoUrl: form.logoUrl.trim() || undefined,
-        bannerUrl: form.bannerUrl.trim() || undefined,
+        logoUrl: normalizeOptionalUrl(form.logoUrl),
+        bannerUrl: normalizeOptionalUrl(form.bannerUrl),
         contactEmail: form.contactEmail.trim(),
         contactPhone: form.contactPhone.trim() || undefined,
         address: {
@@ -245,11 +209,21 @@ export default function SellScreen() {
           country: form.country.trim(),
         },
         socialLinks: {
-          website: form.website.trim() || undefined,
-          instagram: form.instagram.trim() || undefined,
-          facebook: form.facebook.trim() || undefined,
+          website: normalizeOptionalUrl(form.website),
+          instagram: normalizeOptionalUrl(form.instagram),
+          facebook: normalizeOptionalUrl(form.facebook),
         },
       });
+      Alert.alert(
+        'Application submitted',
+        vendorProfile
+          ? 'Your vendor application has been resubmitted for review.'
+          : 'Your vendor application has been submitted for review.'
+      );
+    } catch (error: unknown) {
+      const message =
+        error instanceof Error ? error.message : 'Unable to submit your vendor application.';
+      Alert.alert('Unable to submit application', message);
     } finally {
       setSubmitting(false);
     }
@@ -273,48 +247,23 @@ export default function SellScreen() {
     navigation.navigate('EditProduct', { productId });
   };
 
-  const handleSaveStorefront = async () => {
-    if (!user || user.role !== 'admin') {
-      return;
-    }
+  const openStoreManagement = () => {
+    navigation.navigate('AdminStores');
+  };
 
-    if (!selectedCompanySellerId) {
-      Alert.alert(
-        'Select a company seller',
-        'Choose the internal account that should own official company listings.'
-      );
-      return;
-    }
+  const openListingReview = () => {
+    navigation.navigate('ListingReview');
+  };
 
-    setSavingStorefront(true);
-
-    try {
-      await updatePlatformSettings({
-        adminId: user._id,
-        companySellerUserId: selectedCompanySellerId,
-        companyDisplayName: companyDisplayName.trim() || 'Gettitonline',
-      });
-
-      Alert.alert(
-        'Storefront updated',
-        'Company catalog listings can now be created from the mobile app.'
-      );
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Failed to update storefront settings';
-      Alert.alert('Error', message);
-    } finally {
-      setSavingStorefront(false);
-    }
+  const openDisputes = () => {
+    navigation.navigate('Disputes');
   };
 
   if (
     !user ||
     storefront === undefined ||
     vendorProfile === undefined ||
-    (hasListingAccess && listings === undefined) ||
-    (user.role === 'admin' &&
-      (adminStorefrontSettings === undefined || adminUsersResult === undefined))
+    (hasListingAccess && listings === undefined)
   ) {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -329,18 +278,24 @@ export default function SellScreen() {
   if (isReviewerOnly) {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-        <TabHeader title="Review Queue" subtitle="Moderator tools live in admin" showAIAssistant />
+        <TabHeader title="Review Queue" subtitle="Reviewer-Approver tools on mobile" showAIAssistant />
         <View style={styles.centered}>
           <Icon name="clipboard-check-outline" size={48} color={theme.colors.primary} />
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
-            Review listings from the admin panel
+            Review listings from mobile
           </Text>
           <Text
             variant="bodyMedium"
             style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center', maxWidth: 280 }}
           >
-            Moderators review vendor applications and product submissions from the web admin dashboard.
+            Reviewer-Approvers can review product submissions and monitor disputes directly from the mobile app.
           </Text>
+          <Button mode="contained" onPress={openListingReview} style={styles.primaryButton}>
+            Open Listing Review
+          </Button>
+          <Button mode="outlined" onPress={openDisputes} style={styles.secondaryButton}>
+            Open Dispute Queue
+          </Button>
         </View>
       </View>
     );
@@ -375,122 +330,35 @@ export default function SellScreen() {
 
               <View style={styles.storefrontMeta}>
                 <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                  Current display name
+                  Store display name
                 </Text>
                 <Text variant="bodyLarge" style={{ color: theme.colors.onSurface, marginTop: 4 }}>
-                  {adminStorefrontSettings?.companyDisplayName ?? storefront.companyDisplayName}
+                  {storefront.companyDisplayName}
                 </Text>
               </View>
 
               <View style={styles.storefrontMeta}>
                 <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                  Current company seller
+                  Status
                 </Text>
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurface, marginTop: 4 }}>
-                  {currentCompanySellerSummary}
+                  {isStorefrontConfigured
+                    ? 'Official company storefront is configured for mobile catalog management.'
+                    : 'A Super Admin must choose the company seller account before official listings can be created.'}
                 </Text>
               </View>
 
               {user.role === 'admin' ? (
-                <>
-                  <TextInput
-                    label="Store display name"
-                    mode="outlined"
-                    value={companyDisplayName}
-                    onChangeText={setCompanyDisplayName}
-                    style={styles.input}
-                  />
-
-                  <Text
-                    variant="labelMedium"
-                    style={[styles.storefrontSectionLabel, { color: theme.colors.onSurfaceVariant }]}
-                  >
-                    Company seller account
-                  </Text>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
-                    Select the user account that should appear as the seller for company-owned listings.
-                  </Text>
-
-                  {sortedAdminUsers.length === 0 ? (
-                    <Surface
-                      style={[styles.storefrontEmptyState, { backgroundColor: theme.colors.surfaceVariant }]}
-                      elevation={0}
-                    >
-                      <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                        No users are available to assign yet.
-                      </Text>
-                    </Surface>
-                  ) : (
-                    <View style={styles.storefrontOptions}>
-                      {sortedAdminUsers.map((listedUser) => {
-                        const isSelected = listedUser._id === selectedCompanySellerId;
-
-                        return (
-                          <Pressable
-                            key={listedUser._id}
-                            onPress={() => setSelectedCompanySellerId(listedUser._id)}
-                          >
-                            <Surface
-                              style={[
-                                styles.storefrontOption,
-                                {
-                                  backgroundColor: isSelected
-                                    ? theme.colors.primaryContainer
-                                    : theme.colors.surfaceVariant,
-                                  borderColor: isSelected
-                                    ? theme.colors.primary
-                                    : theme.colors.outlineVariant,
-                                },
-                              ]}
-                              elevation={0}
-                            >
-                              <View style={{ flex: 1 }}>
-                                <Text variant="bodyLarge" style={{ color: theme.colors.onSurface }}>
-                                  {listedUser.firstName} {listedUser.lastName}
-                                </Text>
-                                <Text
-                                  variant="bodySmall"
-                                  style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
-                                >
-                                  {listedUser.email}
-                                </Text>
-                                <Text
-                                  variant="labelSmall"
-                                  style={{ color: theme.colors.onSurfaceVariant, marginTop: 6 }}
-                                >
-                                  {listedUser.role.replace('_', ' ')}
-                                  {listedUser.isBanned ? ' • banned' : ''}
-                                </Text>
-                              </View>
-                              <Icon
-                                name={isSelected ? 'check-circle' : 'circle-outline'}
-                                size={22}
-                                color={isSelected ? theme.colors.primary : theme.colors.onSurfaceVariant}
-                              />
-                            </Surface>
-                          </Pressable>
-                        );
-                      })}
-                    </View>
-                  )}
-
-                  <Button
-                    mode="contained"
-                    onPress={handleSaveStorefront}
-                    loading={savingStorefront}
-                    disabled={savingStorefront}
-                    style={styles.primaryButton}
-                  >
-                    Save Storefront
-                  </Button>
-                </>
+                <Button mode="contained" onPress={openStoreManagement} style={styles.primaryButton}>
+                  Open Store Management
+                </Button>
               ) : (
                 <Surface
                   style={[styles.storefrontNotice, { backgroundColor: theme.colors.secondaryContainer }]}
                   elevation={0}
                 >
                   <Text variant="bodyMedium" style={{ color: theme.colors.onSecondaryContainer }}>
-                    An administrator must configure the company seller account before catalog managers can add listings.
+                    Store setup is managed by Super Admins from the mobile Store Management screen.
                   </Text>
                 </Surface>
               )}
@@ -504,9 +372,14 @@ export default function SellScreen() {
               </Text>
               <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
                 {user.role === 'admin'
-                  ? 'Save the storefront settings above before creating company listings from mobile.'
-                  : 'Ask an administrator to configure the company storefront in the mobile app before adding listings.'}
+                  ? 'Open Store Management from mobile and choose the company seller account before creating official listings.'
+                  : 'Ask a Super Admin to configure the company storefront in the mobile app before adding listings.'}
               </Text>
+              {user.role === 'admin' ? (
+                <Button mode="contained" onPress={openStoreManagement} style={styles.primaryButton}>
+                  Open Store Management
+                </Button>
+              ) : null}
             </Surface>
           ) : (
             <>
@@ -539,7 +412,7 @@ export default function SellScreen() {
                     No listings yet
                   </Text>
                   <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
-                    Drafts stay private and submitted listings remain hidden until a moderator approves them.
+                    Drafts stay private and submitted listings remain hidden until a Reviewer-Approver approves them.
                   </Text>
                 </Surface>
               ) : (
@@ -598,6 +471,7 @@ export default function SellScreen() {
           <TextInput label="Website" mode="outlined" value={form.website} onChangeText={(value) => setForm((current) => ({ ...current, website: value }))} style={styles.input} />
           <TextInput label="Instagram" mode="outlined" value={form.instagram} onChangeText={(value) => setForm((current) => ({ ...current, instagram: value }))} style={styles.input} />
           <TextInput label="Facebook" mode="outlined" value={form.facebook} onChangeText={(value) => setForm((current) => ({ ...current, facebook: value }))} style={styles.input} />
+          <TextInput label="Store banner URL" mode="outlined" value={form.bannerUrl} onChangeText={(value) => setForm((current) => ({ ...current, bannerUrl: value }))} style={styles.input} />
 
           <View style={styles.assetRow}>
             <Button mode="outlined" onPress={pickLogo} loading={logoUpload.isUploading}>
@@ -612,7 +486,7 @@ export default function SellScreen() {
             </Button>
           </View>
           {form.bannerUrl ? (
-            <Image source={{ uri: form.bannerUrl }} style={styles.bannerPreview} resizeMode="cover" />
+            <Image source={{ uri: normalizeOptionalUrl(form.bannerUrl) ?? form.bannerUrl }} style={styles.bannerPreview} resizeMode="cover" />
           ) : null}
 
           <Button mode="contained" onPress={handleSubmitApplication} loading={submitting} style={styles.primaryButton}>
@@ -652,6 +526,9 @@ const styles = StyleSheet.create({
   primaryButton: {
     marginTop: 8,
   },
+  secondaryButton: {
+    marginTop: 12,
+  },
   emptyCard: {
     padding: 20,
     borderRadius: 16,
@@ -687,29 +564,8 @@ const styles = StyleSheet.create({
   storefrontMeta: {
     marginTop: 16,
   },
-  storefrontSectionLabel: {
-    marginTop: 16,
-    marginBottom: 6,
-  },
-  storefrontOptions: {
-    marginTop: 12,
-    gap: 10,
-  },
-  storefrontOption: {
-    borderWidth: 1,
-    borderRadius: 14,
-    padding: 14,
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: 12,
-  },
   storefrontNotice: {
     marginTop: 16,
-    borderRadius: 14,
-    padding: 14,
-  },
-  storefrontEmptyState: {
-    marginTop: 12,
     borderRadius: 14,
     padding: 14,
   },

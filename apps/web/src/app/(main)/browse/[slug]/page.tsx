@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useParams } from "next/navigation";
 import Link from "next/link";
-import { useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../../../../convex/_generated/api";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -24,10 +24,12 @@ import {
 } from "@/components/ui/breadcrumb";
 import { LayoutGrid, List } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
+import { useAuth } from "@/hooks/useAuth";
 
 export default function CategoryPage() {
   const params = useParams();
   const slug = params.slug as string;
+  const { user } = useAuth();
 
   const [filters, setFilters] = useState<FilterState>({
     conditions: [],
@@ -57,6 +59,16 @@ export default function CategoryPage() {
         }
       : "skip"
   );
+  const recordBehaviorEvent = useMutation(api.notifications.recordBehaviorEvent);
+
+  useEffect(() => {
+    if (!category?._id) return;
+    void recordBehaviorEvent({
+      userId: user?._id,
+      eventType: "category_browse",
+      categoryId: category._id,
+    });
+  }, [category?._id, recordBehaviorEvent, user?._id]);
 
   const isLoading = category === undefined;
 

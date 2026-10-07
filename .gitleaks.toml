@@ -1,0 +1,20 @@
+title = "Getitonline repository secret scanning"
+
+[extend]
+useDefault = true
+
+[[rules]]
+id = "generic-api-key"
+
+[[rules.allowlists]]
+description = "CocoaPods dependency checksum, not a credential"
+condition = "AND"
+paths = ['''(^|/)apps/mobile/ios/Podfile\.lock$''']
+regexTarget = "match"
+regexes = ['''^ExpoAppleAuthentication: [a-f0-9]{40}$''']
+
+[[rules.allowlists]]
+description = "Dummy token in the stock NestJS README badge"
+condition = "AND"
+paths = ['''(^|/)apps/api/README\.md$''']
+regexes = ['''^abc123def456$''']

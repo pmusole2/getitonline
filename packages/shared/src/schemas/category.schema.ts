@@ -1,5 +1,8 @@
 import { z } from "zod";
 
+export const CategoryLevelSchema = z.enum(["l1", "l2", "l3"]);
+export type CategoryLevel = z.infer<typeof CategoryLevelSchema>;
+
 // Create category (admin)
 export const CreateCategorySchema = z.object({
   name: z.string().min(1, "Name is required").max(100, "Name too long"),
@@ -11,6 +14,8 @@ export const CreateCategorySchema = z.object({
   description: z.string().max(500, "Description too long").optional(),
   image: z.string().url("Invalid image URL").optional(),
   parentId: z.string().optional(),
+  level: CategoryLevelSchema.optional(),
+  requiresApproval: z.boolean().optional().default(false),
   sortOrder: z.number().int().optional().default(0),
 });
 export type CreateCategory = z.infer<typeof CreateCategorySchema>;
@@ -29,6 +34,10 @@ export const CategorySchema = z.object({
   description: z.string().optional().nullable(),
   image: z.string().optional().nullable(),
   parentId: z.string().optional().nullable(),
+  level: CategoryLevelSchema.optional().nullable(),
+  requiresApproval: z.boolean().optional().nullable(),
+  approvedByUserId: z.string().optional().nullable(),
+  approvedAt: z.number().optional().nullable(),
   isActive: z.boolean(),
   sortOrder: z.number(),
   createdAt: z.number(),
@@ -37,7 +46,14 @@ export const CategorySchema = z.object({
 export type Category = z.infer<typeof CategorySchema>;
 
 // Category with subcategories
+export const CategoryWithClassificationsSchema = CategorySchema.extend({
+  classifications: z.array(CategorySchema).optional(),
+});
+export type CategoryWithClassifications = z.infer<
+  typeof CategoryWithClassificationsSchema
+>;
+
 export const CategoryWithSubcategoriesSchema = CategorySchema.extend({
-  subcategories: z.array(CategorySchema).optional(),
+  subcategories: z.array(CategoryWithClassificationsSchema).optional(),
 });
 export type CategoryWithSubcategories = z.infer<typeof CategoryWithSubcategoriesSchema>;

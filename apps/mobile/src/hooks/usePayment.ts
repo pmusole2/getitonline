@@ -195,6 +195,142 @@ export function usePayment(options: UsePaymentOptions = {}) {
     [onError],
   );
 
+  const payCheckoutWithMobileMoney = useCallback(
+    async (params: {
+      orderIds: string[];
+      userId: string;
+      amount: number;
+      provider: MobileMoneyProvider;
+      mobileNumber: string;
+      description?: string;
+    }) => {
+      setState((prev) => ({
+        ...prev,
+        isLoading: true,
+        error: null,
+      }));
+
+      try {
+        const response = await paymentService.initiateCheckoutMobileMoneyPayment(params);
+
+        if (!response.success) {
+          throw new Error(response.message || 'Failed to initiate checkout payment');
+        }
+
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isPending: true,
+          transactionId: response.transactionId,
+          reference: response.reference,
+          status: response.status,
+        }));
+
+        Alert.alert(
+          'Approve Payment',
+          `Please check your ${params.provider.toUpperCase()} phone for a payment prompt of K${params.amount.toLocaleString()}.\n\nEnter your PIN to complete the payment.`,
+          [{ text: 'OK' }],
+        );
+
+        const finalStatus = await paymentService.pollPaymentStatus(
+          response.reference,
+          {
+            maxAttempts: 60,
+            intervalMs: 5000,
+            onStatusChange: (status) => {
+              setState((prev) => ({ ...prev, status }));
+              onStatusChange?.(status);
+            },
+          },
+        );
+
+        setState((prev) => ({
+          ...prev,
+          isPending: false,
+          status: finalStatus.status,
+        }));
+
+        if (finalStatus.status === 'successful') {
+          onSuccess?.(finalStatus);
+        } else {
+          const error = new Error(
+            finalStatus.failureReason || 'Payment was not successful',
+          );
+          onError?.(error);
+        }
+
+        return finalStatus;
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error('Checkout payment failed');
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isPending: false,
+          error: err.message,
+        }));
+        onError?.(err);
+        throw err;
+      }
+    },
+    [onError, onStatusChange, onSuccess],
+  );
+
+  const payCheckoutWithCard = useCallback(
+    async (params: {
+      orderIds: string[];
+      userId: string;
+      amount: number;
+      email: string;
+      description?: string;
+    }) => {
+      setState((prev) => ({
+        ...prev,
+        isLoading: true,
+        error: null,
+      }));
+
+      try {
+        const response = await paymentService.initiateCheckoutCardPayment(params);
+
+        if (!response.success) {
+          throw new Error(response.message || 'Failed to initiate checkout payment');
+        }
+
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isPending: true,
+          transactionId: response.transactionId,
+          reference: response.reference,
+          status: response.status,
+          paymentUrl: response.paymentUrl || null,
+        }));
+
+        if (response.paymentUrl) {
+          const canOpen = await Linking.canOpenURL(response.paymentUrl);
+          if (canOpen) {
+            await Linking.openURL(response.paymentUrl);
+          } else {
+            throw new Error('Cannot open payment page');
+          }
+        }
+
+        return response;
+      } catch (error) {
+        const err = error instanceof Error ? error : new Error('Checkout payment failed');
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          isPending: false,
+          error: err.message,
+        }));
+        onError?.(err);
+        throw err;
+      }
+    },
+    [onError],
+  );
+
   /**
    * Check payment status manually
    */
@@ -259,6 +395,8 @@ export function usePayment(options: UsePaymentOptions = {}) {
     ...state,
     payWithMobileMoney,
     payWithCard,
+    payCheckoutWithMobileMoney,
+    payCheckoutWithCard,
     checkStatus,
     verifyMobileAccount,
     resetState,

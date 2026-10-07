@@ -116,7 +116,7 @@ export function GuestCartProvider({
   const mergeKey =
     isHydrated && isSignedIn && userId && items.length > 0
       ? `${userId}:${items
-          .map((item) => `${item.productId}:${item.quantity}`)
+          .map((item) => `${item.customizationKey ?? item.productId}:${item.quantity}`)
           .join("|")}`
       : null;
 
@@ -200,8 +200,9 @@ export function GuestCartProvider({
 
   const addItem = (item: GuestCartItem) => {
     setItems((currentItems) => {
+      const itemKey = item.customizationKey ?? item.productId;
       const existingItem = currentItems.find(
-        (currentItem) => currentItem.productId === item.productId
+        (currentItem) => (currentItem.customizationKey ?? currentItem.productId) === itemKey
       );
 
       if (!existingItem) {
@@ -209,7 +210,7 @@ export function GuestCartProvider({
       }
 
       return currentItems.map((currentItem) => {
-        if (currentItem.productId !== item.productId) {
+        if ((currentItem.customizationKey ?? currentItem.productId) !== itemKey) {
           return currentItem;
         }
 
@@ -220,6 +221,9 @@ export function GuestCartProvider({
             Math.max(item.product.quantity, 1)
           ),
           selectedShipping: item.selectedShipping,
+          selectedVariantOptions: item.selectedVariantOptions,
+          selectedAddOns: item.selectedAddOns,
+          customizationKey: item.customizationKey,
           product: item.product,
         };
       });
@@ -233,7 +237,8 @@ export function GuestCartProvider({
       }
 
       return currentItems.map((item) => {
-        if (item.productId !== productId) {
+        const itemKey = item.customizationKey ?? item.productId;
+        if (itemKey !== productId) {
           return item;
         }
 
@@ -251,7 +256,7 @@ export function GuestCartProvider({
   ) => {
     setItems((currentItems) =>
       currentItems.map((item) =>
-        item.productId === productId
+        (item.customizationKey ?? item.productId) === productId
           ? { ...item, selectedShipping }
           : item
       )
@@ -260,7 +265,7 @@ export function GuestCartProvider({
 
   const removeItem = (productId: string) => {
     setItems((currentItems) =>
-      currentItems.filter((item) => item.productId !== productId)
+      currentItems.filter((item) => (item.customizationKey ?? item.productId) !== productId)
     );
   };
 

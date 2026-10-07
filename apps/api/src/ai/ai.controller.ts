@@ -5,11 +5,13 @@ import { MessageRephraseService } from './services/message-rephrase.service';
 import { DisputeAnalysisService } from './services/dispute-analysis.service';
 import { ChatService } from './services/chat.service';
 import { ListingModerationService } from './services/listing-moderation.service';
+import { AiService } from './ai.service';
 import { GetRecommendationsDto, GetSimilarProductsDto, RecommendationsResponseDto } from './dto/recommendations.dto';
 import { RephraseMessageDto, RephraseResponseDto } from './dto/message-rephrase.dto';
 import { AnalyzeDisputeDto, GenerateResolutionMessageDto, DisputeAnalysisResponseDto } from './dto/dispute-analysis.dto';
 import { ChatRequestDto, ChatResponseDto, SuggestResponsesDto, QuickActionsDto } from './dto/chat.dto';
 import { ListingModerationResponseDto, ModerateListingDto } from './dto/listing-moderation.dto';
+import { VisualSearchDto, VisualSearchResponseDto } from './dto/visual-search.dto';
 import { ConvexService } from '../convex/convex.service';
 
 @ApiTags('AI')
@@ -21,6 +23,7 @@ export class AiController {
     private readonly disputeAnalysisService: DisputeAnalysisService,
     private readonly chatService: ChatService,
     private readonly listingModerationService: ListingModerationService,
+    private readonly aiService: AiService,
     private readonly convexService: ConvexService,
   ) {}
 
@@ -75,9 +78,11 @@ export class AiController {
   ): Promise<RecommendationsResponseDto> {
     try {
       // Fetch user data and products from Convex
-      const [user, products] = await Promise.all([
+      const [user, products, categories, behaviorSummary] = await Promise.all([
         this.convexService.getUser(dto.userId),
         this.convexService.getActiveProducts(50),
+        this.convexService.getCategories(),
+        this.convexService.getUserBehaviorSummary(dto.userId),
       ]);
 
       if (!user) {
@@ -89,10 +94,32 @@ export class AiController {
         (p: { sellerId: string }) => p.sellerId !== dto.userId
       );
 
+      const categoryNameById = new Map<string, string>();
+      const addCategoryNames = (categoryItems: Array<{ _id: string; name: string; subcategories?: unknown[] }>) => {
+        for (const category of categoryItems) {
+          categoryNameById.set(category._id, category.name);
+          const subcategories = Array.isArray(category.subcategories)
+            ? (category.subcategories as Array<{ _id: string; name: string; classifications?: unknown[] }>)
+            : [];
+          for (const subcategory of subcategories) {
+            categoryNameById.set(subcategory._id, subcategory.name);
+            const classifications = Array.isArray(subcategory.classifications)
+              ? (subcategory.classifications as Array<{ _id: string; name: string }>)
+              : [];
+            for (const classification of classifications) {
+              categoryNameById.set(classification._id, classification.name);
+            }
+          }
+        }
+      };
+      addCategoryNames(categories ?? []);
+      const categoryLabels = (ids: string[] | undefined) =>
+        (ids ?? []).map((id) => categoryNameById.get(id) ?? id);
+
       const userContext = {
-        interests: user.interests || [],
-        recentlyViewed: [], // TODO: Implement view history tracking
-        purchaseHistory: [], // TODO: Fetch from orders
+        interests: categoryLabels(user.interests),
+        recentlyViewed: categoryLabels(behaviorSummary.recentlyViewedCategoryIds),
+        purchaseHistory: categoryLabels(behaviorSummary.purchaseCategoryIds),
       };
 
       const formattedProducts = otherUsersProducts.map((p: { _id: string; title: string; categoryId: string; subcategoryId?: string; price: number; condition: string }) => ({
@@ -114,6 +141,27 @@ export class AiController {
       throw new HttpException(
         'Failed to generate recommendations',
         HttpStatus.INTERNAL_SERVER_ERROR,
+      );
+    }
+  }
+
+  @Post('visual-search')
+  @ApiOperation({ summary: 'Generate product search terms from a captured image' })
+  @ApiResponse({ status: 200, type: VisualSearchResponseDto })
+  async visualSearch(
+    @Body() dto: VisualSearchDto,
+  ): Promise<VisualSearchResponseDto> {
+    try {
+      return await this.aiService.generateVisualSearchTerms(dto.imageDataUrl);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : '';
+      throw new HttpException(
+        message.includes('OpenAI is not configured')
+          ? 'Visual search is not configured'
+          : 'Failed to analyze image search',
+        message.includes('OpenAI is not configured')
+          ? HttpStatus.SERVICE_UNAVAILABLE
+          : HttpStatus.INTERNAL_SERVER_ERROR,
       );
     }
   }
@@ -309,7 +357,7 @@ export class AiController {
   }
 
   @Post('chat')
-  @ApiOperation({ summary: 'General AI chat for the shopping assistant' })
+  @ApiOperation({ summary: 'General AI chat with Pinkie, the shopping assistant' })
   @ApiResponse({ status: 200, type: ChatResponseDto })
   async chat(
     @Body() dto: ChatRequestDto,
