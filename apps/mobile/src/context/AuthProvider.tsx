@@ -1,6 +1,6 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useRef, useState } from 'react';
 import { useAuth, useUser } from '@clerk/clerk-expo';
-import { useQuery, useMutation } from 'convex/react';
+import { useConvexAuth, useQuery, useMutation } from 'convex/react';
 import { api } from '../../../../convex/_generated/api';
 import type { User } from '../types';
 import { setAIConsentSubject } from '../services/aiConsent';
@@ -29,22 +29,47 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
+const ACCOUNT_SYNC_ERROR =
+  'We could not finish setting up your account. Check your connection and try again.';
+
+// Account sync state belongs to the Clerk subject that started it (null when signed out). Any other subject reads
+// it as unsettled, with no profile and no error, so one account's result cannot reach another account or a signed-out session.
+interface SyncState {
+  readonly subject: string | null;
+  readonly profile: User | null;
+  readonly error: string | null;
+  readonly settled: boolean;
+}
+
+const NO_SYNC: SyncState = { subject: null, profile: null, error: null, settled: false };
+
+function syncFor(state: SyncState, subject: string | null): SyncState {
+  return state.subject === subject ? state : { subject, profile: null, error: null, settled: false };
+}
+
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const { isLoaded, isSignedIn, signOut: clerkSignOut } = useAuth();
   const { user: clerkUser } = useUser();
-  const [isInitialized, setIsInitialized] = useState(false);
-  const [fallbackUser, setFallbackUser] = useState<User | null>(null);
-  const [authSyncError, setAuthSyncError] = useState<string | null>(null);
+  const { isLoading: convexAuthLoading, isAuthenticated: convexAuthenticated } = useConvexAuth();
+  const [syncState, setSyncState] = useState<SyncState>(NO_SYNC);
   const [syncAttempt, setSyncAttempt] = useState(0);
   const [postAuthDestination, setPostAuthDestination] = useState<
     'Cart' | 'Checkout' | null
   >(null);
 
-  // Query user from Convex
-  const convexUser = useQuery(
-    api.users.getUserByClerkId,
-    clerkUser?.id ? { clerkId: clerkUser.id } : 'skip'
-  );
+  const currentSubject = clerkUser?.id ?? null;
+  const subjectRef = useRef(currentSubject);
+  const sync = syncFor(syncState, currentSubject);
+
+  // The profile is requested only once Convex holds an authenticated token, so it cannot fail as Unauthenticated.
+  const profileReady = currentSubject !== null && convexAuthenticated && !convexAuthLoading;
+  const convexUser = useQuery(api.users.getUserByClerkId, profileReady ? { clerkId: currentSubject } : 'skip');
+  // A server profile is trusted only for the subject it was requested for, and only while Convex is authenticated.
+  const profileForSubject =
+    convexAuthenticated && convexUser && convexUser.clerkId === currentSubject ? convexUser : null;
+  // Pending is undefined. Null is the server's answer that no account exists for this subject, and it counts only after
+  // this subject's sync has settled, so a profile that is not created yet is not mistaken for a deleted one.
+  const profileMissing = profileReady && sync.settled && convexUser === null;
 
   // Mutation to upsert user
   const upsertUser = useMutation(api.users.upsertUser);
@@ -56,11 +81,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [clerkUser?.id]);
 
   useEffect(() => {
-    if (convexUser) {
-      setFallbackUser(null);
-      setAuthSyncError(null);
+    subjectRef.current = currentSubject;
+  }, [currentSubject]);
+
+  // Keeps the last profile the server verified for this subject, which a pending reload falls back to. An authoritative
+  // missing answer drops it, so the deleted account is not shown from the cache.
+  useEffect(() => {
+    if (profileForSubject !== null) {
+      setSyncState((prev) =>
+        prev.subject === currentSubject && prev.profile === profileForSubject
+          ? prev
+          : { ...syncFor(prev, currentSubject), profile: profileForSubject },
+      );
+    } else if (profileMissing) {
+      setSyncState((prev) => (prev.profile === null ? prev : { ...prev, profile: null }));
     }
-  }, [convexUser]);
+  }, [currentSubject, profileForSubject, profileMissing]);
 
   // Sync Clerk user with Convex
   useEffect(() => {
@@ -73,62 +109,58 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
       if (!isSignedIn || !clerkUser) {
         if (!isCancelled) {
-          setFallbackUser(null);
-          setAuthSyncError(null);
-          setIsInitialized(true);
+          setSyncState({ subject: null, profile: null, error: null, settled: true });
         }
         return;
       }
 
-      if (!isCancelled) {
-        setAuthSyncError(null);
-        setIsInitialized(false);
+      // Wait for Convex to attach the Clerk token, then require it: without it, protected calls fail.
+      if (convexAuthLoading) {
+        return;
+      }
+
+      const subject = clerkUser.id;
+      // A reply applies only if its subject is still current when it arrives.
+      const isCurrent = () => !isCancelled && subjectRef.current === subject;
+
+      if (!convexAuthenticated) {
+        if (isCurrent()) {
+          setSyncState((prev) => ({
+            ...syncFor(prev, subject),
+            profile: null,
+            error: ACCOUNT_SYNC_ERROR,
+            settled: true,
+          }));
+        }
+        return;
+      }
+
+      if (isCurrent()) {
+        setSyncState((prev) => ({ ...syncFor(prev, subject), error: null, settled: false }));
       }
 
       try {
-        const userId = await upsertUser({
-          clerkId: clerkUser.id,
+        await upsertUser({
           email: clerkUser.primaryEmailAddress?.emailAddress || '',
           firstName: clerkUser.firstName || '',
           lastName: clerkUser.lastName || '',
           avatar: clerkUser.imageUrl,
         });
 
-        if (!isCancelled) {
-          const now = Date.now();
-
-          setFallbackUser((currentUser) => ({
-            _id: userId,
-            _creationTime: currentUser?._creationTime ?? now,
-            clerkId: clerkUser.id,
-            email: clerkUser.primaryEmailAddress?.emailAddress || '',
-            firstName: clerkUser.firstName || '',
-            lastName: clerkUser.lastName || '',
-            avatar: clerkUser.imageUrl,
-            role: currentUser?.role ?? 'user',
-            totalSales: currentUser?.totalSales ?? 0,
-            totalPurchases: currentUser?.totalPurchases ?? 0,
-            isVerified: currentUser?.isVerified ?? false,
-            isBanned: currentUser?.isBanned ?? false,
-            createdAt: currentUser?.createdAt ?? now,
-            updatedAt: now,
-            phone: currentUser?.phone,
-            interests: currentUser?.interests,
-            address: currentUser?.address,
-            preferences: currentUser?.preferences,
-            rating: currentUser?.rating,
-          }));
+        // The reply holds only an ID, which is not proof of ownership. The profile is exposed only when the server returns
+        // it for this subject, so this sync records completion and nothing else.
+        if (isCurrent()) {
+          setSyncState((prev) => ({ ...syncFor(prev, subject), error: null, settled: true }));
         }
       } catch (error) {
         console.error('Failed to sync user with Convex:', error);
-        if (!isCancelled) {
-          setAuthSyncError(
-            'We could not finish setting up your account. Check your connection and try again.'
-          );
-        }
-      } finally {
-        if (!isCancelled) {
-          setIsInitialized(true);
+        if (isCurrent()) {
+          setSyncState((prev) => ({
+            ...syncFor(prev, subject),
+            profile: null,
+            error: ACCOUNT_SYNC_ERROR,
+            settled: true,
+          }));
         }
       }
     }
@@ -138,12 +170,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => {
       isCancelled = true;
     };
-  }, [isLoaded, isSignedIn, clerkUser, syncAttempt, upsertUser]);
+  }, [isLoaded, isSignedIn, clerkUser, syncAttempt, upsertUser, convexAuthLoading, convexAuthenticated]);
 
   const handleSignOut = async () => {
     try {
-      setFallbackUser(null);
-      setAuthSyncError(null);
+      setSyncState({ subject: null, profile: null, error: null, settled: true });
       setAIConsentSubject('guest');
       await clerkSignOut();
     } catch (error) {
@@ -152,14 +183,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   };
 
   const retryUserSync = () => {
-    setAuthSyncError(null);
+    setSyncState((prev) => (prev.subject === currentSubject ? { ...prev, error: null } : prev));
     setSyncAttempt((currentAttempt) => currentAttempt + 1);
   };
 
-  const user = convexUser ?? fallbackUser;
+  // A cached profile is not proof of a live session: expose the user only while Convex is authenticated. The cache serves
+  // only while the server is still pending for this subject. An authoritative missing account exposes no user and
+  // surfaces the sync error, which routes to the recovery screen.
+  const user =
+    convexAuthenticated && !profileMissing
+      ? (profileForSubject ?? (convexUser === undefined ? sync.profile : null))
+      : null;
+  const authSyncError = profileForSubject ? null : profileMissing ? ACCOUNT_SYNC_ERROR : sync.error;
+  const isInitialized = sync.settled;
   const isLoading =
     !isLoaded ||
     !isInitialized ||
+    convexAuthLoading ||
     (Boolean(isSignedIn) && !user && !authSyncError);
 
   const clerkUserData: ClerkUserType | null = clerkUser ? {

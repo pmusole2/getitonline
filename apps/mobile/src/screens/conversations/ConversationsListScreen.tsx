@@ -7,6 +7,8 @@ import Animated, { FadeInDown } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
 import type { Id, RootStackParamList } from '../../types';
@@ -164,7 +166,16 @@ function getTimeAgo(timestamp: number): string {
   return new Date(timestamp).toLocaleDateString();
 }
 
-export default function ConversationsListScreen({ navigation }: Props) {
+export default function ConversationsListScreen(props: Props) {
+  // Conversations are read only for a ready account, so no conversation query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Messages" />;
+  }
+  return <ConversationsListContent {...props} />;
+}
+
+function ConversationsListContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
 

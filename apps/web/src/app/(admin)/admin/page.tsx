@@ -20,35 +20,84 @@ import { api } from "../../../../../../convex/_generated/api";
 import Link from "next/link";
 import { ROUTES } from "@/lib/constants";
 import { formatZMW } from "@gettitonline/shared";
-import { useAuth } from "@/hooks/useAuth";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
 
 export default function AdminDashboard() {
-  const { user } = useAuth();
+  const access = useAccountAccess();
+  const user = access.user;
 
+  if (access.status !== "ready" || !user) {
+    return (
+      <AccountAccessNotice
+        access={access}
+        heading="Staff workspace"
+        signInMessage="Please sign in to use this area."
+      />
+    );
+  }
+
+  if (user.role === "moderator") {
+    return <ReviewerDashboard key={user._id} user={user} />;
+  }
+
+  if (user.role !== "admin") {
+    return <p>Access Restricted</p>;
+  }
+
+  return <AdminDashboardContent key={user._id} user={user} />;
+}
+
+function ReviewerDashboard({ user }: { user: AccountUser }) {
+  const pendingListings = useQuery(api.products.getPendingReviewListings, {
+    reviewerId: user._id,
+    status: "pending_review",
+  });
+  const openDisputes = useQuery(api.disputes.getOpenDisputes, {
+    moderatorId: user._id,
+  });
+
+  if (pendingListings === undefined || openDisputes === undefined) {
+    return <Skeleton className="h-64 w-full" />;
+  }
+
+  return (
+    <div className="space-y-4">
+      <h1 className="text-3xl font-bold">Review workspace</h1>
+      <p>
+        {pendingListings.length} pending listings · {openDisputes.length} open
+        disputes
+      </p>
+      <Button asChild>
+        <Link href={ROUTES.ADMIN_LISTING_REVIEW}>Review listings</Link>
+      </Button>
+    </div>
+  );
+}
+
+function AdminDashboardContent({ user }: { user: AccountUser }) {
   // Get stats (only if user is available)
   const orderStats = useQuery(
     api.orders.getOrderStats,
-    user?._id ? { adminId: user._id } : "skip"
+    user?._id ? { adminId: user._id } : "skip",
   );
   const escrowStats = useQuery(
     api.escrow.getEscrowStats,
-    user?._id ? { adminId: user._id } : "skip"
+    user?._id ? { adminId: user._id } : "skip",
   );
   const disputeStats = useQuery(
     api.disputes.getDisputeStats,
-    user?._id ? { adminId: user._id } : "skip"
+    user?._id ? { adminId: user._id } : "skip",
   );
   const pendingListings = useQuery(
     api.products.getPendingReviewListings,
-    user?._id
-      ? { reviewerId: user._id, status: "pending_review" }
-      : "skip"
+    user?._id ? { reviewerId: user._id, status: "pending_review" } : "skip",
   );
 
   // Get open disputes
   const openDisputes = useQuery(
     api.disputes.getOpenDisputes,
-    user?._id ? { moderatorId: user._id } : "skip"
+    user?._id ? { moderatorId: user._id } : "skip",
   );
 
   const isLoading =

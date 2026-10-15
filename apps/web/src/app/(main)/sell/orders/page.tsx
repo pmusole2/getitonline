@@ -49,7 +49,8 @@ import {
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
 import { formatZMW } from "@gettitonline/shared";
-import { useAuth } from "@/hooks/useAuth";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
 import { toast } from "sonner";
 import { formatDistanceToNow } from "date-fns";
 import { canManageCatalog } from "@/lib/roles";
@@ -79,7 +80,20 @@ const STATUS_CONFIG: Record<
 };
 
 export default function SellerOrdersPage() {
-  const { user, isSignedIn, isLoading: authLoading } = useAuth();
+  const access = useAccountAccess();
+  if (access.status !== "ready" || access.user === null) {
+    return (
+      <AccountAccessNotice
+        access={access}
+        heading="Seller Orders"
+        signInMessage="Please sign in to view your orders"
+      />
+    );
+  }
+  return <SellerOrdersContent user={access.user} />;
+}
+
+function SellerOrdersContent({ user }: { user: AccountUser }) {
   const hasCatalogAccess = canManageCatalog(user?.role);
   const [activeTab, setActiveTab] = useState<"pending" | "shipped" | "completed" | "all">("pending");
   const [shippingDialogOpen, setShippingDialogOpen] = useState(false);
@@ -91,7 +105,7 @@ export default function SellerOrdersPage() {
   // Get seller's orders
   const orders = useQuery(
     api.orders.getManagedCatalogOrders,
-    user?._id && hasCatalogAccess ? { actorUserId: user._id } : "skip"
+    user?._id && hasCatalogAccess ? {} : "skip"
   );
 
   // Mutations
@@ -105,7 +119,6 @@ export default function SellerOrdersPage() {
     try {
       await updateOrderStatus({
         orderId,
-        userId: user._id,
         status: "processing",
       });
       toast.success("Order marked as processing");
@@ -124,7 +137,6 @@ export default function SellerOrdersPage() {
     try {
       await markAsShipped({
         orderId: selectedOrderId,
-        sellerId: user._id,
         trackingNumber: trackingNumber || undefined,
         shippingCarrier: shippingCarrier || undefined,
       });
@@ -146,24 +158,8 @@ export default function SellerOrdersPage() {
   };
 
   // Loading state
-  if (authLoading || (isSignedIn && hasCatalogAccess && orders === undefined)) {
+  if (hasCatalogAccess && orders === undefined) {
     return <SellerOrdersSkeleton />;
-  }
-
-  // Not signed in
-  if (!isSignedIn) {
-    return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <Package className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Seller Orders</h1>
-        <p className="mt-2 text-muted-foreground">
-          Please sign in to view your orders
-        </p>
-        <Button asChild className="mt-6">
-          <Link href={ROUTES.SIGN_IN}>Sign In</Link>
-        </Button>
-      </div>
-    );
   }
 
   if (!hasCatalogAccess) {

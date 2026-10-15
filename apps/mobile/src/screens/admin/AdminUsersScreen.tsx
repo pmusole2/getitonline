@@ -23,6 +23,8 @@ import {
 } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import type { RootStackParamList, User, UserRole } from '../../types';
@@ -46,18 +48,27 @@ function getRoleIcon(role: UserRole) {
   }
 }
 
-export default function AdminUsersScreen({ navigation }: Props) {
+export default function AdminUsersScreen(props: Props) {
+  // User management is read only for a ready account, so no admin query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="User Management" />;
+  }
+  return <AdminUsersContent {...props} />;
+}
+
+function AdminUsersContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isAdmin = user?.role === 'admin';
 
   const usersResult = useQuery(
     api.users.getAllUsers,
-    user?._id && isAdmin ? { adminId: user._id, limit: 100 } : 'skip'
+    user?._id && isAdmin ? { limit: 100 } : 'skip'
   );
   const platformSettings = useQuery(
     api.platform.getPlatformSettingsForAdmin,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
+    user?._id && isAdmin ? {} : 'skip'
   );
 
   const updateUserRole = useMutation(api.users.updateUserRole);
@@ -137,7 +148,6 @@ export default function AdminUsersScreen({ navigation }: Props) {
 
     try {
       await updateUserRole({
-        adminId: user._id,
         targetUserId: selectedUser._id,
         newRole: selectedRole,
       });
@@ -172,7 +182,6 @@ export default function AdminUsersScreen({ navigation }: Props) {
 
             try {
               await toggleUserBan({
-                adminId: user._id,
                 targetUserId: listedUser._id,
                 isBanned: nextIsBanned,
               });
@@ -199,7 +208,6 @@ export default function AdminUsersScreen({ navigation }: Props) {
     try {
       if (selectedWallet.isFrozen) {
         await unfreezeWallet({
-          adminId: user._id,
           walletId: selectedWallet._id,
         });
       } else {
@@ -210,7 +218,6 @@ export default function AdminUsersScreen({ navigation }: Props) {
         }
 
         await freezeWallet({
-          adminId: user._id,
           walletId: selectedWallet._id,
           reason,
         });

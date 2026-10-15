@@ -62,7 +62,7 @@ export function ProductCard({
   // Check if favorited
   const isFavorited = useQuery(
     api.favorites.isFavorited,
-    user?._id ? { userId: user._id, productId: product._id } : "skip"
+    user?._id ? { productId: product._id } : "skip"
   );
 
   // Toggle favorite mutation
@@ -78,7 +78,7 @@ export function ProductCard({
     }
 
     try {
-      await toggleFavorite({ userId: user._id, productId: product._id });
+      await toggleFavorite({ productId: product._id });
       toast.success(isFavorited ? "Removed from favorites" : "Added to favorites");
     } catch (error) {
       toast.error("Failed to update favorites");

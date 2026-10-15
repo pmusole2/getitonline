@@ -12,6 +12,8 @@ import Animated, {
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { TabHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import type { RootStackParamList } from '../../types';
 import { canManageCatalog, getRoleDescription, getRoleLabel, isReviewerRole, isStaffRole } from '../../utils/roles';
@@ -70,6 +72,15 @@ function AnimatedMenuItem({ icon, label, description, value, badge, onPress }: M
 }
 
 export default function ProfileScreen() {
+  // The profile and its counts are read only for a ready account, so no protected query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Profile" />;
+  }
+  return <ProfileContent />;
+}
+
+function ProfileContent() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user, signOut } = useAppAuth();
@@ -79,12 +90,12 @@ export default function ProfileScreen() {
 
   const favorites = useQuery(
     api.favorites.getUserFavorites,
-    user ? { userId: user._id } : 'skip'
+    user ? {} : 'skip'
   );
 
   const notifications = useQuery(
     api.notifications.getUserNotifications,
-    user ? { userId: user._id } : 'skip'
+    user ? {} : 'skip'
   );
 
   const unreadConversations = useQuery(
@@ -100,7 +111,7 @@ export default function ProfileScreen() {
   // Get wallet balance for display
   const walletBalance = useQuery(
     api.wallet.getWalletBalance,
-    user ? { userId: user._id } : 'skip'
+    user ? {} : 'skip'
   );
 
   const menuItems = [

@@ -1,9 +1,12 @@
 import { httpRouter } from "convex/server";
 import { httpAction } from "./_generated/server";
-import { api, internal } from "./_generated/api";
+import { internal } from "./_generated/api";
 import { verifyClerkWebhookRequest } from "./lib/clerkWebhook";
+import { lencoWebhook } from "./lencoWebhook";
 
 const http = httpRouter();
+
+http.route({ path: "/lenco-webhook", method: "POST", handler: lencoWebhook });
 
 // Clerk webhook handler
 http.route({
@@ -16,13 +19,10 @@ http.route({
       event = await verifyClerkWebhookRequest(request);
     } catch (error) {
       console.error("Clerk webhook verification failed:", error);
-      return new Response(
-        JSON.stringify({ error: "Webhook verification failed" }),
-        {
-          status: 400,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+      return new Response(JSON.stringify({ error: "Webhook verification failed" }), {
+        status: 400,
+        headers: { "Content-Type": "application/json" },
+      });
     }
 
     try {
@@ -32,7 +32,7 @@ http.route({
           const primaryEmail = email_addresses?.[0]?.email_address;
 
           if (primaryEmail) {
-            await ctx.runMutation(api.users.upsertUser, {
+            await ctx.runMutation(internal.users.upsertUserFromClerkWebhook, {
               clerkId: id,
               email: primaryEmail,
               firstName: first_name || "",
@@ -48,7 +48,7 @@ http.route({
           const primaryEmail = email_addresses?.[0]?.email_address;
 
           if (primaryEmail) {
-            await ctx.runMutation(api.users.upsertUser, {
+            await ctx.runMutation(internal.users.upsertUserFromClerkWebhook, {
               clerkId: id,
               email: primaryEmail,
               firstName: first_name || "",
@@ -76,13 +76,10 @@ http.route({
       });
     } catch (error) {
       console.error("Webhook error:", error);
-      return new Response(
-        JSON.stringify({ error: "Webhook processing failed" }),
-        {
-          status: 500,
-          headers: { "Content-Type": "application/json" },
-        }
-      );
+      return new Response(JSON.stringify({ error: "Webhook processing failed" }), {
+        status: 500,
+        headers: { "Content-Type": "application/json" },
+      });
     }
   }),
 });

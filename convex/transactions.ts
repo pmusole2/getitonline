@@ -1,8 +1,13 @@
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { mutation, query, internalMutation } from "./_generated/server";
+import { query, internalMutation } from "./_generated/server";
 import type { MutationCtx } from "./_generated/server";
+import { requireUser } from "./lib/auth";
+import { assertFinancialOrderAccess, requireTransactionReadAccess } from "./lib/financialAccess";
 import { ensureAdminActor } from "./lib/platform";
+import { centsToStoredMajor, checkedAdd } from "./lib/catalogMoney";
+import { projectEscrowFinancials } from "./lib/escrowAccounting";
+import { provenProviderFee } from "./lib/paymentReconciliation";
 
 // Generate unique transaction reference
 function generateReference(): string {
@@ -49,11 +54,8 @@ function getCheckoutOrderIds(metadata: unknown) {
     return [];
   }
 
-  const candidate = "checkoutOrderIds" in metadata
-    ? metadata.checkoutOrderIds
-    : "orderIds" in metadata
-      ? metadata.orderIds
-      : undefined;
+  const candidate =
+    "checkoutOrderIds" in metadata ? metadata.checkoutOrderIds : "orderIds" in metadata ? metadata.orderIds : undefined;
 
   if (!Array.isArray(candidate)) {
     return [];
@@ -62,12 +64,7 @@ function getCheckoutOrderIds(metadata: unknown) {
   return candidate.filter((id): id is string => typeof id === "string");
 }
 
-async function markOrderPaidAndCreateEscrow(
-  ctx: MutationCtx,
-  orderId: Id<"orders">,
-  now: number,
-  gatewayFee?: number
-) {
+async function markOrderPaidAndCreateEscrow(ctx: MutationCtx, orderId: Id<"orders">, now: number, gatewayFee?: number) {
   const order = await ctx.db.get(orderId);
   if (!order) {
     console.error(`❌ Order not found for aggregate payment: ${orderId}`);
@@ -117,36 +114,30 @@ async function markOrderPaidAndCreateEscrow(
 }
 
 // Create a new transaction (for initiating payment)
-export const createTransaction = mutation({
+export const createTransaction = internalMutation({
   args: {
     orderId: v.optional(v.id("orders")),
     userId: v.id("users"),
-    type: v.union(
-      v.literal("collection"),
-      v.literal("transfer"),
-      v.literal("refund")
-    ),
-    paymentMethod: v.union(
-      v.literal("mobile_money"),
-      v.literal("card"),
-      v.literal("bank_transfer")
-    ),
+    type: v.union(v.literal("collection"), v.literal("transfer"), v.literal("refund")),
+    paymentMethod: v.union(v.literal("mobile_money"), v.literal("card"), v.literal("bank_transfer")),
     amount: v.number(),
     currency: v.string(),
     description: v.optional(v.string()),
     // Mobile money specific
-    mobileMoneyProvider: v.optional(
-      v.union(v.literal("mtn"), v.literal("airtel"), v.literal("zamtel"))
-    ),
+    mobileMoneyProvider: v.optional(v.union(v.literal("mtn"), v.literal("airtel"), v.literal("zamtel"))),
     mobileNumber: v.optional(v.string()),
     metadata: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("User not found");
+    if (!user) {
+      throw new Error("User not found");
+    }
 
     const order = args.orderId ? await ctx.db.get(args.orderId) : null;
-    if (args.orderId && !order) throw new Error("Order not found");
+    if (args.orderId && !order) {
+      throw new Error("Order not found");
+    }
 
     const reference = generateReference();
     const now = Date.now();
@@ -162,9 +153,7 @@ export const createTransaction = mutation({
       amount: args.amount,
       currency: args.currency,
       status: "pending",
-      description:
-        args.description ||
-        (order ? `Payment for order ${order.orderNumber}` : "Checkout payment"),
+      description: args.description || (order ? `Payment for order ${order.orderNumber}` : "Checkout payment"),
       metadata: args.metadata,
       initiatedAt: now,
       createdAt: now,
@@ -179,7 +168,7 @@ export const createTransaction = mutation({
 });
 
 // Update transaction with Lenco IDs (after API call)
-export const updateTransactionLencoIds = mutation({
+export const updateTransactionLencoIds = internalMutation({
   args: {
     transactionId: v.id("transactions"),
     lencoTransactionId: v.optional(v.string()),
@@ -197,7 +186,9 @@ export const updateTransactionLencoIds = mutation({
   },
   handler: async (ctx, args) => {
     const transaction = await ctx.db.get(args.transactionId);
-    if (!transaction) throw new Error("Transaction not found");
+    if (!transaction) {
+      throw new Error("Transaction not found");
+    }
 
     await ctx.db.patch(args.transactionId, {
       lencoTransactionId: args.lencoTransactionId,
@@ -211,7 +202,7 @@ export const updateTransactionLencoIds = mutation({
 });
 
 // Update transaction status (for webhooks)
-export const updateTransactionStatus = mutation({
+export const updateTransactionStatus = internalMutation({
   args: {
     reference: v.string(),
     status: v.union(
@@ -233,7 +224,9 @@ export const updateTransactionStatus = mutation({
       .withIndex("by_reference", (q) => q.eq("reference", args.reference))
       .first();
 
-    if (!transaction) throw new Error("Transaction not found");
+    if (!transaction) {
+      throw new Error("Transaction not found");
+    }
 
     const now = Date.now();
     const updates: Record<string, unknown> = {
@@ -241,10 +234,18 @@ export const updateTransactionStatus = mutation({
       updatedAt: now,
     };
 
-    if (args.failureReason) updates.failureReason = args.failureReason;
-    if (args.fee !== undefined) updates.fee = args.fee;
-    if (args.netAmount !== undefined) updates.netAmount = args.netAmount;
-    if (args.metadata) updates.metadata = args.metadata;
+    if (args.failureReason) {
+      updates.failureReason = args.failureReason;
+    }
+    if (args.fee !== undefined) {
+      updates.fee = args.fee;
+    }
+    if (args.netAmount !== undefined) {
+      updates.netAmount = args.netAmount;
+    }
+    if (args.metadata) {
+      updates.metadata = args.metadata;
+    }
 
     // Set completedAt for terminal statuses
     if (["successful", "failed", "cancelled", "refunded"].includes(args.status)) {
@@ -256,7 +257,9 @@ export const updateTransactionStatus = mutation({
     // If successful, update order status and create escrow with proper fund breakdown
     if (args.status === "successful" && transaction.orderId) {
       const order = await ctx.db.get(transaction.orderId);
-      if (!order) throw new Error("Order not found for transaction");
+      if (!order) {
+        throw new Error("Order not found for transaction");
+      }
 
       // Update order to paid
       await ctx.db.patch(transaction.orderId, {
@@ -270,7 +273,9 @@ export const updateTransactionStatus = mutation({
       }
 
       const orderId = transaction.orderId;
-      if (!orderId) return await ctx.db.get(transaction._id); // Additional safety check
+      if (!orderId) {
+        return await ctx.db.get(transaction._id);
+      } // Additional safety check
 
       const existingEscrow = await ctx.db
         .query("escrow")
@@ -281,7 +286,7 @@ export const updateTransactionStatus = mutation({
         // Use order's calculated values for proper fund tracking
         const grossAmount = order.totalAmount; // What buyer paid
         const platformFee = order.platformFee || 0; // 5% platform fee
-        const sellerAmount = order.sellerPayout || (order.subtotal + order.shippingCost); // Seller's share
+        const sellerAmount = order.sellerPayout || order.subtotal + order.shippingCost; // Seller's share
 
         const escrowId = await ctx.db.insert("escrow", {
           orderId: orderId,
@@ -336,7 +341,7 @@ export const updateTransactionStatus = mutation({
 });
 
 // Update by Lenco collection ID (for webhooks)
-export const updateTransactionByLencoId = mutation({
+export const updateTransactionByLencoId = internalMutation({
   args: {
     lencoCollectionId: v.string(),
     reference: v.optional(v.string()), // Fallback lookup
@@ -356,9 +361,7 @@ export const updateTransactionByLencoId = mutation({
     // Try to find by Lenco collection ID first
     let transaction = await ctx.db
       .query("transactions")
-      .withIndex("by_lenco_collection", (q) =>
-        q.eq("lencoCollectionId", args.lencoCollectionId)
-      )
+      .withIndex("by_lenco_collection", (q) => q.eq("lencoCollectionId", args.lencoCollectionId))
       .first();
 
     // Fallback: try to find by reference
@@ -391,10 +394,18 @@ export const updateTransactionByLencoId = mutation({
       updatedAt: now,
     };
 
-    if (args.failureReason) updates.failureReason = args.failureReason;
-    if (args.fee !== undefined) updates.fee = args.fee;
-    if (netAmount !== undefined) updates.netAmount = netAmount;
-    if (args.metadata) updates.metadata = args.metadata;
+    if (args.failureReason) {
+      updates.failureReason = args.failureReason;
+    }
+    if (args.fee !== undefined) {
+      updates.fee = args.fee;
+    }
+    if (netAmount !== undefined) {
+      updates.netAmount = netAmount;
+    }
+    if (args.metadata) {
+      updates.metadata = args.metadata;
+    }
 
     if (["successful", "failed", "cancelled", "refunded"].includes(args.status)) {
       updates.completedAt = now;
@@ -405,18 +416,14 @@ export const updateTransactionByLencoId = mutation({
     // Handle successful payment - create escrow with proper fund breakdown
     if (args.status === "successful") {
       console.log(`✅ Processing successful payment for transaction: ${transaction._id}`);
-      console.log(`📦 Order ID: ${transaction.orderId || 'N/A (top-up)'}`);
+      console.log(`📦 Order ID: ${transaction.orderId || "N/A (top-up)"}`);
 
-      const checkoutOrderIds = getCheckoutOrderIds(
-        transaction.metadata ?? args.metadata
-      ).map((orderId) => orderId as Id<"orders">);
+      const checkoutOrderIds = getCheckoutOrderIds(transaction.metadata ?? args.metadata).map(
+        (orderId) => orderId as Id<"orders">
+      );
 
       if (!transaction.orderId && checkoutOrderIds.length > 0) {
-        await Promise.all(
-          checkoutOrderIds.map((orderId) =>
-            markOrderPaidAndCreateEscrow(ctx, orderId, now, args.fee)
-          )
-        );
+        await Promise.all(checkoutOrderIds.map((orderId) => markOrderPaidAndCreateEscrow(ctx, orderId, now, args.fee)));
         console.log(`🎉 Aggregate payment processing complete for ${checkoutOrderIds.length} orders`);
         return await ctx.db.get(transaction._id);
       }
@@ -443,22 +450,26 @@ export const updateTransactionByLencoId = mutation({
       console.log(`✅ Order ${order.orderNumber} status updated to paid`);
 
       const orderId = transaction.orderId;
-      if (!orderId) return await ctx.db.get(transaction._id); // Additional safety check
+      if (!orderId) {
+        return await ctx.db.get(transaction._id);
+      } // Additional safety check
 
       const existingEscrow = await ctx.db
         .query("escrow")
         .withIndex("by_order", (q) => q.eq("orderId", orderId))
         .first();
 
-      console.log(`💰 Existing escrow: ${existingEscrow ? 'Yes' : 'No'}`);
+      console.log(`💰 Existing escrow: ${existingEscrow ? "Yes" : "No"}`);
 
       if (!existingEscrow) {
         // Proper fund breakdown from order
         const grossAmount = order.totalAmount;
         const platformFee = order.platformFee || 0;
-        const sellerAmount = order.sellerPayout || (order.subtotal + order.shippingCost);
+        const sellerAmount = order.sellerPayout || order.subtotal + order.shippingCost;
 
-        console.log(`💰 Creating escrow - grossAmount: ${grossAmount}, platformFee: ${platformFee}, sellerAmount: ${sellerAmount}`);
+        console.log(
+          `💰 Creating escrow - grossAmount: ${grossAmount}, platformFee: ${platformFee}, sellerAmount: ${sellerAmount}`
+        );
 
         const escrowId = await ctx.db.insert("escrow", {
           orderId: orderId,
@@ -518,10 +529,16 @@ export const updateTransactionByLencoId = mutation({
 export const getTransactionByReference = query({
   args: { reference: v.string() },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const actor = await requireUser(ctx);
+    const transaction = await ctx.db
       .query("transactions")
       .withIndex("by_reference", (q) => q.eq("reference", args.reference))
       .first();
+    if (transaction) {
+      await requireTransactionReadAccess(ctx, actor, transaction);
+    }
+
+    return transaction;
   },
 });
 
@@ -529,20 +546,19 @@ export const getTransactionByReference = query({
 export const getTransaction = query({
   args: { transactionId: v.id("transactions") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const transaction = await ctx.db.get(args.transactionId);
-    if (!transaction) return null;
+    if (!transaction) {
+      return null;
+    }
 
-    const order = transaction.orderId ? await ctx.db.get(transaction.orderId) : null;
+    const order = await requireTransactionReadAccess(ctx, actor, transaction);
     const user = await ctx.db.get(transaction.userId);
 
     return {
       ...transaction,
-      order: order
-        ? { orderNumber: order.orderNumber, totalAmount: order.totalAmount }
-        : null,
-      user: user
-        ? { firstName: user.firstName, lastName: user.lastName }
-        : null,
+      order: order ? { orderNumber: order.orderNumber, totalAmount: order.totalAmount } : null,
+      user: user ? { firstName: user.firstName, lastName: user.lastName } : null,
     };
   },
 });
@@ -551,6 +567,13 @@ export const getTransaction = query({
 export const getOrderTransactions = query({
   args: { orderId: v.id("orders") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    const order = await ctx.db.get(args.orderId);
+    if (!order) {
+      return [];
+    }
+    await assertFinancialOrderAccess(ctx, actor, order);
+
     return await ctx.db
       .query("transactions")
       .withIndex("by_order", (q) => q.eq("orderId", args.orderId))
@@ -562,7 +585,6 @@ export const getOrderTransactions = query({
 // Get user's transactions
 export const getUserTransactions = query({
   args: {
-    userId: v.id("users"),
     limit: v.optional(v.number()),
     status: v.optional(
       v.union(
@@ -576,11 +598,10 @@ export const getUserTransactions = query({
     ),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const limit = args.limit || 50;
 
-    let query = ctx.db
-      .query("transactions")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId));
+    let query = ctx.db.query("transactions").withIndex("by_user", (q) => q.eq("userId", actor._id));
 
     if (args.status) {
       query = query.filter((q) => q.eq(q.field("status"), args.status));
@@ -591,12 +612,10 @@ export const getUserTransactions = query({
     // Add order details
     return await Promise.all(
       transactions.map(async (txn) => {
-        const order = txn.orderId ? await ctx.db.get(txn.orderId) : null;
+        const order = await requireTransactionReadAccess(ctx, actor, txn);
         return {
           ...txn,
-          order: order
-            ? { orderNumber: order.orderNumber, totalAmount: order.totalAmount }
-            : null,
+          order: order ? { orderNumber: order.orderNumber, totalAmount: order.totalAmount } : null,
         };
       })
     );
@@ -605,8 +624,8 @@ export const getUserTransactions = query({
 
 export const listTransactionsForAdmin = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+  handler: async (ctx, _args) => {
+    await ensureAdminActor(ctx);
 
     const allTransactions = await ctx.db.query("transactions").collect();
     const counts = createAdminTransactionCounts();
@@ -637,9 +656,7 @@ export const listTransactionsForAdmin = query({
             orderNumber: order?.orderNumber,
             orderStatus: order?.status,
             userId: transaction.userId,
-            userName: user
-              ? `${user.firstName} ${user.lastName}`.trim()
-              : "Unknown user",
+            userName: user ? `${user.firstName} ${user.lastName}`.trim() : "Unknown user",
             userEmail: user?.email ?? "",
             type: transaction.type,
             paymentMethod: transaction.paymentMethod,
@@ -672,11 +689,8 @@ export const listTransactionsForAdmin = query({
 // Get transaction statistics for admin
 export const getTransactionStats = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized");
-    }
+  handler: async (ctx, _args) => {
+    await ensureAdminActor(ctx);
 
     const allTransactions = await ctx.db.query("transactions").collect();
 
@@ -699,12 +713,19 @@ export const getTransactionStats = query({
 
     for (const txn of allTransactions) {
       // Count by status
-      if (txn.status === "pending") stats.pending++;
-      else if (txn.status === "processing") stats.processing++;
-      else if (txn.status === "successful") stats.successful++;
-      else if (txn.status === "failed") stats.failed++;
-      else if (txn.status === "cancelled") stats.cancelled++;
-      else if (txn.status === "refunded") stats.refunded++;
+      if (txn.status === "pending") {
+        stats.pending++;
+      } else if (txn.status === "processing") {
+        stats.processing++;
+      } else if (txn.status === "successful") {
+        stats.successful++;
+      } else if (txn.status === "failed") {
+        stats.failed++;
+      } else if (txn.status === "cancelled") {
+        stats.cancelled++;
+      } else if (txn.status === "refunded") {
+        stats.refunded++;
+      }
 
       // Sum volumes for successful transactions
       if (txn.status === "successful") {
@@ -725,7 +746,7 @@ export const getTransactionStats = query({
 });
 
 // Create transaction for wallet top-up (for webhook tracking)
-export const createTopUpTransaction = mutation({
+export const createTopUpTransaction = internalMutation({
   args: {
     userId: v.id("users"),
     amount: v.number(),
@@ -736,7 +757,9 @@ export const createTopUpTransaction = mutation({
   },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("User not found");
+    if (!user) {
+      throw new Error("User not found");
+    }
 
     const now = Date.now();
 
@@ -766,63 +789,186 @@ export const createTopUpTransaction = mutation({
   },
 });
 
-// Get platform financial summary (admin only)
+function addFinancialCents(total: number | null, cents: number): number | null {
+  return total === null ? null : checkedAdd(total, cents);
+}
+
+function financialMajor(cents: number | null): number | null {
+  return cents === null ? null : centsToStoredMajor(cents);
+}
+
+function signedFinancialMajor(cents: number): number | null {
+  const magnitude = centsToStoredMajor(Math.abs(cents));
+  return magnitude === null ? null : cents < 0 ? -magnitude : magnitude;
+}
+
+// Get platform financial summary (admin only). Full-history reads are deliberate
+// here; none are added to a money writer or used to reconcile/repair history.
 export const getPlatformFinancialSummary = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized");
-    }
+  handler: async (ctx, _args) => {
+    await ensureAdminActor(ctx);
 
     const allEscrows = await ctx.db.query("escrow").collect();
     const allTransactions = await ctx.db.query("transactions").collect();
-
-    let totalGrossReceived = 0;
-    let totalPlatformFees = 0;
-    let totalSellerPayouts = 0;
-    let totalGatewayFees = 0;
-    let heldInEscrow = 0;
-    let releasedToSellers = 0;
-    let refundedToBuyers = 0;
+    const operations = await ctx.db.query("paymentOperations").collect();
+    const walletHistory = await ctx.db.query("walletTransactions").collect();
+    let gross: number | null = 0;
+    let earned: number | null = 0;
+    let held: number | null = 0;
+    let seller: number | null = 0;
+    let refund: number | null = 0;
+    let fees: number | null = 0;
+    let verifiedEscrows = 0;
+    let unprovenEscrows = 0;
+    let pendingEscrows = 0;
+    let unprovenFundingOperations = 0;
+    let unknownFeeOperations = 0;
+    let unsettledProviderOperations = 0;
+    let verifiedFeeOperations = 0;
+    const companions = new Set<Id<"transactions">>();
+    const providerLedgers = new Set<Id<"walletTransactions">>();
 
     for (const escrow of allEscrows) {
-      totalGrossReceived += escrow.grossAmount || escrow.amount;
-      totalPlatformFees += escrow.platformFee || 0;
-
-      if (escrow.status === "held") {
-        heldInEscrow += escrow.sellerAmount || escrow.amount;
-      } else if (escrow.status === "released") {
-        releasedToSellers += escrow.sellerAmount || escrow.amount;
-      } else if (escrow.status === "refunded") {
-        refundedToBuyers += escrow.refundAmount || escrow.grossAmount || escrow.amount;
+      const projection = await projectEscrowFinancials(ctx, escrow);
+      if (projection.state === "review") {
+        unprovenEscrows++;
+        continue;
       }
+      verifiedEscrows++;
+      if (projection.state === "pending") {
+        pendingEscrows++;
+      }
+      gross = addFinancialCents(gross, projection.grossCents);
+      earned = addFinancialCents(earned, projection.earnedCents);
+      held = addFinancialCents(held, projection.heldCents);
+      seller = addFinancialCents(seller, projection.sellerCents);
+      refund = addFinancialCents(refund, projection.refundCents);
     }
 
-    for (const txn of allTransactions) {
-      if (txn.status === "successful") {
-        totalGatewayFees += txn.gatewayFee || txn.fee || 0;
+    const escrowOperations = new Set(allEscrows.map((escrow) => escrow.operationId));
+    for (const operation of operations) {
+      if (
+        (operation.kind === "wallet_purchase" ||
+          (operation.kind === "checkout_collection" &&
+            (operation.accounting?.kind === "checkout_captured" || operation.receipt?.status === "successful"))) &&
+        !escrowOperations.has(operation._id)
+      ) {
+        unprovenFundingOperations++;
+      }
+      if (operation.kind === "wallet_purchase") {
+        continue; // Internal wallet spending has no external provider fee.
+      }
+      // A durable reservation with no external attempt has no charged fee yet.
+      if (
+        operation.accounting === undefined &&
+        operation.attemptedAt === undefined &&
+        operation.receipt === undefined &&
+        operation.providerId === undefined &&
+        operation.reviewNeeded !== true &&
+        (operation.status === "reserved" || operation.status === "cancelled")
+      ) {
+        continue;
+      }
+      const evidence = await provenProviderFee(ctx, operation);
+      if (!evidence.validated || evidence.feeCents === null) {
+        unknownFeeOperations++;
+        if (operation.accounting === undefined) {
+          unsettledProviderOperations++;
+        }
+      } else {
+        verifiedFeeOperations++;
+        fees = addFinancialCents(fees, evidence.feeCents);
+      }
+      if (!evidence.validated) {
+        continue;
+      }
+      const accounting = operation.accounting;
+      if (accounting === undefined) {
+        throw new Error("Financial summary invariant: validated accounting missing");
+      }
+      if ("transactionId" in accounting) {
+        companions.add(accounting.transactionId);
+      }
+      if (accounting.kind === "topup_credit") {
+        providerLedgers.add(accounting.creditId);
+      } else if (accounting.kind === "withdrawal_completed" || accounting.kind === "withdrawal_reversed") {
+        providerLedgers.add(accounting.debitId);
+        if (accounting.kind === "withdrawal_reversed") {
+          providerLedgers.add(accounting.reversalId);
+        }
       }
     }
-
-    totalSellerPayouts = releasedToSellers;
+    // Legacy/unlinked costs, including inactive cards, are explicitly unproven.
+    // Transaction fee/gatewayFee fields never establish provider cost authority.
+    const unprovenTransactions = allTransactions.filter((transaction) => !companions.has(transaction._id)).length;
+    const unprovenProviderLedgerEntries = walletHistory.filter(
+      (entry) =>
+        (entry.source === "top_up_mobile_money" ||
+          entry.source === "top_up_card" ||
+          entry.source === "top_up_bank" ||
+          entry.source === "withdrawal_mobile_money" ||
+          entry.source === "withdrawal_bank" ||
+          entry.source === "withdrawal_reversal") &&
+        !providerLedgers.has(entry._id)
+    ).length;
+    const verifiedSubtotals = {
+      totalGrossReceived: financialMajor(gross),
+      totalPlatformFees: financialMajor(earned),
+      totalGatewayFees: financialMajor(fees),
+      heldInEscrow: financialMajor(held),
+      releasedToSellers: financialMajor(seller),
+      refundedToBuyers: financialMajor(refund),
+    };
+    const overflow = Object.values(verifiedSubtotals).some((value) => value === null);
+    const escrowComplete =
+      unprovenEscrows === 0 &&
+      unprovenFundingOperations === 0 &&
+      [
+        verifiedSubtotals.totalGrossReceived,
+        verifiedSubtotals.totalPlatformFees,
+        verifiedSubtotals.heldInEscrow,
+        verifiedSubtotals.releasedToSellers,
+        verifiedSubtotals.refundedToBuyers,
+      ].every((value) => value !== null);
+    const feesComplete =
+      unknownFeeOperations === 0 &&
+      unprovenTransactions === 0 &&
+      unprovenProviderLedgerEntries === 0 &&
+      verifiedSubtotals.totalGatewayFees !== null;
+    let assigned: number | null = 0;
+    for (const value of [held, seller, refund, earned]) {
+      assigned = value === null || assigned === null ? null : checkedAdd(assigned, value);
+    }
+    const conserved = escrowComplete && assigned !== null && assigned === gross;
+    const profit = earned === null || fees === null ? null : signedFinancialMajor(earned - fees);
+    const profitOverflow = earned !== null && fees !== null && profit === null;
+    const complete = escrowComplete && feesComplete && pendingEscrows === 0 && conserved && !profitOverflow;
 
     return {
-      // Gross amounts
-      totalGrossReceived,
-      totalPlatformFees,
-      totalGatewayFees,
-
-      // Net platform profit
-      netPlatformProfit: totalPlatformFees - totalGatewayFees,
-
-      // Fund status
-      heldInEscrow,
-      releasedToSellers,
-      refundedToBuyers,
-
-      // Verification (should be 0 if balanced)
-      unaccountedFunds: totalGrossReceived - heldInEscrow - releasedToSellers - refundedToBuyers - totalPlatformFees,
+      totalGrossReceived: escrowComplete ? verifiedSubtotals.totalGrossReceived : null,
+      totalPlatformFees: escrowComplete ? verifiedSubtotals.totalPlatformFees : null,
+      totalGatewayFees: feesComplete ? verifiedSubtotals.totalGatewayFees : null,
+      netPlatformProfit: complete ? profit : null,
+      heldInEscrow: escrowComplete ? verifiedSubtotals.heldInEscrow : null,
+      releasedToSellers: escrowComplete ? verifiedSubtotals.releasedToSellers : null,
+      refundedToBuyers: escrowComplete ? verifiedSubtotals.refundedToBuyers : null,
+      unaccountedFunds: complete ? 0 : null,
+      completeness: { escrow: escrowComplete, fees: feesComplete, complete },
+      review: {
+        unprovenEscrows,
+        unprovenFundingOperations,
+        pendingEscrows,
+        unknownFeeOperations,
+        unsettledProviderOperations,
+        unprovenTransactions,
+        outOfScopeCardTransactions: allTransactions.filter((transaction) => transaction.paymentMethod === "card")
+          .length,
+        unprovenProviderLedgerEntries,
+        aggregateOverflow: overflow || profitOverflow,
+      },
+      verifiedSubtotals,
+      verifiedCounts: { escrows: verifiedEscrows, feeOperations: verifiedFeeOperations },
     };
   },
 });

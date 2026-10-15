@@ -71,13 +71,13 @@ export default function WalletPage() {
   // Get wallet activity
   const activity = useQuery(
     api.wallet.getWalletActivity,
-    user?._id ? { userId: user._id } : "skip"
+    user?._id ? {} : "skip"
   );
 
   // Get transactions
   const transactions = useQuery(
     api.wallet.getWalletTransactions,
-    user?._id ? { userId: user._id, limit: 20 } : "skip"
+    user?._id ? { limit: 20 } : "skip"
   );
 
   // Create wallet mutation
@@ -85,7 +85,7 @@ export default function WalletPage() {
 
   const handleCreateWallet = async () => {
     if (!user) return;
-    await createWallet({ userId: user._id });
+    await createWallet({});
   };
 
   // Loading state

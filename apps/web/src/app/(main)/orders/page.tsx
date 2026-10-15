@@ -60,7 +60,7 @@ export default function OrdersPage() {
   // Get buyer orders
   const orders = useQuery(
     api.orders.getBuyerOrders,
-    user?._id ? { buyerId: user._id } : "skip"
+    user?._id ? {} : "skip"
   );
 
   // Loading state

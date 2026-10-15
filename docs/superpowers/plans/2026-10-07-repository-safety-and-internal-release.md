@@ -14,13 +14,15 @@
 
 **Rollback:** Keep a private baseline of pre-existing changes. Revert only changes introduced by this plan if necessary. Do not rewrite shared history for false positives. If a release fails verification, leave the previous tester release active and do not submit the failing artifact. Roll back a published build through its store track rather than reusing a build number.
 
+**October 7 backend change:** The user selected migration of the remaining Railway API calls to Convex before finishing the releases. The old Android build 13 and iOS build 2 submission were canceled and verified. Source push remains complete. The matching Railway deployment step is superseded by the proposed [Convex migration design](../specs/2026-10-07-convex-api-migration-design.md); implementation planning follows written-spec approval under the required Superpowers workflow. Fresh builds and store publication remain outstanding.
+
 ## Tasks
 
 - [x] Audit local and remote history, proposed files, and private artifacts.
 - [x] Add narrow scanner exceptions for proven public placeholders and dependency checksums; exclude local evidence and binaries.
 - [x] Align the organization iOS target and Google Play internal submission configuration.
 - [x] Run local verification and independent release review; resolve reproduced blocking findings.
-- [ ] Commit the verified source, push only `main`, and verify the remote revision.
-- [ ] Deploy the matching API revision and verify health and Pinkie's identity response. Preserve managed provider credentials; Convex deployment is required only if compatibility checks find actual changes needed.
+- [x] Commit the verified source, push only `main`, and verify the remote revision (`1a1c9c6`).
+- [ ] Complete the approved Convex migration and verify its deployed health, Pinkie identity, authentication, and payment webhook cutover. The Railway deployment was blocked by billing and is superseded.
 - [ ] Build and submit the exact revision to TestFlight and Google Play internal testing.
 - [ ] Verify processing and tester availability; remove task scratch and report any remaining artifacts.

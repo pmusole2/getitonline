@@ -1,5 +1,7 @@
 # Gettitonline Mobile App - Implementation Documentation
 
+> **Status: partly legacy.** The backend moves to native Convex in one cutover; see [the migration design](superpowers/specs/2026-10-07-convex-api-migration-design.md). Sections that describe the NestJS API, `EXPO_PUBLIC_API_URL`, or AI calls routed through the API (including "NestJS API" under External Integrations) describe the current state until that cutover. The release configuration is in [RELEASE_CHECKLIST.md](RELEASE_CHECKLIST.md).
+
 This is the detailed mobile implementation reference. For local setup, EAS/TestFlight flow, and release checks, start with the root [README.md](/Users/macbookair/Desktop/Auto%20Marketplace/README.md).
 
 ## Overview

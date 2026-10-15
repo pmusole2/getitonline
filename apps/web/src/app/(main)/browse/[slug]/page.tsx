@@ -25,11 +25,13 @@ import {
 import { LayoutGrid, List } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
 import { useAuth } from "@/hooks/useAuth";
+import { useBehaviorEventSubject } from "@/hooks/useBehaviorEventSubject";
 
 export default function CategoryPage() {
   const params = useParams();
   const slug = params.slug as string;
-  const { user } = useAuth();
+  const auth = useAuth();
+  const behaviorSubject = useBehaviorEventSubject(auth);
 
   const [filters, setFilters] = useState<FilterState>({
     conditions: [],
@@ -46,7 +48,7 @@ export default function CategoryPage() {
   // Get subcategories
   const subcategories = useQuery(
     api.categories.getSubcategories,
-    category?._id ? { parentId: category._id } : "skip"
+    category?._id ? { parentId: category._id } : "skip",
   );
 
   // Get products in category
@@ -57,18 +59,20 @@ export default function CategoryPage() {
           categoryId: category._id,
           limit: 24,
         }
-      : "skip"
+      : "skip",
   );
-  const recordBehaviorEvent = useMutation(api.notifications.recordBehaviorEvent);
+  const recordBehaviorEvent = useMutation(
+    api.notifications.recordBehaviorEvent,
+  );
 
   useEffect(() => {
-    if (!category?._id) return;
+    if (!category?._id || behaviorSubject === undefined) return;
     void recordBehaviorEvent({
-      userId: user?._id,
+      expectedClerkId: behaviorSubject,
       eventType: "category_browse",
       categoryId: category._id,
-    });
-  }, [category?._id, recordBehaviorEvent, user?._id]);
+    }).catch(() => undefined);
+  }, [behaviorSubject, category?._id, recordBehaviorEvent]);
 
   const isLoading = category === undefined;
 
@@ -155,7 +159,10 @@ export default function CategoryPage() {
             <div className="flex items-center gap-2">
               {/* Mobile Filters */}
               <div className="lg:hidden">
-                <ProductFilters filters={filters} onFiltersChange={setFilters} />
+                <ProductFilters
+                  filters={filters}
+                  onFiltersChange={setFilters}
+                />
               </div>
 
               {/* Sort */}

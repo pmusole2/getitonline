@@ -13,6 +13,8 @@ import { Avatar, Button, Chip, Searchbar, Surface, Text, TextInput, useTheme } f
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { getRoleLabel } from '../../utils/roles';
 import type {
@@ -55,7 +57,16 @@ function getReviewNote(decision: ReviewDecision) {
   }
 }
 
-export default function AdminStoresScreen({ navigation }: Props) {
+export default function AdminStoresScreen(props: Props) {
+  // Admin data is read only for a ready account, so no admin query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Store Management" />;
+  }
+  return <AdminStoresContent {...props} />;
+}
+
+function AdminStoresContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isAdmin = user?.role === 'admin';
@@ -66,11 +77,11 @@ export default function AdminStoresScreen({ navigation }: Props) {
   );
   const platformSettings = useQuery(
     api.platform.getPlatformSettingsForAdmin,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
+    user?._id && isAdmin ? {} : 'skip'
   );
   const usersResult = useQuery(
     api.users.getAllUsers,
-    user?._id && isAdmin ? { adminId: user._id, limit: 100 } : 'skip'
+    user?._id && isAdmin ? { limit: 100 } : 'skip'
   );
 
   const reviewApplication = useMutation(api.vendors.reviewApplication);

@@ -1,10 +1,11 @@
 "use client";
 
 import { ChangeEvent, useState } from "react";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../../../../convex/_generated/api";
 import type { Id } from "../../../../../../../convex/_generated/dataModel";
-import { useAuth } from "@/hooks/useAuth";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -27,10 +28,19 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Separator } from "@/components/ui/separator";
 import { formatZMW } from "@gettitonline/shared";
 import { toast } from "sonner";
+import {
+  storageUploadMessage,
+  useStorageUpload,
+} from "@/hooks/useStorageUpload";
 
 type PromoScope = "platform" | "seller" | "category" | "product";
 type PromoDiscountType = "percent" | "fixed_amount";
-type BannerPlacement = "home_hero" | "home_monthly" | "home_strip" | "category" | "pdp";
+type BannerPlacement =
+  | "home_hero"
+  | "home_monthly"
+  | "home_strip"
+  | "category"
+  | "pdp";
 type CampaignType =
   | "cart_reminder"
   | "low_stock"
@@ -122,54 +132,16 @@ function safeImageUrl(value: string) {
 }
 
 export default function AdminPromotionsPage() {
-  const { user, isLoading } = useAuth();
-  const convex = useConvex();
-  const [promoForm, setPromoForm] = useState(initialPromoForm);
-  const [bannerForm, setBannerForm] = useState(initialBannerForm);
-  const [campaignForm, setCampaignForm] = useState(initialCampaignForm);
-  const [isSavingPromo, setIsSavingPromo] = useState(false);
-  const [isSavingBanner, setIsSavingBanner] = useState(false);
-  const [isUploadingBannerImage, setIsUploadingBannerImage] = useState(false);
-  const [isSavingCampaign, setIsSavingCampaign] = useState(false);
-  const [sendingCampaignId, setSendingCampaignId] = useState<string | null>(null);
+  const access = useAccountAccess();
+  const user = access.user;
 
-  const promoCodes = useQuery(
-    api.promotions.listPromoCodesForAdmin,
-    user?._id ? { adminId: user._id } : "skip"
-  );
-  const banners = useQuery(
-    api.promotions.listPromotionBannersForAdmin,
-    user?._id ? { adminId: user._id } : "skip"
-  );
-  const campaigns = useQuery(
-    api.notifications.listNotificationCampaignsForAdmin,
-    user?._id ? { adminId: user._id } : "skip"
-  );
-  const categories = useQuery(api.categories.getParentCategories);
-  const upsertPromoCode = useMutation(api.promotions.upsertPromoCode);
-  const upsertPromotionBanner = useMutation(
-    api.promotions.upsertPromotionBanner
-  );
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
-  const upsertNotificationCampaign = useMutation(
-    api.notifications.upsertNotificationCampaign
-  );
-  const sendNotificationCampaign = useMutation(
-    api.notifications.sendNotificationCampaign
-  );
-
-  if (
-    isLoading ||
-    promoCodes === undefined ||
-    banners === undefined ||
-    campaigns === undefined ||
-    categories === undefined
-  ) {
+  if (access.status !== "ready" || !user) {
     return (
-      <div className="space-y-6">
-        <Skeleton className="h-8 w-56" />
-        <Skeleton className="h-64 w-full" />
-      </div>
+      <AccountAccessNotice
+        access={access}
+        heading="Staff workspace"
+        signInMessage="Please sign in to use this area."
+      />
     );
   }
 
@@ -186,9 +158,67 @@ export default function AdminPromotionsPage() {
     );
   }
 
+  return <AdminPromotionsPageContent key={user._id} user={user} />;
+}
+
+function AdminPromotionsPageContent({ user }: { user: AccountUser }) {
+  const [promoForm, setPromoForm] = useState(initialPromoForm);
+  const [bannerForm, setBannerForm] = useState(initialBannerForm);
+  const [campaignForm, setCampaignForm] = useState(initialCampaignForm);
+  const [isSavingPromo, setIsSavingPromo] = useState(false);
+  const [isSavingBanner, setIsSavingBanner] = useState(false);
+  const [isUploadingBannerImage, setIsUploadingBannerImage] = useState(false);
+  const [isSavingCampaign, setIsSavingCampaign] = useState(false);
+  const [sendingCampaignId, setSendingCampaignId] = useState<string | null>(
+    null,
+  );
+
+  const promoCodes = useQuery(
+    api.promotions.listPromoCodesForAdmin,
+    user?._id ? { adminId: user._id } : "skip",
+  );
+  const banners = useQuery(
+    api.promotions.listPromotionBannersForAdmin,
+    user?._id ? { adminId: user._id } : "skip",
+  );
+  const campaigns = useQuery(
+    api.notifications.listNotificationCampaignsForAdmin,
+    user?._id ? { adminId: user._id } : "skip",
+  );
+  const categories = useQuery(api.categories.getParentCategories);
+  const upsertPromoCode = useMutation(api.promotions.upsertPromoCode);
+  const upsertPromotionBanner = useMutation(
+    api.promotions.upsertPromotionBanner,
+  );
+  const uploadFile = useStorageUpload();
+  const upsertNotificationCampaign = useMutation(
+    api.notifications.upsertNotificationCampaign,
+  );
+  const sendNotificationCampaign = useMutation(
+    api.notifications.sendNotificationCampaign,
+  );
+
+  if (
+    promoCodes === undefined ||
+    banners === undefined ||
+    campaigns === undefined ||
+    categories === undefined
+  ) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-64 w-full" />
+      </div>
+    );
+  }
+
   const savePromoCode = async () => {
     const discountValue = Number(promoForm.discountValue);
-    if (!promoForm.code.trim() || !promoForm.title.trim() || discountValue <= 0) {
+    if (
+      !promoForm.code.trim() ||
+      !promoForm.title.trim() ||
+      discountValue <= 0
+    ) {
       toast.error("Promo code, title, and discount value are required");
       return;
     }
@@ -219,7 +249,7 @@ export default function AdminPromotionsPage() {
       toast.success("Promo code saved");
     } catch (error: unknown) {
       toast.error(
-        error instanceof Error ? error.message : "Failed to save promo code"
+        error instanceof Error ? error.message : "Failed to save promo code",
       );
     } finally {
       setIsSavingPromo(false);
@@ -233,24 +263,15 @@ export default function AdminPromotionsPage() {
 
     setIsUploadingBannerImage(true);
     try {
-      const uploadUrl = await generateUploadUrl();
-      const response = await fetch(uploadUrl, {
-        method: "POST",
-        headers: { "Content-Type": file.type || "image/jpeg" },
-        body: file,
-      });
+      // The URL is used only once the banner image is registered to the signed-in owner.
+      const outcome = await uploadFile(file);
+      if (outcome.status !== "uploaded") {
+        toast.error(storageUploadMessage(outcome));
+        return;
+      }
 
-      if (!response.ok) throw new Error("Upload failed");
-      const { storageId } = (await response.json()) as {
-        storageId: Id<"_storage">;
-      };
-      const publicUrl = await convex.query(api.storage.getUrl, { storageId });
-      if (!publicUrl) throw new Error("Uploaded banner URL is unavailable");
-
-      setBannerForm((current) => ({ ...current, imageUrl: publicUrl }));
+      setBannerForm((current) => ({ ...current, imageUrl: outcome.url }));
       toast.success("Banner image uploaded");
-    } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Failed to upload banner image");
     } finally {
       setIsUploadingBannerImage(false);
     }
@@ -277,21 +298,29 @@ export default function AdminPromotionsPage() {
             ? (bannerForm.categoryId as Id<"categories">)
             : undefined,
         startsAt: parseDateTime(bannerForm.startsAt),
-        endsAt: bannerForm.endsAt ? parseDateTime(bannerForm.endsAt) : undefined,
+        endsAt: bannerForm.endsAt
+          ? parseDateTime(bannerForm.endsAt)
+          : undefined,
         isActive: true,
         sortOrder: banners.length,
       });
       setBannerForm(initialBannerForm);
       toast.success("Banner saved");
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Failed to save banner");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save banner",
+      );
     } finally {
       setIsSavingBanner(false);
     }
   };
 
   const saveCampaign = async () => {
-    if (!campaignForm.name.trim() || !campaignForm.title.trim() || !campaignForm.message.trim()) {
+    if (
+      !campaignForm.name.trim() ||
+      !campaignForm.title.trim() ||
+      !campaignForm.message.trim()
+    ) {
       toast.error("Campaign name, title, and message are required");
       return;
     }
@@ -318,7 +347,9 @@ export default function AdminPromotionsPage() {
       setCampaignForm(initialCampaignForm);
       toast.success("Notification campaign saved");
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Failed to save campaign");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to save campaign",
+      );
     } finally {
       setIsSavingCampaign(false);
     }
@@ -332,10 +363,12 @@ export default function AdminPromotionsPage() {
         campaignId,
       });
       toast.success(
-        `Campaign sent: ${result.sent} in-app, ${result.queued} queued, ${result.skipped} skipped`
+        `Campaign sent: ${result.sent} in-app, ${result.queued} queued, ${result.skipped} skipped`,
       );
     } catch (error: unknown) {
-      toast.error(error instanceof Error ? error.message : "Failed to send campaign");
+      toast.error(
+        error instanceof Error ? error.message : "Failed to send campaign",
+      );
     } finally {
       setSendingCampaignId(null);
     }
@@ -480,7 +513,10 @@ export default function AdminPromotionsPage() {
                 min="0"
                 value={promoForm.maxDiscount}
                 onChange={(event) =>
-                  setPromoForm({ ...promoForm, maxDiscount: event.target.value })
+                  setPromoForm({
+                    ...promoForm,
+                    maxDiscount: event.target.value,
+                  })
                 }
                 placeholder="Max discount"
               />
@@ -498,7 +534,10 @@ export default function AdminPromotionsPage() {
                 min="0"
                 value={promoForm.perUserLimit}
                 onChange={(event) =>
-                  setPromoForm({ ...promoForm, perUserLimit: event.target.value })
+                  setPromoForm({
+                    ...promoForm,
+                    perUserLimit: event.target.value,
+                  })
                 }
                 placeholder="Per user"
               />
@@ -594,7 +633,9 @@ export default function AdminPromotionsPage() {
                 disabled={isUploadingBannerImage}
               />
               {isUploadingBannerImage && (
-                <p className="text-sm text-muted-foreground">Uploading banner image...</p>
+                <p className="text-sm text-muted-foreground">
+                  Uploading banner image...
+                </p>
               )}
               {bannerForm.imageUrl && (
                 <div className="overflow-hidden rounded-lg border bg-muted">
@@ -662,7 +703,8 @@ export default function AdminPromotionsPage() {
         <CardHeader>
           <CardTitle>Notification Campaigns</CardTitle>
           <CardDescription>
-            Create segmented campaigns for cart reminders, recommendations, price drops, and scarcity alerts.
+            Create segmented campaigns for cart reminders, recommendations,
+            price drops, and scarcity alerts.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-5">
@@ -711,9 +753,15 @@ export default function AdminPromotionsPage() {
                   </SelectTrigger>
                   <SelectContent>
                     <SelectItem value="all_opted_in">All opted-in</SelectItem>
-                    <SelectItem value="cart_abandoners">Cart abandoners</SelectItem>
-                    <SelectItem value="product_viewers">Product viewers</SelectItem>
-                    <SelectItem value="category_browsers">Category browsers</SelectItem>
+                    <SelectItem value="cart_abandoners">
+                      Cart abandoners
+                    </SelectItem>
+                    <SelectItem value="product_viewers">
+                      Product viewers
+                    </SelectItem>
+                    <SelectItem value="category_browsers">
+                      Category browsers
+                    </SelectItem>
                     <SelectItem value="past_buyers">Past buyers</SelectItem>
                   </SelectContent>
                 </Select>
@@ -721,14 +769,20 @@ export default function AdminPromotionsPage() {
               <Input
                 value={campaignForm.title}
                 onChange={(event) =>
-                  setCampaignForm({ ...campaignForm, title: event.target.value })
+                  setCampaignForm({
+                    ...campaignForm,
+                    title: event.target.value,
+                  })
                 }
                 placeholder="Notification title"
               />
               <Input
                 value={campaignForm.message}
                 onChange={(event) =>
-                  setCampaignForm({ ...campaignForm, message: event.target.value })
+                  setCampaignForm({
+                    ...campaignForm,
+                    message: event.target.value,
+                  })
                 }
                 placeholder="Notification message"
               />
@@ -757,7 +811,9 @@ export default function AdminPromotionsPage() {
                 />
                 <Button
                   type="button"
-                  variant={campaignForm.includeMobilePush ? "default" : "outline"}
+                  variant={
+                    campaignForm.includeMobilePush ? "default" : "outline"
+                  }
                   onClick={() =>
                     setCampaignForm({
                       ...campaignForm,
@@ -787,23 +843,27 @@ export default function AdminPromotionsPage() {
 
             <div className="space-y-2">
               {campaigns.map((campaign) => (
-                <div
-                  key={campaign._id}
-                  className="rounded-lg border p-3"
-                >
+                <div key={campaign._id} className="rounded-lg border p-3">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="font-medium">{campaign.name}</p>
                       <p className="text-sm text-muted-foreground">
-                        {campaign.type} • {campaign.audienceSegment} • cap {campaign.maxPerUserPerDay}/day
+                        {campaign.type} • {campaign.audienceSegment} • cap{" "}
+                        {campaign.maxPerUserPerDay}/day
                       </p>
                     </div>
-                    <Badge variant={campaign.status === "active" ? "default" : "secondary"}>
+                    <Badge
+                      variant={
+                        campaign.status === "active" ? "default" : "secondary"
+                      }
+                    >
                       {campaign.status}
                     </Badge>
                   </div>
                   <p className="mt-2 text-sm">{campaign.title}</p>
-                  <p className="text-sm text-muted-foreground">{campaign.message}</p>
+                  <p className="text-sm text-muted-foreground">
+                    {campaign.message}
+                  </p>
                   <div className="mt-3 flex items-center justify-between">
                     <p className="text-xs text-muted-foreground">
                       Channels: {campaign.channels.join(", ")}
@@ -814,7 +874,9 @@ export default function AdminPromotionsPage() {
                       onClick={() => sendCampaign(campaign._id)}
                       disabled={sendingCampaignId === campaign._id}
                     >
-                      {sendingCampaignId === campaign._id ? "Sending..." : "Send"}
+                      {sendingCampaignId === campaign._id
+                        ? "Sending..."
+                        : "Send"}
                     </Button>
                   </div>
                 </div>
@@ -859,7 +921,9 @@ export default function AdminPromotionsPage() {
                 </div>
               ))}
               {promoCodes.length === 0 && (
-                <p className="text-sm text-muted-foreground">No promo codes yet.</p>
+                <p className="text-sm text-muted-foreground">
+                  No promo codes yet.
+                </p>
               )}
             </div>
           </div>

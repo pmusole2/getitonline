@@ -1,9 +1,39 @@
 import { v } from "convex/values";
+import type { Id } from "./_generated/dataModel";
+import type { MutationCtx } from "./_generated/server";
 import { internalMutation, mutation, query } from "./_generated/server";
-import { userRoleValidator } from "./lib/platform";
+import { denialMessage, loadAccountState, requireRole, requireUser } from "./lib/auth";
+import { isReviewerRole, userRoleValidator } from "./lib/platform";
 
-// Create or update user from Clerk webhook
+// Create or update the signed-in user's own record. The Clerk subject comes from the verified token.
 export const upsertUser = mutation({
+  args: {
+    email: v.string(),
+    firstName: v.string(),
+    lastName: v.string(),
+    avatar: v.optional(v.string()),
+  },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) {
+      throw new Error("Unauthenticated");
+    }
+    // A banned account may not rewrite its own record. Deleted accounts keep their own refusal in upsertClerkUser.
+    // The check runs before any write. The verified webhook path below still syncs banned accounts.
+    const existing = await loadAccountState(ctx, identity.subject);
+    if (existing?.deletedAt === undefined && existing?.isBanned) {
+      throw new Error(denialMessage("banned"));
+    }
+    const userId = await upsertClerkUser(ctx, { ...args, clerkId: identity.subject });
+    if (!userId) {
+      throw new Error(denialMessage("deleted"));
+    }
+    return userId;
+  },
+});
+
+// Create or update user from a verified Clerk webhook
+export const upsertUserFromClerkWebhook = internalMutation({
   args: {
     clerkId: v.string(),
     email: v.string(),
@@ -11,63 +41,87 @@ export const upsertUser = mutation({
     lastName: v.string(),
     avatar: v.optional(v.string()),
   },
-  handler: async (ctx, args) => {
-    const existingUser = await ctx.db
-      .query("users")
-      .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkId))
-      .first();
+  handler: async (ctx, args) => upsertClerkUser(ctx, args),
+});
 
-    if (existingUser) {
-      await ctx.db.patch(existingUser._id, {
-        email: args.email,
-        firstName: args.firstName,
-        lastName: args.lastName,
-        avatar: args.avatar,
-        updatedAt: Date.now(),
-      });
-      return existingUser._id;
-    }
+// Returns null for deleted accounts so a stale token or late webhook cannot restore personal data.
+async function upsertClerkUser(
+  ctx: MutationCtx,
+  args: {
+    clerkId: string;
+    email: string;
+    firstName: string;
+    lastName: string;
+    avatar?: string;
+  }
+): Promise<Id<"users"> | null> {
+  const existingUser = await loadAccountState(ctx, args.clerkId);
 
-    return await ctx.db.insert("users", {
-      clerkId: args.clerkId,
+  if (existingUser?.deletedAt !== undefined) {
+    return null;
+  }
+
+  if (existingUser) {
+    await ctx.db.patch(existingUser._id, {
       email: args.email,
       firstName: args.firstName,
       lastName: args.lastName,
       avatar: args.avatar,
-      role: "user",
-      totalSales: 0,
-      totalPurchases: 0,
-      isVerified: false,
-      isBanned: false,
-      createdAt: Date.now(),
       updatedAt: Date.now(),
     });
-  },
-});
+    return existingUser._id;
+  }
+
+  return await ctx.db.insert("users", {
+    clerkId: args.clerkId,
+    email: args.email,
+    firstName: args.firstName,
+    lastName: args.lastName,
+    avatar: args.avatar,
+    role: "user",
+    totalSales: 0,
+    totalPurchases: 0,
+    isVerified: false,
+    isBanned: false,
+    createdAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+}
 
 // Get user by Clerk ID
+// Returns the record only to the signed-in subject itself; anyone else (or no sign-in) gets null.
 export const getUserByClerkId = query({
   args: { clerkId: v.string() },
   handler: async (ctx, args) => {
-    return await ctx.db
-      .query("users")
-      .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkId))
-      .first();
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity || identity.subject !== args.clerkId) {
+      return null;
+    }
+    const user = await loadAccountState(ctx, args.clerkId);
+    return user?.deletedAt === undefined ? user : null;
   },
 });
 
-// Get user by ID
+// Get a user record by ID. The record holds contact details, so an account reads its own, and reviewers and admins read
+// any. The ID names the record wanted; it never grants access. A missing record reads as null.
 export const getUser = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
-    return await ctx.db.get(args.userId);
+    const actor = await requireUser(ctx);
+    const user = await ctx.db.get(args.userId);
+    if (!user) {
+      return null;
+    }
+    if (user._id !== actor._id && !isReviewerRole(actor.role)) {
+      throw new Error("Unauthorized");
+    }
+    return user;
   },
 });
 
-// Update user profile
+// Update the signed-in user's own profile. The account comes from the verified token, and only the listed fields change.
 export const updateProfile = mutation({
   args: {
-    userId: v.id("users"),
     firstName: v.optional(v.string()),
     lastName: v.optional(v.string()),
     phone: v.optional(v.string()),
@@ -82,47 +136,49 @@ export const updateProfile = mutation({
     ),
   },
   handler: async (ctx, args) => {
-    const { userId, ...updates } = args;
+    const actor = await requireUser(ctx);
     const filteredUpdates = Object.fromEntries(
-      Object.entries(updates).filter(([_, value]) => value !== undefined)
+      Object.entries({
+        firstName: args.firstName,
+        lastName: args.lastName,
+        phone: args.phone,
+        avatar: args.avatar,
+        address: args.address,
+      }).filter(([_, value]) => value !== undefined)
     );
 
-    await ctx.db.patch(userId, {
+    await ctx.db.patch(actor._id, {
       ...filteredUpdates,
       updatedAt: Date.now(),
     });
 
-    return await ctx.db.get(userId);
+    return await ctx.db.get(actor._id);
   },
 });
 
-// Update user interests (category preferences)
+// Update the signed-in user's interests (category preferences)
 export const updateInterests = mutation({
   args: {
-    userId: v.id("users"),
     interests: v.array(v.id("categories")),
   },
   handler: async (ctx, args) => {
-    await ctx.db.patch(args.userId, {
+    const actor = await requireUser(ctx);
+    await ctx.db.patch(actor._id, {
       interests: args.interests,
       updatedAt: Date.now(),
     });
-    return await ctx.db.get(args.userId);
+    return await ctx.db.get(actor._id);
   },
 });
 
 // Update user role (admin only)
 export const updateUserRole = mutation({
   args: {
-    adminId: v.id("users"),
     targetUserId: v.id("users"),
     newRole: userRoleValidator,
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can change user roles");
-    }
+    await requireRole(ctx, ["admin"]);
 
     await ctx.db.patch(args.targetUserId, {
       role: args.newRole,
@@ -136,15 +192,11 @@ export const updateUserRole = mutation({
 // Ban/unban user (admin only)
 export const toggleUserBan = mutation({
   args: {
-    adminId: v.id("users"),
     targetUserId: v.id("users"),
     isBanned: v.boolean(),
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can ban/unban users");
-    }
+    await requireRole(ctx, ["admin"]);
 
     await ctx.db.patch(args.targetUserId, {
       isBanned: args.isBanned,
@@ -158,18 +210,17 @@ export const toggleUserBan = mutation({
 // Get all users (admin only, with pagination)
 export const getAllUsers = query({
   args: {
-    adminId: v.id("users"),
     limit: v.optional(v.number()),
     cursor: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can view all users");
-    }
+    await requireRole(ctx, ["admin"]);
 
     const limit = args.limit ?? 20;
-    const users = await ctx.db.query("users").order("desc").take(limit + 1);
+    const users = await ctx.db
+      .query("users")
+      .order("desc")
+      .take(limit + 1);
 
     const hasMore = users.length > limit;
     const items = hasMore ? users.slice(0, -1) : users;
@@ -183,12 +234,13 @@ export const getAllUsers = query({
   },
 });
 
-// Get users by role
+// Get users by role (admin only)
 export const getUsersByRole = query({
   args: {
     role: userRoleValidator,
   },
   handler: async (ctx, args) => {
+    await requireRole(ctx, ["admin"]);
     return await ctx.db
       .query("users")
       .withIndex("by_role", (q) => q.eq("role", args.role))
@@ -197,7 +249,7 @@ export const getUsersByRole = query({
 });
 
 // Update user rating (called after review)
-export const updateUserRating = mutation({
+export const updateUserRating = internalMutation({
   args: {
     userId: v.id("users"),
   },
@@ -222,11 +274,13 @@ export const updateUserRating = mutation({
 });
 
 // Increment sales count
-export const incrementSales = mutation({
+export const incrementSales = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("User not found");
+    if (!user) {
+      throw new Error("User not found");
+    }
 
     await ctx.db.patch(args.userId, {
       totalSales: user.totalSales + 1,
@@ -236,11 +290,13 @@ export const incrementSales = mutation({
 });
 
 // Increment purchases count
-export const incrementPurchases = mutation({
+export const incrementPurchases = internalMutation({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
     const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("User not found");
+    if (!user) {
+      throw new Error("User not found");
+    }
 
     await ctx.db.patch(args.userId, {
       totalPurchases: user.totalPurchases + 1,
@@ -261,6 +317,22 @@ export const deleteUser = internalMutation({
       throw new Error("Unauthorized");
     }
 
+    // A live checkout reservation must never lose its owner row. In this
+    // pre-settlement slice every checkout link requires retention: no
+    // trusted release/accounting marker exists yet, so even a
+    // terminal-looking local label still refuses hard deletion and later
+    // settlement keeps its tombstone linkage. No historical repair.
+    const operations = await ctx.db
+      .query("paymentOperations")
+      .withIndex("by_owner", (q) => q.eq("ownerId", user._id))
+      .collect();
+    for (const operation of operations) {
+      if (operation.kind !== "checkout_collection") {
+        continue;
+      }
+      throw new Error("This owner has an unresolved checkout and cannot be deleted yet.");
+    }
+
     // Note: In production, you'd want to handle related data
     // (orders, products, etc.) according to your data retention policy
     await ctx.db.delete(args.userId);
@@ -278,8 +350,26 @@ export const anonymizeDeletedUserByClerkId = internalMutation({
       .withIndex("by_clerk_id", (q) => q.eq("clerkId", args.clerkId))
       .first();
 
+    // The deletion can arrive before the first sync. Record a tombstone so a later sync or
+    // creation webhook for this subject is refused instead of creating an active account.
     if (!user) {
-      return { status: "not_found" as const };
+      const now = Date.now();
+      await ctx.db.insert("users", {
+        clerkId: args.clerkId,
+        email: "deleted@deleted.gettitonline.local",
+        firstName: "Deleted",
+        lastName: "User",
+        role: "user",
+        totalSales: 0,
+        totalPurchases: 0,
+        isVerified: false,
+        isBanned: true,
+        isDeleted: true,
+        deletedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return { status: "tombstoned" as const };
     }
 
     const now = Date.now();
@@ -329,7 +419,33 @@ export const anonymizeDeletedUserByClerkId = internalMutation({
       .query("loyaltyTransactions")
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .collect();
+    // Outstanding operation-linked reserved loyalty rows are preserved for
+    // later settlement, with the numeric account they debit. A valid
+    // reserved record keeps its actual owned checkout-operation linkage; a
+    // malformed unresolved linkage is conservatively held (retained), never
+    // silently discarded. All other loyalty history is removed as before. No
+    // new active loyalty account is created for the deleted subject, and
+    // repeat anonymization stays safe.
+    const retainedAccountIds = new Set<string>();
     for (const transaction of loyaltyTransactions) {
+      if (transaction.status === "reserved") {
+        const linkedId = transaction.operationId;
+        const linked = linkedId === undefined ? null : await ctx.db.get(linkedId);
+        if (
+          linked &&
+          linked.kind === "checkout_collection" &&
+          linked.ownerId === user._id &&
+          linked.loyaltyTransactionId === transaction._id &&
+          (linked.status === "reserved" || linked.status === "attempted" || linked.status === "unknown")
+        ) {
+          retainedAccountIds.add(transaction.accountId);
+          continue;
+        }
+        // Malformed unresolved linkage: hold for review instead of
+        // discarding a possible financial claim or restoring access.
+        retainedAccountIds.add(transaction.accountId);
+        continue;
+      }
       await ctx.db.delete(transaction._id);
     }
 
@@ -338,6 +454,9 @@ export const anonymizeDeletedUserByClerkId = internalMutation({
       .withIndex("by_user", (q) => q.eq("userId", user._id))
       .collect();
     for (const account of loyaltyAccounts) {
+      if (retainedAccountIds.has(account._id)) {
+        continue;
+      }
       await ctx.db.delete(account._id);
     }
 
@@ -464,8 +583,8 @@ export const anonymizeDeletedUserByClerkId = internalMutation({
       });
     }
 
+    // The clerkId stays in place so later syncs for this subject find the deletion marker.
     await ctx.db.patch(user._id, {
-      clerkId: `deleted:${args.clerkId}`,
       email: anonymizedEmail,
       firstName: "Deleted",
       lastName: "User",
@@ -489,25 +608,23 @@ export const anonymizeDeletedUserByClerkId = internalMutation({
   },
 });
 
-// Get user preferences
+// Get the signed-in user's preferences
 export const getPreferences = query({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    if (!user) {
-      return null;
-    }
-    return user.preferences ?? {
-      themeMode: "system" as const,
-      notificationsEnabled: true,
-    };
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
+    return (
+      actor.preferences ?? {
+        themeMode: "system" as const,
+        notificationsEnabled: true,
+      }
+    );
   },
 });
 
-// Update user preferences (syncs across devices)
+// Update the signed-in user's preferences (syncs across devices)
 export const updatePreferences = mutation({
   args: {
-    userId: v.id("users"),
     preferences: v.object({
       themeMode: v.optional(v.union(v.literal("light"), v.literal("dark"), v.literal("system"))),
       notificationsEnabled: v.optional(v.boolean()),
@@ -515,24 +632,19 @@ export const updatePreferences = mutation({
     }),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    if (!user) {
-      throw new Error("User not found");
-    }
+    const actor = await requireUser(ctx);
 
-    const currentPrefs = user.preferences ?? {
+    const currentPrefs = actor.preferences ?? {
       themeMode: "system" as const,
       notificationsEnabled: true,
     };
 
     const updatedPrefs = {
       ...currentPrefs,
-      ...Object.fromEntries(
-        Object.entries(args.preferences).filter(([_, value]) => value !== undefined)
-      ),
+      ...Object.fromEntries(Object.entries(args.preferences).filter(([_, value]) => value !== undefined)),
     };
 
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(actor._id, {
       preferences: updatedPrefs,
       updatedAt: Date.now(),
     });
@@ -541,24 +653,20 @@ export const updatePreferences = mutation({
   },
 });
 
-// Update theme mode specifically (convenience method)
+// Update the signed-in user's theme mode specifically (convenience method)
 export const updateThemeMode = mutation({
   args: {
-    userId: v.id("users"),
     themeMode: v.union(v.literal("light"), v.literal("dark"), v.literal("system")),
   },
   handler: async (ctx, args) => {
-    const user = await ctx.db.get(args.userId);
-    if (!user) {
-      throw new Error("User not found");
-    }
+    const actor = await requireUser(ctx);
 
-    const currentPrefs = user.preferences ?? {
+    const currentPrefs = actor.preferences ?? {
       themeMode: "system" as const,
       notificationsEnabled: true,
     };
 
-    await ctx.db.patch(args.userId, {
+    await ctx.db.patch(actor._id, {
       preferences: {
         ...currentPrefs,
         themeMode: args.themeMode,

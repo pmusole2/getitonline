@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useAuth } from "@/hooks/useAuth";
+import type { AccountUser } from "@/hooks/useAccountAccess";
 import { Button } from "@/components/ui/button";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -30,23 +30,24 @@ import { useQuery } from "convex/react";
 import { api } from "../../../../../../convex/_generated/api";
 
 interface AdminHeaderProps {
+  readonly user: AccountUser;
+  readonly signOut: () => Promise<void>;
   onMenuClick?: () => void;
 }
 
-export function AdminHeader({ onMenuClick }: AdminHeaderProps) {
-  const { user, clerkUser, signOut } = useAuth();
+export function AdminHeader({ onMenuClick, user, signOut }: AdminHeaderProps) {
   const { theme, setTheme } = useTheme();
 
   // Get unread notifications count
   const unreadCount = useQuery(
     api.notifications.getUnreadCount,
-    user?._id ? { userId: user._id } : "skip"
+    user?._id ? {} : "skip",
   );
 
   // Get open disputes count for moderators/admins
   const openDisputes = useQuery(
     api.disputes.getOpenDisputes,
-    user?._id ? { moderatorId: user._id } : "skip"
+    user?._id ? { moderatorId: user._id } : "skip",
   );
   const disputeCount = openDisputes?.length ?? 0;
 
@@ -116,7 +117,7 @@ export function AdminHeader({ onMenuClick }: AdminHeaderProps) {
             <Button variant="ghost" className="relative h-8 w-8 rounded-full">
               <Avatar className="h-8 w-8">
                 <AvatarImage
-                  src={clerkUser?.imageUrl}
+                  src={user.avatar}
                   alt={user?.firstName || "Admin"}
                 />
                 <AvatarFallback>

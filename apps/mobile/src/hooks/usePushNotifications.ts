@@ -104,7 +104,6 @@ export function usePushNotifications(userId?: Id<'users'>): UsePushNotifications
       setExpoPushToken(token);
       if (userId) {
         await upsertNotificationDevice({
-          userId,
           channel: 'mobile_push',
           token,
           platform: Platform.OS,
@@ -120,7 +119,6 @@ export function usePushNotifications(userId?: Id<'users'>): UsePushNotifications
     if (!userId || !expoPushToken) return;
 
     void upsertNotificationDevice({
-      userId,
       channel: 'mobile_push',
       token: expoPushToken,
       platform: Platform.OS,

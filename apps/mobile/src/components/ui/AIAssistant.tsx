@@ -12,10 +12,11 @@ import Animated, {
   withSpring,
 } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { AiRequestError } from '@gettitonline/shared';
 import { ASSISTANT_NAME } from '../../config/assistant';
-import { useAppAuth } from '../../context/AuthProvider';
+import { useAiActions } from '../../hooks/useAiActions';
+import { aiErrorMessage, type ChatResponse } from '../../services/aiAdapters';
 import { requestAIConsent } from '../../services/aiConsent';
-import { apiService, ChatResponse } from '../../services/api';
 import type { RootStackParamList } from '../../types';
 
 // ============================================================================
@@ -93,16 +94,26 @@ export function AIAssistantFAB({ onPress }: { onPress: () => void }) {
 // MODAL COMPONENT
 // ============================================================================
 
+function initialMessages(): ChatMessage[] {
+  return [
+    {
+      id: '1',
+      content: `Hi! I'm ${ASSISTANT_NAME}, your shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?`,
+      isUser: false,
+      timestamp: new Date(),
+    },
+  ];
+}
+
 export function AIAssistantModal({
   visible,
   onClose,
   currentScreen = 'Home',
   productId,
-  orderId,
 }: AIAssistantModalProps) {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { user } = useAppAuth();
+  const ai = useAiActions();
   const scrollViewRef = useRef<ScrollView>(null);
 
   const [message, setMessage] = useState('');
@@ -115,20 +126,20 @@ export function AIAssistantModal({
     'How does escrow work?',
     'Help with dispute',
   ]);
-  const [messages, setMessages] = useState<ChatMessage[]>([
-    {
-      id: '1',
-      content: `Hi! I'm ${ASSISTANT_NAME}, your shopping assistant. I can help you discover products, compare prices, track orders, and more. How can I help you today?`,
-      isUser: false,
-      timestamp: new Date(),
-    },
-  ]);
+  const [messages, setMessages] = useState<ChatMessage[]>(initialMessages);
   const [conversationHistory, setConversationHistory] = useState<ConversationMessage[]>([]);
 
-  // Check API connection on mount
+  // The conversation belongs to the account that started it. A change of account starts a new one, and any reply still
+  // in flight for the old account is discarded by the AI actions.
+  useEffect(() => {
+    setMessages(initialMessages());
+    setConversationHistory([]);
+    setMessage('');
+    setIsTyping(false);
+  }, [ai.subject]);
+
   useEffect(() => {
     if (visible) {
-      checkConnection();
       loadQuickActions();
     }
   }, [visible, currentScreen]);
@@ -157,11 +168,6 @@ export function AIAssistantModal({
     };
   }, [visible]);
 
-  const checkConnection = async () => {
-    const reachable = await apiService.isReachable();
-    setIsConnected(reachable);
-  };
-
   const loadQuickActions = async () => {
     try {
       // For now, use default suggestions - can be replaced with API call
@@ -181,8 +187,11 @@ export function AIAssistantModal({
   const handleSendMessage = useCallback(async () => {
     if (!message.trim() || isTyping) return;
 
+    // This send belongs to the account active when it started. Every write after an await checks that it still does.
+    const actions = ai;
     const userMessageText = message.trim();
     const hasConsent = await requestAIConsent();
+    if (!actions.isCurrent()) return;
     if (!hasConsent) {
       const blockedMessage: ChatMessage = {
         id: Date.now().toString(),
@@ -212,16 +221,13 @@ export function AIAssistantModal({
     }, 100);
 
     try {
-      const response = await apiService.chat({
+      const response = await actions.chat({
         message: userMessageText,
         conversationHistory,
-        context: {
-          userId: user?._id,
-          currentScreen,
-          productId,
-          orderId,
-        },
+        currentScreen,
+        productId,
       });
+      if (!actions.isCurrent()) return;
 
       const aiMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
@@ -246,24 +252,33 @@ export function AIAssistantModal({
       }
 
       setIsConnected(true);
-    } catch (error) {
+    } catch (error: unknown) {
+      // A reply for a previous account is dropped silently. Only a failed connection marks Pinkie offline.
+      const content = aiErrorMessage(error);
+      if (content === null || !actions.isCurrent()) {
+        return;
+      }
       console.error('Chat error:', error);
-      setIsConnected(false);
+      if (error instanceof AiRequestError && error.code === 'unavailable') {
+        setIsConnected(false);
+      }
 
       const errorMessage: ChatMessage = {
         id: (Date.now() + 1).toString(),
-        content: "I'm having trouble connecting right now. Please check your connection and try again.",
+        content,
         isUser: false,
         timestamp: new Date(),
       };
       setMessages((prev) => [...prev, errorMessage]);
     } finally {
-      setIsTyping(false);
+      if (actions.isCurrent()) {
+        setIsTyping(false);
+      }
       setTimeout(() => {
         scrollViewRef.current?.scrollToEnd({ animated: true });
       }, 100);
     }
-  }, [message, isTyping, conversationHistory, user, currentScreen, productId, orderId]);
+  }, [ai, message, isTyping, conversationHistory, currentScreen, productId]);
 
   const handleSuggestionPress = (suggestion: string) => {
     setMessage(suggestion);

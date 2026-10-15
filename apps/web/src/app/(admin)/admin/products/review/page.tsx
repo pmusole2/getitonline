@@ -18,6 +18,9 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { toast } from "sonner";
+import { aiFailureMessage } from "@gettitonline/shared";
+import { useAiActions } from "@/hooks/useAiActions";
+import { useAiConsentGate } from "@/hooks/useAiConsentGate";
 
 export default function ListingReviewPage() {
   const { user, isLoading: authLoading } = useAuth();
@@ -27,6 +30,8 @@ export default function ListingReviewPage() {
   );
   const reviewListing = useMutation(api.products.reviewListing);
   const [runningAiFor, setRunningAiFor] = useState<string | null>(null);
+  const ai = useAiActions();
+  const aiGate = useAiConsentGate(ai.subject);
   type ReviewListing = NonNullable<typeof listings>[number];
 
   if (
@@ -84,46 +89,41 @@ export default function ListingReviewPage() {
       return;
     }
 
-    const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-    const apiPrefixUrl = apiBaseUrl.endsWith("/api/v1")
-      ? apiBaseUrl
-      : `${apiBaseUrl.replace(/\/$/, "")}/api/v1`;
-    setRunningAiFor(listing._id);
-
-    try {
-      const response = await fetch(`${apiPrefixUrl}/ai/moderate-listing`, {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({
-          reviewerId: user._id,
-          productId: listing._id,
-          title: listing.title,
-          description: listing.description,
-          price: listing.price,
-          quantity: listing.quantity,
-          imageUrls: listing.images,
-          categoryName: listing.category?.name,
-        }),
-      });
-
-      if (!response.ok) {
-        throw new Error("AI moderation request failed");
-      }
-
-      toast.success("AI moderation completed.");
-    } catch (error) {
-      const message =
-        error instanceof Error ? error.message : "Failed to run AI moderation";
-      toast.error(message);
-    } finally {
-      setRunningAiFor(null);
-    }
+    // Busy is set only when the action starts, so a disclosure that is still open never leaves the row stuck on running.
+    await aiGate.runWithConsent(
+      "listing_moderation",
+      async () => {
+        setRunningAiFor(listing._id);
+        try {
+          // The backend reads the stored listing, so only its id is sent.
+          const result = await ai.moderateListing({ productId: listing._id });
+          // A result for a previous account is not shown to the account that is active now.
+          if (!ai.isCurrent()) return;
+          if (result.saved) {
+            toast.success(`AI moderation saved a ${result.status} result. ${result.summary}`);
+          } else {
+            // The fallback is not saved and is not a moderation decision.
+            toast.error(`${result.summary} Nothing was saved.`);
+          }
+        } catch (error: unknown) {
+          const message = aiFailureMessage(error);
+          if (message !== null && ai.isCurrent()) {
+            toast.error(message);
+          }
+        } finally {
+          // Keyed by the listing, so this clears only this listing's busy mark, never another running check.
+          setRunningAiFor((current) =>
+            current === listing._id ? null : current,
+          );
+        }
+      },
+      () => undefined,
+    );
   };
 
   return (
     <div className="space-y-6">
+      {aiGate.consentDialog}
       <div>
         <h1 className="text-3xl font-bold">Listing Review</h1>
         <p className="text-muted-foreground">

@@ -2,17 +2,16 @@
  * Category Seed Script
  *
  * This script seeds the initial categories into Convex.
- * Run with: npx convex run seed:seedAllCategories
+ * Run by an operator against a deployment: npx convex run seed:seedAllCategories
  *
- * Note: You need to create an admin user first or call this
- * from the dashboard/API with admin credentials.
+ * This is internal: no client, signed-in or anonymous, can call it. It seeds only an empty categories table.
  */
 
-import { mutation } from "./_generated/server";
+import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 
-// Direct seed without admin check (for initial setup only)
-export const seedAllCategories = mutation({
+// Initial setup only. Internal, so it has no client path and needs no caller identity.
+export const seedAllCategories = internalMutation({
   args: {},
   handler: async (ctx) => {
     // Check if categories already exist
@@ -152,7 +151,7 @@ export const seedAllCategories = mutation({
 });
 
 // Create initial admin user (run this first if no users exist)
-export const createInitialAdmin = mutation({
+export const createInitialAdmin = internalMutation({
   args: {
     clerkId: v.string(),
     email: v.string(),

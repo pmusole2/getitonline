@@ -12,6 +12,8 @@ import { useQuery, useMutation } from 'convex/react';
 import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList, Notification, Id } from '../../types';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { MotiView } from 'moti';
@@ -160,13 +162,22 @@ function NotificationItem({ notification, index, onPress }: NotificationItemProp
   );
 }
 
-export default function NotificationsScreen({ navigation }: Props) {
+export default function NotificationsScreen(props: Props) {
+  // Notifications are read only for a ready account, so no notification query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Notifications" />;
+  }
+  return <NotificationsContent {...props} />;
+}
+
+function NotificationsContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
 
   const notifications = useQuery(
     api.notifications.getUserNotifications,
-    user ? { userId: user._id } : 'skip'
+    user ? {} : 'skip'
   );
 
   const markAsRead = useMutation(api.notifications.markAsRead);
@@ -177,7 +188,6 @@ export default function NotificationsScreen({ navigation }: Props) {
       try {
         await markAsRead({
           notificationId: notification._id,
-          userId: user._id,
         });
       } catch (error) {
         // Silent fail - not critical
@@ -197,7 +207,7 @@ export default function NotificationsScreen({ navigation }: Props) {
   const handleMarkAllRead = async () => {
     if (!user) return;
     try {
-      await markAllAsRead({ userId: user._id });
+      await markAllAsRead({});
     } catch (error) {
       // Silent fail
     }

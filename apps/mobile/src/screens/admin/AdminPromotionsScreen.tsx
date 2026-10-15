@@ -6,6 +6,8 @@ import { Button, Chip, Modal, Portal, Surface, Text, TextInput, useTheme } from 
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { formatPrice } from '../../theme';
@@ -145,7 +147,16 @@ function safeImageUrl(value: string) {
   }
 }
 
-export default function AdminPromotionsScreen({ navigation }: Props) {
+export default function AdminPromotionsScreen(props: Props) {
+  // Admin data is read only for a ready account, so no admin query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Promotions Admin" />;
+  }
+  return <AdminPromotionsContent {...props} />;
+}
+
+function AdminPromotionsContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isAdmin = isAdminRole(user?.role);

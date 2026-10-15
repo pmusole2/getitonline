@@ -1,5 +1,6 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { requireRole, requireUser, requireSelfOr } from "./lib/auth";
 
 // Generate unique transaction reference
 function generateWalletReference(): string {
@@ -16,6 +17,7 @@ function generateWalletReference(): string {
 export const getWallet = query({
   args: { userId: v.id("users") },
   handler: async (ctx, args) => {
+    await requireSelfOr(ctx, args.userId, ["admin"]);
     const wallet = await ctx.db
       .query("wallets")
       .withIndex("by_user", (q) => q.eq("userId", args.userId))
@@ -31,11 +33,12 @@ export const getWallet = query({
 
 // Get wallet balance summary
 export const getWalletBalance = query({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     const wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .first();
 
     if (!wallet) {
@@ -65,29 +68,23 @@ export const getWalletBalance = query({
 // Get wallet transactions
 export const getWalletTransactions = query({
   args: {
-    userId: v.id("users"),
     limit: v.optional(v.number()),
     type: v.optional(
-      v.union(
-        v.literal("credit"),
-        v.literal("debit"),
-        v.literal("hold"),
-        v.literal("release"),
-        v.literal("refund")
-      )
+      v.union(v.literal("credit"), v.literal("debit"), v.literal("hold"), v.literal("release"), v.literal("refund"))
     ),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .first();
 
     if (!wallet) {
       return [];
     }
 
-    let query = ctx.db
+    const query = ctx.db
       .query("walletTransactions")
       .withIndex("by_wallet", (q) => q.eq("walletId", wallet._id))
       .order("desc");
@@ -105,11 +102,12 @@ export const getWalletTransactions = query({
 
 // Get recent wallet activity for dashboard
 export const getWalletActivity = query({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     const wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .first();
 
     if (!wallet) {
@@ -138,20 +136,14 @@ export const getWalletActivity = query({
       .withIndex("by_wallet", (q) => q.eq("walletId", wallet._id))
       .collect();
 
-    const thisMonthTransactions = allTransactions.filter(
-      (t) => t.createdAt >= monthStart && t.status === "completed"
-    );
+    const thisMonthTransactions = allTransactions.filter((t) => t.createdAt >= monthStart && t.status === "completed");
 
     const thisMonthEarnings = thisMonthTransactions
       .filter((t) => t.type === "credit" && t.source === "sale")
       .reduce((sum, t) => sum + t.amount, 0);
 
     const thisMonthWithdrawals = thisMonthTransactions
-      .filter(
-        (t) =>
-          t.type === "debit" &&
-          (t.source === "withdrawal_mobile_money" || t.source === "withdrawal_bank")
-      )
+      .filter((t) => t.type === "debit" && (t.source === "withdrawal_mobile_money" || t.source === "withdrawal_bank"))
       .reduce((sum, t) => sum + t.amount, 0);
 
     const pendingWithdrawals = allTransactions
@@ -178,12 +170,13 @@ export const getWalletActivity = query({
 
 // Create wallet for user (called when user first needs a wallet)
 export const createWallet = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     // Check if wallet already exists
     const existingWallet = await ctx.db
       .query("wallets")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .first();
 
     if (existingWallet) {
@@ -192,7 +185,7 @@ export const createWallet = mutation({
 
     // Create new wallet
     const walletId = await ctx.db.insert("wallets", {
-      userId: args.userId,
+      userId: actor._id,
       balance: 0,
       pendingBalance: 0,
       totalEarned: 0,
@@ -209,7 +202,7 @@ export const createWallet = mutation({
 });
 
 // Credit wallet (add funds - from sales, top-ups, refunds)
-export const creditWallet = mutation({
+export const creditWallet = internalMutation({
   args: {
     userId: v.id("users"),
     amount: v.number(),
@@ -254,7 +247,9 @@ export const creditWallet = mutation({
         updatedAt: Date.now(),
       });
       wallet = await ctx.db.get(walletId);
-      if (!wallet) throw new Error("Failed to create wallet");
+      if (!wallet) {
+        throw new Error("Failed to create wallet");
+      }
     }
 
     if (wallet.isFrozen) {
@@ -312,7 +307,7 @@ export const creditWallet = mutation({
 });
 
 // Debit wallet (remove funds - for purchases, withdrawals)
-export const debitWallet = mutation({
+export const debitWallet = internalMutation({
   args: {
     userId: v.id("users"),
     amount: v.number(),
@@ -355,18 +350,14 @@ export const debitWallet = mutation({
     const reference = generateWalletReference();
 
     // Determine if this is a withdrawal (pending) or immediate debit (completed)
-    const isWithdrawal =
-      args.source === "withdrawal_mobile_money" || args.source === "withdrawal_bank";
+    const isWithdrawal = args.source === "withdrawal_mobile_money" || args.source === "withdrawal_bank";
     const status = isWithdrawal ? "pending" : "completed";
 
     // Update wallet balance
     await ctx.db.patch(wallet._id, {
       balance: newBalance,
-      totalWithdrawn: isWithdrawal
-        ? wallet.totalWithdrawn + args.amount
-        : wallet.totalWithdrawn,
-      totalSpent:
-        args.source === "purchase" ? wallet.totalSpent + args.amount : wallet.totalSpent,
+      totalWithdrawn: isWithdrawal ? wallet.totalWithdrawn + args.amount : wallet.totalWithdrawn,
+      totalSpent: args.source === "purchase" ? wallet.totalSpent + args.amount : wallet.totalSpent,
       lastTransactionAt: now,
       updatedAt: now,
     });
@@ -412,14 +403,10 @@ export const debitWallet = mutation({
 });
 
 // Update withdrawal status (called by webhook or admin)
-export const updateWithdrawalStatus = mutation({
+export const updateWithdrawalStatus = internalMutation({
   args: {
     reference: v.string(),
-    status: v.union(
-      v.literal("completed"),
-      v.literal("failed"),
-      v.literal("cancelled")
-    ),
+    status: v.union(v.literal("completed"), v.literal("failed"), v.literal("cancelled")),
     externalReference: v.optional(v.string()),
     failureReason: v.optional(v.string()),
   },
@@ -506,7 +493,7 @@ export const updateWithdrawalStatus = mutation({
 });
 
 // Update wallet transaction external reference (for Lenco ID tracking)
-export const updateTransactionExternalReference = mutation({
+export const updateTransactionExternalReference = internalMutation({
   args: {
     reference: v.string(),
     externalReference: v.string(),
@@ -532,15 +519,11 @@ export const updateTransactionExternalReference = mutation({
 });
 
 // Update wallet transaction status by external reference (Lenco ID) - for webhooks
-export const updateWalletTransactionByLencoId = mutation({
+export const updateWalletTransactionByLencoId = internalMutation({
   args: {
     lencoId: v.string(),
     reference: v.optional(v.string()), // Fallback lookup
-    status: v.union(
-      v.literal("completed"),
-      v.literal("failed"),
-      v.literal("cancelled")
-    ),
+    status: v.union(v.literal("completed"), v.literal("failed"), v.literal("cancelled")),
     failureReason: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
@@ -553,9 +536,7 @@ export const updateWalletTransactionByLencoId = mutation({
     // Fallback: try to find by reference
     if (!transaction && args.reference) {
       const ref = args.reference;
-      console.log(
-        `🔍 Wallet transaction not found by Lenco ID, trying reference: ${ref}`
-      );
+      console.log(`🔍 Wallet transaction not found by Lenco ID, trying reference: ${ref}`);
       transaction = await ctx.db
         .query("walletTransactions")
         .withIndex("by_reference", (q) => q.eq("reference", ref))
@@ -570,17 +551,11 @@ export const updateWalletTransactionByLencoId = mutation({
     }
 
     if (!transaction) {
-      console.error(
-        `❌ Wallet transaction not found for Lenco ID: ${args.lencoId}, reference: ${args.reference}`
-      );
-      throw new Error(
-        `Wallet transaction not found for webhook - lencoId: ${args.lencoId}, ref: ${args.reference}`
-      );
+      console.error(`❌ Wallet transaction not found for Lenco ID: ${args.lencoId}, reference: ${args.reference}`);
+      throw new Error(`Wallet transaction not found for webhook - lencoId: ${args.lencoId}, ref: ${args.reference}`);
     }
 
-    console.log(
-      `✅ Found wallet transaction: ${transaction.reference} (${transaction._id})`
-    );
+    console.log(`✅ Found wallet transaction: ${transaction.reference} (${transaction._id})`);
 
     const now = Date.now();
 
@@ -652,13 +627,13 @@ export const updateWalletTransactionByLencoId = mutation({
 // Check if user can pay with wallet
 export const canPayWithWallet = query({
   args: {
-    userId: v.id("users"),
     amount: v.number(),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .first();
 
     if (!wallet) {
@@ -694,26 +669,36 @@ export const canPayWithWallet = query({
 export const getTransactionByReference = query({
   args: { reference: v.string() },
   handler: async (ctx, args) => {
-    return await ctx.db
+    const actor = await requireUser(ctx);
+    const transaction = await ctx.db
       .query("walletTransactions")
       .withIndex("by_reference", (q) => q.eq("reference", args.reference))
       .first();
+
+    if (!transaction) {
+      return null;
+    }
+
+    if (actor.role !== "admin") {
+      const wallet = await ctx.db.get(transaction.walletId);
+
+      if (transaction.userId !== actor._id || wallet?.userId !== actor._id) {
+        throw new Error("Unauthorized");
+      }
+    }
+
+    return transaction;
   },
 });
 
-// Admin: Freeze wallet
+// Admin: Freeze wallet. Admin-only on the server, matching the admin UI. The acting admin comes from the verified token.
 export const freezeWallet = mutation({
   args: {
     walletId: v.id("wallets"),
     reason: v.string(),
-    adminId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    // Verify admin
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || (admin.role !== "admin" && admin.role !== "moderator")) {
-      throw new Error("Unauthorized");
-    }
+    await requireRole(ctx, ["admin"]);
 
     const wallet = await ctx.db.get(args.walletId);
     if (!wallet) {
@@ -741,18 +726,13 @@ export const freezeWallet = mutation({
   },
 });
 
-// Admin: Unfreeze wallet
+// Admin: Unfreeze wallet. Admin-only on the server, matching the admin UI. The acting admin comes from the verified token.
 export const unfreezeWallet = mutation({
   args: {
     walletId: v.id("wallets"),
-    adminId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    // Verify admin
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || (admin.role !== "admin" && admin.role !== "moderator")) {
-      throw new Error("Unauthorized");
-    }
+    await requireRole(ctx, ["admin"]);
 
     const wallet = await ctx.db.get(args.walletId);
     if (!wallet) {
@@ -782,16 +762,17 @@ export const unfreezeWallet = mutation({
 
 // Get or create wallet (ensures wallet exists)
 export const ensureWallet = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     let wallet = await ctx.db
       .query("wallets")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .first();
 
     if (!wallet) {
       const walletId = await ctx.db.insert("wallets", {
-        userId: args.userId,
+        userId: actor._id,
         balance: 0,
         pendingBalance: 0,
         totalEarned: 0,

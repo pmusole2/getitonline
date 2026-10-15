@@ -6,6 +6,8 @@ import { Chip, SegmentedButtons, Surface, Text, useTheme } from 'react-native-pa
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
@@ -47,13 +49,6 @@ const statusLabels: Record<DisputeStatus, string> = {
   closed: 'Closed',
 };
 
-const categoryLabels: Record<DisputeCategory, string> = {
-  not_received: 'Not Received',
-  not_as_described: 'Not As Described',
-  defective: 'Defective',
-  other: 'Other',
-};
-
 const categoryIcons: Record<DisputeCategory, string> = {
   not_received: 'package-variant-closed-remove',
   not_as_described: 'file-document-alert-outline',
@@ -85,12 +80,8 @@ function DisputeItem({
     return colors[status];
   };
 
-  const buyerName = dispute.buyer
-    ? `${dispute.buyer.firstName} ${dispute.buyer.lastName}`
-    : 'Unknown buyer';
-  const sellerName = dispute.seller
-    ? `${dispute.seller.firstName} ${dispute.seller.lastName}`
-    : 'Unknown seller';
+  const buyerName = dispute.buyer ? `${dispute.buyer.firstName} ${dispute.buyer.lastName}` : 'Unknown buyer';
+  const sellerName = dispute.seller ? `${dispute.seller.firstName} ${dispute.seller.lastName}` : 'Unknown seller';
   const counterpartyLabel =
     viewAs === 'buyer'
       ? `Seller: ${sellerName}`
@@ -108,27 +99,14 @@ function DisputeItem({
         ]}
       >
         {/* Icon */}
-        <View
-          style={[
-            styles.iconContainer,
-            { backgroundColor: getStatusColor(dispute.status) + '20' },
-          ]}
-        >
-          <Icon
-            name={categoryIcons[dispute.category]}
-            size={24}
-            color={getStatusColor(dispute.status)}
-          />
+        <View style={[styles.iconContainer, { backgroundColor: getStatusColor(dispute.status) + '20' }]}>
+          <Icon name={categoryIcons[dispute.category]} size={24} color={getStatusColor(dispute.status)} />
         </View>
 
         {/* Content */}
         <View style={styles.content}>
           <View style={styles.header}>
-            <Text
-              variant="titleSmall"
-              style={{ color: theme.colors.onSurface, flex: 1 }}
-              numberOfLines={1}
-            >
+            <Text variant="titleSmall" style={{ color: theme.colors.onSurface, flex: 1 }} numberOfLines={1}>
               {dispute.title}
             </Text>
             <Chip
@@ -145,10 +123,7 @@ function DisputeItem({
             </Chip>
           </View>
 
-          <Text
-            variant="bodySmall"
-            style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
-          >
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
             {counterpartyLabel}
           </Text>
 
@@ -163,10 +138,7 @@ function DisputeItem({
             )}
           </View>
 
-          <Text
-            variant="labelSmall"
-            style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
-          >
+          <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
             {new Date(dispute.createdAt).toLocaleDateString()}
           </Text>
         </View>
@@ -177,24 +149,29 @@ function DisputeItem({
   );
 }
 
-export default function DisputesListScreen({ navigation }: Props) {
+export default function DisputesListScreen(props: Props) {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Disputes" />;
+  }
+  return <DisputesListContent {...props} />;
+}
+
+function DisputesListContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isStaffViewer = user?.role === 'moderator' || user?.role === 'admin';
   const [viewAs, setViewAs] = useState<DisputeViewMode>(isStaffViewer ? 'staff' : 'buyer');
 
-  const buyerDisputes = useQuery(
-    api.disputes.getBuyerDisputes,
-    user ? { buyerId: user._id } : 'skip'
-  ) as Dispute[] | undefined;
+  // The verified account is the only buyer the list asks for; the server takes the buyer from the Clerk token.
+  const buyerDisputes = useQuery(api.disputes.getBuyerDisputes, user ? {} : 'skip') as Dispute[] | undefined;
 
-  const sellerDisputes = useQuery(
-    api.disputes.getSellerDisputes,
-    user ? { sellerId: user._id } : 'skip'
-  ) as Dispute[] | undefined;
+  const sellerDisputes = useQuery(api.disputes.getSellerDisputes, user ? { sellerId: user._id } : 'skip') as
+    | Dispute[]
+    | undefined;
   const staffDisputes = useQuery(
     api.disputes.getOpenDisputes,
-    user?._id && isStaffViewer ? { moderatorId: user._id } : 'skip'
+    user?._id && isStaffViewer ? { moderatorId: user._id } : 'skip',
   ) as Dispute[] | undefined;
 
   useEffect(() => {
@@ -206,24 +183,15 @@ export default function DisputesListScreen({ navigation }: Props) {
     setViewAs('buyer');
   }, [isStaffViewer]);
 
-  const disputes =
-    viewAs === 'buyer'
-      ? buyerDisputes
-      : viewAs === 'seller'
-        ? sellerDisputes
-        : staffDisputes;
+  const disputes = viewAs === 'buyer' ? buyerDisputes : viewAs === 'seller' ? sellerDisputes : staffDisputes;
 
   const handleDisputePress = (dispute: Dispute) => {
     navigation.navigate('DisputeDetail', { disputeId: dispute._id });
   };
 
   // Count badges
-  const buyerActiveCount = buyerDisputes?.filter(
-    (d) => !['resolved', 'closed'].includes(d.status)
-  ).length || 0;
-  const sellerActiveCount = sellerDisputes?.filter(
-    (d) => !['resolved', 'closed'].includes(d.status)
-  ).length || 0;
+  const buyerActiveCount = buyerDisputes?.filter((d) => !['resolved', 'closed'].includes(d.status)).length || 0;
+  const sellerActiveCount = sellerDisputes?.filter((d) => !['resolved', 'closed'].includes(d.status)).length || 0;
   const staffActiveCount = staffDisputes?.length || 0;
 
   // Loading
@@ -274,15 +242,9 @@ export default function DisputesListScreen({ navigation }: Props) {
       {/* Empty State */}
       {disputes.length === 0 ? (
         <View style={styles.centered}>
-          <Surface
-            style={[styles.emptyState, { backgroundColor: theme.colors.surfaceVariant }]}
-            elevation={0}
-          >
+          <Surface style={[styles.emptyState, { backgroundColor: theme.colors.surfaceVariant }]} elevation={0}>
             <Icon name="gavel" size={64} color={theme.colors.onSurfaceVariant} />
-            <Text
-              variant="titleMedium"
-              style={{ color: theme.colors.onSurface, marginTop: 16 }}
-            >
+            <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
               No disputes
             </Text>
             <Text
@@ -306,12 +268,7 @@ export default function DisputesListScreen({ navigation }: Props) {
           data={disputes}
           keyExtractor={(item) => item._id}
           renderItem={({ item, index }) => (
-            <DisputeItem
-              dispute={item}
-              index={index}
-              onPress={() => handleDisputePress(item)}
-              viewAs={viewAs}
-            />
+            <DisputeItem dispute={item} index={index} onPress={() => handleDisputePress(item)} viewAs={viewAs} />
           )}
           contentContainerStyle={styles.list}
           ItemSeparatorComponent={() => <View style={styles.separator} />}

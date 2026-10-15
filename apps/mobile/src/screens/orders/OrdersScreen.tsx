@@ -14,6 +14,8 @@ import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useNavigation } from '@react-navigation/native';
 import type { RootStackParamList, Order, OrderStatus } from '../../types';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
@@ -63,15 +65,12 @@ function AnimatedOrderCard({ order, index, onPress }: OrderCardProps) {
 
   return (
     <Animated.View
-      entering={FadeInDown.delay(index * 80).duration(400).springify()}
+      entering={FadeInDown.delay(index * 80)
+        .duration(400)
+        .springify()}
       layout={Layout.springify()}
     >
-      <AnimatedPressable
-        style={animatedStyle}
-        onPressIn={handlePressIn}
-        onPressOut={handlePressOut}
-        onPress={onPress}
-      >
+      <AnimatedPressable style={animatedStyle} onPressIn={handlePressIn} onPressOut={handlePressOut} onPress={onPress}>
         <Surface style={[styles.orderCard, { backgroundColor: theme.colors.surface }]} elevation={2}>
           {/* Header */}
           <View style={styles.orderHeader}>
@@ -83,14 +82,9 @@ function AnimatedOrderCard({ order, index, onPress }: OrderCardProps) {
                 #{order.orderNumber}
               </Text>
             </View>
-            <Surface
-              style={[styles.statusBadge, { backgroundColor: status.color + '15' }]}
-              elevation={0}
-            >
+            <Surface style={[styles.statusBadge, { backgroundColor: status.color + '15' }]} elevation={0}>
               <Icon name={status.icon} size={14} color={status.color} />
-              <Text style={[styles.statusText, { color: status.color }]}>
-                {status.label}
-              </Text>
+              <Text style={[styles.statusText, { color: status.color }]}>{status.label}</Text>
             </Surface>
           </View>
 
@@ -99,11 +93,7 @@ function AnimatedOrderCard({ order, index, onPress }: OrderCardProps) {
             {order.items.slice(0, 2).map((item, idx) => (
               <View key={idx} style={styles.itemRow}>
                 <View style={[styles.itemDot, { backgroundColor: theme.colors.primary }]} />
-                <Text
-                  variant="bodyMedium"
-                  style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}
-                  numberOfLines={1}
-                >
+                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, flex: 1 }} numberOfLines={1}>
                   {item.quantity}x {item.title}
                 </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
@@ -164,21 +154,24 @@ function AnimatedOrderCard({ order, index, onPress }: OrderCardProps) {
 }
 
 export default function OrdersScreen() {
+  // Orders are read only for a ready account, so no order query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Orders" />;
+  }
+  return <OrdersContent />;
+}
+
+function OrdersContent() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
   const hasCatalogAccess = canManageCatalog(user?.role);
   const [viewMode, setViewMode] = useState<ViewMode>('buying');
 
-  const buyerOrders = useQuery(
-    api.orders.getBuyerOrders,
-    user ? { buyerId: user._id } : 'skip'
-  );
+  const buyerOrders = useQuery(api.orders.getBuyerOrders, user ? {} : 'skip');
 
-  const sellerOrders = useQuery(
-    api.orders.getManagedCatalogOrders,
-    user && hasCatalogAccess ? { actorUserId: user._id } : 'skip'
-  );
+  const sellerOrders = useQuery(api.orders.getManagedCatalogOrders, user && hasCatalogAccess ? {} : 'skip');
 
   const orders = viewMode === 'buying' ? buyerOrders : sellerOrders;
 
@@ -187,11 +180,7 @@ export default function OrdersScreen() {
   };
 
   const renderOrder = ({ item, index }: { item: Order; index: number }) => (
-    <AnimatedOrderCard
-      order={item}
-      index={index}
-      onPress={() => handleOrderPress(item._id)}
-    />
+    <AnimatedOrderCard order={item} index={index} onPress={() => handleOrderPress(item._id)} />
   );
 
   return (
@@ -199,11 +188,7 @@ export default function OrdersScreen() {
       {/* Custom Futuristic Header */}
       <TabHeader
         title="Orders"
-        subtitle={
-          hasCatalogAccess
-            ? 'Track purchases and company sales'
-            : 'Track your purchases'
-        }
+        subtitle={hasCatalogAccess ? 'Track purchases and company sales' : 'Track your purchases'}
         showAIAssistant
       />
 
@@ -272,10 +257,7 @@ export default function OrdersScreen() {
           ))}
         </View>
       ) : orders.length === 0 ? (
-        <Animated.View
-          entering={FadeIn.duration(400)}
-          style={styles.emptyState}
-        >
+        <Animated.View entering={FadeIn.duration(400)} style={styles.emptyState}>
           <MotiView
             from={{ opacity: 0, scale: 0.9 }}
             animate={{ opacity: 1, scale: 1 }}
@@ -292,7 +274,10 @@ export default function OrdersScreen() {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
             No {viewMode === 'buying' ? 'purchases' : 'sales'} yet
           </Text>
-          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
             {viewMode === 'buying'
               ? 'Start shopping to see your orders here'
               : 'Catalog orders will appear here as customers buy from the storefront'}
@@ -300,9 +285,7 @@ export default function OrdersScreen() {
           <Pressable
             style={[styles.emptyButton, { backgroundColor: theme.colors.primary }]}
             onPress={() =>
-              viewMode === 'buying'
-                ? navigation.navigate('Browse' as never)
-                : navigation.navigate('CreateProduct')
+              viewMode === 'buying' ? navigation.navigate('Browse' as never) : navigation.navigate('CreateProduct')
             }
           >
             <Text style={{ color: theme.colors.onPrimary, fontWeight: '600' }}>

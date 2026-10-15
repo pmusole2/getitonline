@@ -1,7 +1,6 @@
-import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
+import { ensureAdminActor } from "./lib/platform";
 
 type PrdTaxonomyL2 = {
   name: string;
@@ -257,23 +256,6 @@ function buildExpectedCategories() {
   return expected;
 }
 
-async function getApprovedByUserId(ctx: QueryCtx | MutationCtx, adminId?: Id<"users">) {
-  if (adminId) {
-    const admin = await ctx.db.get(adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: adminId must belong to an admin user");
-    }
-    return adminId;
-  }
-
-  const admin = await ctx.db
-    .query("users")
-    .withIndex("by_role", (q) => q.eq("role", "admin"))
-    .first();
-
-  return admin?._id;
-}
-
 export const getPrdRetailTaxonomyStatus = query({
   args: {},
   handler: async (ctx) => {
@@ -299,13 +281,12 @@ export const getPrdRetailTaxonomyStatus = query({
 });
 
 export const seedPrdRetailTaxonomy = mutation({
-  args: {
-    adminId: v.optional(v.id("users")),
-  },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const admin = await ensureAdminActor(ctx);
     const expected = buildExpectedCategories();
     const now = Date.now();
-    const approvedByUserId = await getApprovedByUserId(ctx, args.adminId);
+    const approvedByUserId = admin._id;
     const categories = await ctx.db.query("categories").collect();
     const bySlug = new Map(categories.map((category) => [category.slug, category]));
     const idsBySlug = new Map<string, Id<"categories">>();

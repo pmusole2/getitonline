@@ -1,16 +1,8 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MotiView } from 'moti';
-import React, { useEffect, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Pressable,
-  RefreshControl,
-  ScrollView,
-  StyleSheet,
-  View,
-} from 'react-native';
+import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { ActivityIndicator, Alert, Pressable, RefreshControl, ScrollView, StyleSheet, View } from 'react-native';
 import {
   Button,
   Chip,
@@ -25,23 +17,51 @@ import {
 } from 'react-native-paper';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { resolvedWalletAccount, walletAmountCents, type PaymentAccount } from '../../services/walletOperationState';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
+import { usePaymentAvailability } from '../../hooks/usePaymentAvailability';
 import { useWallet } from '../../hooks/useWallet';
 import {
   formatWalletAmount,
   getTransactionColor,
   getTransactionIcon,
   getTransactionSourceLabel,
-  MobileMoneyProvider
+  MobileMoneyProvider,
 } from '../../services/wallet';
 import type { RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Wallet'>;
 
 export default function WalletScreen({ navigation }: Props) {
+  const wallet = useWallet();
+  const auth = useAppAuth();
+  if (wallet.operations.access !== 'ready') {
+    return (
+      <AccountAccessNotice
+        title="Wallet"
+        access={{
+          status: wallet.operations.access,
+          signIn: () => navigation.navigate('Auth'),
+          retry: auth.retryUserSync,
+          signOut: auth.signOut,
+          goBack: () => navigation.goBack(),
+        }}
+      />
+    );
+  }
+  return <WalletContent key={wallet.operations.sessionKey} navigation={navigation} wallet={wallet} />;
+}
+
+function WalletContent({
+  navigation,
+  wallet,
+}: {
+  navigation: Props['navigation'];
+  wallet: ReturnType<typeof useWallet>;
+}) {
   const theme = useTheme();
-  const { user } = useAppAuth();
   const {
     balance,
     activity,
@@ -56,118 +76,156 @@ export default function WalletScreen({ navigation }: Props) {
     topUp,
     ensureWallet,
     clearError,
-  } = useWallet();
+    operations,
+  } = wallet;
+  const paymentsAvailable = usePaymentAvailability() === 'available';
+  // Mirrors the committed render, so a submit captured before availability turned off reads the current value when it
+  // runs. It is written in a layout effect, not during render, so a render that React abandons cannot open a submit.
+  const paymentsAvailableRef = useRef(paymentsAvailable);
+  useLayoutEffect(() => {
+    paymentsAvailableRef.current = paymentsAvailable;
+  }, [paymentsAvailable]);
 
   const [refreshing, setRefreshing] = useState(false);
   const [withdrawModalVisible, setWithdrawModalVisible] = useState(false);
   const [topUpModalVisible, setTopUpModalVisible] = useState(false);
   const [withdrawMethod, setWithdrawMethod] = useState<'mobile_money' | 'bank'>('mobile_money');
-  const [topUpMethod, setTopUpMethod] = useState<'mobile_money' | 'card'>('mobile_money');
   const [amount, setAmount] = useState('');
   const [phone, setPhone] = useState('');
   const [provider, setProvider] = useState<MobileMoneyProvider>('mtn');
-  const [bankCode, setBankCode] = useState('');
+  const [bankId, setBankId] = useState('');
   const [accountNumber, setAccountNumber] = useState('');
-  const [accountName, setAccountName] = useState('');
-  const [processing, setProcessing] = useState(false);
+  const [approval, setApproval] = useState<{ account: PaymentAccount; cents: number; revision: number } | null>(null);
+  const mounted = useRef(false);
+  const formRevision = useRef(0);
+  const submitting = useRef(false);
+  const processing = operations.working;
+  useLayoutEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
+  const current = () => mounted.current && operations.isCurrent();
+  const edit = (change: () => void) => {
+    if (!current() || draftRevision !== formRevision.current) return;
+    formRevision.current += 1;
+    operations.cancelDraft();
+    setApproval(null);
+    change();
+  };
+  const dismiss = (close: () => void) => {
+    edit(close);
+  };
+  const draftRevision = formRevision.current;
+  const approved =
+    approval !== null &&
+    approval.cents === walletAmountCents(amount) &&
+    approval.revision === operations.approvalRevision &&
+    operations.accounts.some(
+      (account) =>
+        account.accountId === approval.account.accountId &&
+        account.destinationKey === approval.account.destinationKey &&
+        resolvedWalletAccount(account),
+    );
+  const committedForm = useRef({ approved, approval, draftRevision });
+  useLayoutEffect(() => {
+    committedForm.current = { approved, approval, draftRevision };
+  });
 
   useEffect(() => {
     // Ensure wallet exists when screen loads
     ensureWallet();
   }, [ensureWallet]);
 
+  const displayedError = useRef({ error, revision: 0 });
+  useLayoutEffect(() => {
+    if (displayedError.current.error !== error) {
+      displayedError.current = { error, revision: displayedError.current.revision + 1 };
+    }
+  }, [error]);
+
   useEffect(() => {
-    if (error) {
-      Alert.alert('Error', error, [{ text: 'OK', onPress: clearError }]);
+    const errorRevision = displayedError.current.revision;
+    if (error && current()) {
+      Alert.alert('Error', error, [
+        {
+          text: 'OK',
+          onPress: () => {
+            if (
+              current() &&
+              displayedError.current.error === error &&
+              displayedError.current.revision === errorRevision
+            )
+              clearError();
+          },
+        },
+      ]);
     }
   }, [error, clearError]);
 
   const handleRefresh = async () => {
+    if (!current()) return;
     setRefreshing(true);
     await Promise.all([refreshBalance(), refreshActivity(), refreshTransactions()]);
-    setRefreshing(false);
+    if (current()) setRefreshing(false);
   };
 
   const handleWithdraw = async () => {
-    const withdrawAmount = parseFloat(amount);
-    if (isNaN(withdrawAmount) || withdrawAmount <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
+    if (
+      !current() ||
+      draftRevision !== formRevision.current ||
+      !paymentsAvailableRef.current ||
+      !committedForm.current.approved ||
+      committedForm.current.approval !== approval ||
+      !approval ||
+      submitting.current
+    )
       return;
-    }
-
-    if (balance && withdrawAmount > balance.balance) {
-      Alert.alert('Error', 'Insufficient balance');
-      return;
-    }
-
-    setProcessing(true);
+    submitting.current = true;
     try {
-      if (withdrawMethod === 'mobile_money') {
-        if (!phone) {
-          Alert.alert('Error', 'Please enter a phone number');
-          return;
-        }
-        await withdrawToMobileMoney(withdrawAmount, phone, provider);
-        Alert.alert('Success', 'Withdrawal initiated. You will receive your funds shortly.');
-      } else {
-        if (!bankCode || !accountNumber || !accountName) {
-          Alert.alert('Error', 'Please fill in all bank details');
-          return;
-        }
-        await withdrawToBank(withdrawAmount, bankCode, accountNumber, accountName);
-        Alert.alert('Success', 'Bank withdrawal initiated. Funds will arrive within 1-3 business days.');
-      }
-      setWithdrawModalVisible(false);
-      resetForm();
-    } catch (err) {
-      // Error is handled by the hook
+      const send = approval.account.type === 'mobile_money' ? withdrawToMobileMoney : withdrawToBank;
+      await send(amount, approval.account.accountId, approval.account.destinationKey);
     } finally {
-      setProcessing(false);
+      if (current()) submitting.current = false;
     }
   };
 
   const handleTopUp = async () => {
-    const topUpAmount = parseFloat(amount);
-    if (isNaN(topUpAmount) || topUpAmount <= 0) {
-      Alert.alert('Error', 'Please enter a valid amount');
+    if (!current() || draftRevision !== formRevision.current || !paymentsAvailableRef.current || submitting.current)
       return;
-    }
-
-    setProcessing(true);
+    submitting.current = true;
     try {
-      const result = await topUp(
-        topUpAmount,
-        topUpMethod,
-        topUpMethod === 'mobile_money' ? phone : undefined,
-        topUpMethod === 'mobile_money' ? provider : undefined,
-        topUpMethod === 'card' ? user?.email : undefined, // Pass email for card payments
-      );
-
-      if (result.checkoutUrl) {
-        // Open checkout URL for card payments
-        Alert.alert('Redirect', 'You will be redirected to complete the payment.');
-        // Could use Linking.openURL here
-      } else {
-        Alert.alert('Success', result.message);
-      }
-
-      setTopUpModalVisible(false);
-      resetForm();
-    } catch (err) {
-      // Error is handled by the hook
+      await topUp(amount, phone, provider);
     } finally {
-      setProcessing(false);
+      if (current()) submitting.current = false;
     }
   };
 
-  const resetForm = () => {
-    setAmount('');
-    setPhone('');
-    setProvider('mtn');
-    setBankCode('');
-    setAccountNumber('');
-    setAccountName('');
+  const resolveDestination = async () => {
+    if (!current() || draftRevision !== formRevision.current || submitting.current) return;
+    setApproval(null);
+    await operations.registerDestination(
+      withdrawMethod === 'mobile_money'
+        ? { type: 'mobile_money', phone, operator: provider }
+        : { type: 'bank_account', bankId, accountNumber },
+    );
   };
+
+  const refreshed = useRef<string | null>(null);
+  useEffect(() => {
+    if (operations.outcome !== 'completed' || !operations.recovery || !operations.isCurrent()) return;
+    if (refreshed.current === operations.recovery.requestId) return;
+    refreshed.current = operations.recovery.requestId;
+    void Promise.all([refreshBalance(), refreshActivity(), refreshTransactions()]);
+  }, [
+    operations.outcome,
+    operations.recovery,
+    operations.isCurrent,
+    refreshBalance,
+    refreshActivity,
+    refreshTransactions,
+  ]);
 
   const formatDate = (timestamp: number): string => {
     const date = new Date(timestamp);
@@ -181,18 +239,12 @@ export default function WalletScreen({ navigation }: Props) {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <StackHeader
-        title="Wallet"
-        onBackPress={() => navigation.goBack()}
-        variant="gradient"
-      />
+      <StackHeader title="Wallet" onBackPress={() => navigation.goBack()} variant="gradient" />
 
       <ScrollView
         style={styles.scrollView}
         contentContainerStyle={styles.content}
-        refreshControl={
-          <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
-        }
+        refreshControl={<RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />}
       >
         {/* Balance Card */}
         <Animated.View entering={FadeInDown.delay(100).duration(400)}>
@@ -241,7 +293,10 @@ export default function WalletScreen({ navigation }: Props) {
             <View style={styles.balanceActions}>
               <Pressable
                 style={[styles.actionButton, { backgroundColor: 'rgba(255,255,255,0.2)' }]}
-                onPress={() => setTopUpModalVisible(true)}
+                onPress={() => {
+                  if (current() && paymentsAvailableRef.current) setTopUpModalVisible(true);
+                }}
+                disabled={!paymentsAvailable || !operations.ready || !!operations.recovery}
               >
                 <Icon name="plus" size={24} color="#fff" />
                 <Text style={styles.actionButtonText}>Top Up</Text>
@@ -249,15 +304,71 @@ export default function WalletScreen({ navigation }: Props) {
 
               <Pressable
                 style={[styles.actionButton, { backgroundColor: 'rgba(255,255,255,0.2)' }]}
-                onPress={() => setWithdrawModalVisible(true)}
-                disabled={!balance || balance.balance <= 0 || balance.isFrozen}
+                onPress={() => {
+                  if (current() && paymentsAvailableRef.current) setWithdrawModalVisible(true);
+                }}
+                disabled={
+                  !paymentsAvailable ||
+                  !operations.ready ||
+                  !!operations.recovery ||
+                  !balance ||
+                  balance.balance <= 0 ||
+                  balance.isFrozen
+                }
               >
                 <Icon name="bank-transfer-out" size={24} color="#fff" />
                 <Text style={styles.actionButtonText}>Withdraw</Text>
               </Pressable>
             </View>
+
+            {paymentsAvailable ? null : (
+              <Text variant="bodySmall" style={{ color: 'rgba(255,255,255,0.85)', marginTop: 12 }}>
+                Payments are temporarily unavailable
+              </Text>
+            )}
           </LinearGradient>
         </Animated.View>
+
+        {operations.error ? <Text accessibilityRole="alert">{operations.error}</Text> : null}
+        {!operations.ready ? (
+          <Text>
+            {operations.error
+              ? 'Wallet recovery is blocked. Check storage or contact support.'
+              : 'Loading wallet recovery. New payments are unavailable until recovery is checked.'}
+          </Text>
+        ) : null}
+        {operations.recovery ? (
+          <Surface style={styles.infoBox} elevation={0}>
+            <View>
+              <Text variant="titleMedium">Wallet request: {operations.outcome}</Text>
+              <Text>
+                {operations.outcome === 'completed'
+                  ? 'Wallet accounting confirms this request completed.'
+                  : operations.outcome === 'failed'
+                    ? 'This request failed or was reversed. No funds success is being claimed.'
+                    : operations.outcome === 'review'
+                      ? 'This request needs support review. Do not send another payment.'
+                      : 'This request is not confirmed as complete. Keep it and check status before sending another payment.'}
+              </Text>
+              <Text>
+                Provider fee:{' '}
+                {!(operations.status instanceof Error) &&
+                operations.status?.result === 'found' &&
+                operations.status.feeCents !== null
+                  ? formatWalletAmount(operations.status.feeCents / 100)
+                  : 'Unknown'}
+              </Text>
+              <Button onPress={operations.checkStatus} disabled={processing} loading={processing}>
+                Check Status
+              </Button>
+              {operations.outcome === 'completed' || operations.outcome === 'failed' ? (
+                <Button onPress={operations.newSubmission} disabled={processing}>
+                  Start New Request
+                </Button>
+              ) : null}
+            </View>
+          </Surface>
+        ) : null}
 
         {/* Stats Cards */}
         {activity && (
@@ -378,110 +489,146 @@ export default function WalletScreen({ navigation }: Props) {
       <Portal>
         <Modal
           visible={withdrawModalVisible}
-          onDismiss={() => setWithdrawModalVisible(false)}
+          onDismiss={() => dismiss(() => setWithdrawModalVisible(false))}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-            <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginBottom: 12 }}>
-              Withdraw Funds
+          <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginBottom: 12 }}>
+            Withdraw Funds
+          </Text>
+          {operations.error ? <Text accessibilityRole="alert">{operations.error}</Text> : null}
+          {operations.recovery ? (
+            <Text>
+              This request is {operations.outcome}. Close this form to check status before sending another payment.
             </Text>
+          ) : null}
 
-            <SegmentedButtons
-              value={withdrawMethod}
-              onValueChange={(value) => setWithdrawMethod(value as 'mobile_money' | 'bank')}
-              buttons={[
-                { value: 'mobile_money', label: 'Mobile Money', icon: 'cellphone' },
-                { value: 'bank', label: 'Bank Account', icon: 'bank' },
-              ]}
-              style={{ marginBottom: 12 }}
-            />
+          <SegmentedButtons
+            value={withdrawMethod}
+            onValueChange={(value) => {
+              if (value === 'mobile_money' || value === 'bank') edit(() => setWithdrawMethod(value));
+            }}
+            buttons={[
+              { value: 'mobile_money', label: 'Mobile Money', icon: 'cellphone' },
+              { value: 'bank', label: 'Bank Account', icon: 'bank' },
+            ]}
+            style={{ marginBottom: 12 }}
+          />
 
-            <TextInput
-              mode="outlined"
-              label="Amount (ZMW)"
-              value={amount}
-              onChangeText={setAmount}
-              keyboardType="decimal-pad"
-              left={<TextInput.Affix text="K" />}
-              style={{ marginBottom: 12 }}
-            />
+          <TextInput
+            mode="outlined"
+            label="Amount (ZMW)"
+            value={amount}
+            onChangeText={(value) => edit(() => setAmount(value))}
+            keyboardType="decimal-pad"
+            left={<TextInput.Affix text="K" />}
+            style={{ marginBottom: 12 }}
+          />
 
-            {withdrawMethod === 'mobile_money' ? (
-              <>
-                <TextInput
-                  mode="outlined"
-                  label="Phone Number"
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                  placeholder="260XXXXXXXXX"
-                  style={{ marginBottom: 12 }}
-                />
+          {withdrawMethod === 'mobile_money' ? (
+            <>
+              <TextInput
+                mode="outlined"
+                label="Phone Number"
+                value={phone}
+                onChangeText={(value) => edit(() => setPhone(value))}
+                keyboardType="phone-pad"
+                placeholder="260XXXXXXXXX"
+                style={{ marginBottom: 12 }}
+              />
 
-                <Text variant="labelMedium" style={{ marginBottom: 6, color: theme.colors.onSurface }}>
-                  Select Provider
-                </Text>
-                <View style={[styles.providerRow, { marginBottom: 0 }]}>
-                  {(['mtn', 'airtel', 'zamtel'] as const).map((p) => (
-                    <Pressable
-                      key={p}
-                      style={[
-                        styles.providerButton,
-                        {
-                          backgroundColor:
-                            provider === p ? theme.colors.primary : theme.colors.surfaceVariant,
-                        },
-                      ]}
-                      onPress={() => setProvider(p)}
+              <Text variant="labelMedium" style={{ marginBottom: 6, color: theme.colors.onSurface }}>
+                Select Provider
+              </Text>
+              <View style={[styles.providerRow, { marginBottom: 0 }]}>
+                {(['mtn', 'airtel', 'zamtel'] as const).map((p) => (
+                  <Pressable
+                    key={p}
+                    style={[
+                      styles.providerButton,
+                      {
+                        backgroundColor: provider === p ? theme.colors.primary : theme.colors.surfaceVariant,
+                      },
+                    ]}
+                    onPress={() => edit(() => setProvider(p))}
+                  >
+                    <Text
+                      style={{
+                        color: provider === p ? '#fff' : theme.colors.onSurfaceVariant,
+                        fontWeight: '600',
+                        textTransform: 'uppercase',
+                      }}
                     >
-                      <Text
-                        style={{
-                          color: provider === p ? '#fff' : theme.colors.onSurfaceVariant,
-                          fontWeight: '600',
-                          textTransform: 'uppercase',
-                        }}
-                      >
-                        {p}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </>
-            ) : (
-              <>
-                <TextInput
-                  mode="outlined"
-                  label="Bank Code"
-                  value={bankCode}
-                  onChangeText={setBankCode}
-                  style={{ marginBottom: 10 }}
-                />
-                <TextInput
-                  mode="outlined"
-                  label="Account Number"
-                  value={accountNumber}
-                  onChangeText={setAccountNumber}
-                  keyboardType="number-pad"
-                  style={{ marginBottom: 10 }}
-                />
-                <TextInput
-                  mode="outlined"
-                  label="Account Name"
-                  value={accountName}
-                  onChangeText={setAccountName}
-                  style={{ marginBottom: 0 }}
-                />
-              </>
-            )}
+                      {p}
+                    </Text>
+                  </Pressable>
+                ))}
+              </View>
+            </>
+          ) : (
+            <>
+              <Button onPress={operations.loadBanks} loading={processing} disabled={processing}>
+                Load Banks
+              </Button>
+              {operations.banks.map((bank) => (
+                <Button
+                  key={bank.id}
+                  mode={bankId === bank.id ? 'contained' : 'text'}
+                  onPress={() => edit(() => setBankId(bank.id))}
+                >
+                  {bank.name}
+                </Button>
+              ))}
+              <TextInput
+                mode="outlined"
+                label="Account Number"
+                value={accountNumber}
+                onChangeText={(value) => edit(() => setAccountNumber(value))}
+                keyboardType="number-pad"
+              />
+            </>
+          )}
 
+          <Button onPress={resolveDestination} disabled={processing || !!operations.recovery} loading={processing}>
+            Resolve Destination
+          </Button>
+          <Text>Choose a resolved destination, review the amount, then approve withdrawal.</Text>
+          {operations.accountsPending ? <Text>Loading owned destinations</Text> : null}
+          {operations.accountsError ? <Text>Destinations unavailable. Check your connection.</Text> : null}
+          {operations.accounts.filter(resolvedWalletAccount).map((account) => (
             <Button
-              mode="contained"
-              onPress={handleWithdraw}
-              loading={processing}
-              disabled={processing}
-              style={{ marginTop: withdrawMethod === 'mobile_money' ? 8 : 12 }}
+              key={account.accountId}
+              onPress={() => {
+                const cents = walletAmountCents(amount);
+                if (current() && draftRevision === formRevision.current && cents !== null)
+                  setApproval({ account, cents, revision: operations.approvalRevision });
+              }}
             >
-              Withdraw
+              Review {account.accountName ?? 'Name unavailable'}:{' '}
+              {account.type === 'mobile_money'
+                ? account.phone
+                : `${account.bankName ?? account.bankId} ${account.accountNumber}`}
             </Button>
+          ))}
+          {approved && approval ? (
+            <Text>
+              Approved destination: {approval.account.accountName ?? 'Name unavailable'}. Amount: {amount} ZMW. Press
+              Withdraw to confirm.
+            </Text>
+          ) : null}
+          {paymentsAvailable ? null : (
+            <Text variant="bodyMedium" style={{ color: theme.colors.error, marginTop: 12 }}>
+              Payments are temporarily unavailable
+            </Text>
+          )}
+          <Button
+            mode="contained"
+            onPress={handleWithdraw}
+            loading={processing}
+            disabled={processing || !paymentsAvailable || !operations.ready || !!operations.recovery || !approved}
+            style={{ marginTop: withdrawMethod === 'mobile_money' ? 8 : 12 }}
+          >
+            Withdraw
+          </Button>
         </Modal>
       </Portal>
 
@@ -489,94 +636,83 @@ export default function WalletScreen({ navigation }: Props) {
       <Portal>
         <Modal
           visible={topUpModalVisible}
-          onDismiss={() => setTopUpModalVisible(false)}
+          onDismiss={() => dismiss(() => setTopUpModalVisible(false))}
           contentContainerStyle={[styles.modal, { backgroundColor: theme.colors.surface }]}
         >
-            <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginBottom: 12 }}>
-              Top Up Wallet
+          <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginBottom: 12 }}>
+            Top Up Wallet
+          </Text>
+          {operations.error ? <Text accessibilityRole="alert">{operations.error}</Text> : null}
+          {operations.recovery ? (
+            <Text>
+              This request is {operations.outcome}. Close this form to check status before sending another payment.
             </Text>
+          ) : null}
 
-            <SegmentedButtons
-              value={topUpMethod}
-              onValueChange={(value) => setTopUpMethod(value as 'mobile_money' | 'card')}
-              buttons={[
-                { value: 'mobile_money', label: 'Mobile Money', icon: 'cellphone' },
-                { value: 'card', label: 'Card', icon: 'credit-card' },
-              ]}
-              style={{ marginBottom: 12 }}
-            />
+          <TextInput
+            mode="outlined"
+            label="Amount (ZMW)"
+            value={amount}
+            onChangeText={(value) => edit(() => setAmount(value))}
+            keyboardType="decimal-pad"
+            left={<TextInput.Affix text="K" />}
+            style={{ marginBottom: 12 }}
+          />
 
+          <>
             <TextInput
               mode="outlined"
-              label="Amount (ZMW)"
-              value={amount}
-              onChangeText={setAmount}
-              keyboardType="decimal-pad"
-              left={<TextInput.Affix text="K" />}
+              label="Phone Number"
+              value={phone}
+              onChangeText={(value) => edit(() => setPhone(value))}
+              keyboardType="phone-pad"
+              placeholder="260XXXXXXXXX"
               style={{ marginBottom: 12 }}
             />
 
-            {topUpMethod === 'mobile_money' && (
-              <>
-                <TextInput
-                  mode="outlined"
-                  label="Phone Number"
-                  value={phone}
-                  onChangeText={setPhone}
-                  keyboardType="phone-pad"
-                  placeholder="260XXXXXXXXX"
-                  style={{ marginBottom: 12 }}
-                />
+            <Text variant="labelMedium" style={{ marginBottom: 6, color: theme.colors.onSurface }}>
+              Select Provider
+            </Text>
+            <View style={[styles.providerRow, { marginBottom: 0 }]}>
+              {(['mtn', 'airtel', 'zamtel'] as const).map((p) => (
+                <Pressable
+                  key={p}
+                  style={[
+                    styles.providerButton,
+                    {
+                      backgroundColor: provider === p ? theme.colors.primary : theme.colors.surfaceVariant,
+                    },
+                  ]}
+                  onPress={() => edit(() => setProvider(p))}
+                >
+                  <Text
+                    style={{
+                      color: provider === p ? '#fff' : theme.colors.onSurfaceVariant,
+                      fontWeight: '600',
+                      textTransform: 'uppercase',
+                    }}
+                  >
+                    {p}
+                  </Text>
+                </Pressable>
+              ))}
+            </View>
+          </>
 
-                <Text variant="labelMedium" style={{ marginBottom: 6, color: theme.colors.onSurface }}>
-                  Select Provider
-                </Text>
-                <View style={[styles.providerRow, { marginBottom: 0 }]}>
-                  {(['mtn', 'airtel', 'zamtel'] as const).map((p) => (
-                    <Pressable
-                      key={p}
-                      style={[
-                        styles.providerButton,
-                        {
-                          backgroundColor:
-                            provider === p ? theme.colors.primary : theme.colors.surfaceVariant,
-                        },
-                      ]}
-                      onPress={() => setProvider(p)}
-                    >
-                      <Text
-                        style={{
-                          color: provider === p ? '#fff' : theme.colors.onSurfaceVariant,
-                          fontWeight: '600',
-                          textTransform: 'uppercase',
-                        }}
-                      >
-                        {p}
-                      </Text>
-                    </Pressable>
-                  ))}
-                </View>
-              </>
-            )}
-
-            {topUpMethod === 'card' && (
-              <Surface style={[styles.infoBox, { backgroundColor: theme.colors.primaryContainer, marginTop: 8, marginBottom: 12 }]} elevation={0}>
-                <Icon name="information" size={20} color={theme.colors.primary} />
-                <Text variant="bodySmall" style={{ color: theme.colors.onPrimaryContainer, marginLeft: 8, flex: 1 }}>
-                  You will be redirected to a secure payment page to complete your card payment.
-                </Text>
-              </Surface>
-            )}
-
-            <Button
-              mode="contained"
-              onPress={handleTopUp}
-              loading={processing}
-              disabled={processing}
-              style={{ marginTop: topUpMethod === 'mobile_money' ? 8 : 0 }}
-            >
-              Top Up
-            </Button>
+          {paymentsAvailable ? null : (
+            <Text variant="bodyMedium" style={{ color: theme.colors.error, marginTop: 12 }}>
+              Payments are temporarily unavailable
+            </Text>
+          )}
+          <Button
+            mode="contained"
+            onPress={handleTopUp}
+            loading={processing}
+            disabled={processing || !paymentsAvailable || !operations.ready || !!operations.recovery}
+            style={{ marginTop: 8 }}
+          >
+            Top Up
+          </Button>
         </Modal>
       </Portal>
     </View>

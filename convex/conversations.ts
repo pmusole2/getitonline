@@ -2,6 +2,7 @@ import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
+import { requireUser } from "./lib/auth";
 
 type RequestCtx = QueryCtx | MutationCtx;
 type ConversationDoc = Doc<"conversations">;
@@ -14,35 +15,20 @@ const reportReasonValidator = v.union(
   v.literal("other")
 );
 
-async function getAuthenticatedUserId(ctx: RequestCtx): Promise<Id<"users"> | null> {
-  const identity = await ctx.auth.getUserIdentity();
-  if (!identity) return null;
-
-  const user = await ctx.db
-    .query("users")
-    .withIndex("by_clerk_id", (q) => q.eq("clerkId", identity.subject))
-    .first();
-
-  if (!user) {
-    throw new Error("Authenticated user not found");
-  }
-
-  return user._id;
-}
-
 async function assertRequestUser(ctx: RequestCtx, userId: Id<"users">) {
-  const authenticatedUserId = await getAuthenticatedUserId(ctx);
-  if (authenticatedUserId !== null && authenticatedUserId !== userId) {
+  const actor = await requireUser(ctx);
+  if (actor._id !== userId) {
     throw new Error("Unauthorized");
   }
 }
 
-function getParticipantRole(
-  conversation: ConversationDoc,
-  userId: Id<"users">
-): ParticipantRole | null {
-  if (conversation.buyerId === userId) return "buyer";
-  if (conversation.sellerId === userId) return "seller";
+function getParticipantRole(conversation: ConversationDoc, userId: Id<"users">): ParticipantRole | null {
+  if (conversation.buyerId === userId) {
+    return "buyer";
+  }
+  if (conversation.sellerId === userId) {
+    return "seller";
+  }
   return null;
 }
 
@@ -54,7 +40,9 @@ async function requireConversationParticipant(
   await assertRequestUser(ctx, userId);
 
   const conversation = await ctx.db.get(conversationId);
-  if (!conversation) throw new Error("Conversation not found");
+  if (!conversation) {
+    throw new Error("Conversation not found");
+  }
 
   const role = getParticipantRole(conversation, userId);
   if (!role) {
@@ -75,8 +63,12 @@ export const startConversation = mutation({
     await assertRequestUser(ctx, args.buyerId);
 
     const product = await ctx.db.get(args.productId);
-    if (!product) throw new Error("Product not found");
-    if (product.status !== "active") throw new Error("Product is not available");
+    if (!product) {
+      throw new Error("Product not found");
+    }
+    if (product.status !== "active") {
+      throw new Error("Product is not available");
+    }
 
     // Can't message yourself
     if (product.sellerId === args.buyerId) {
@@ -86,9 +78,7 @@ export const startConversation = mutation({
     // Check if conversation already exists
     const existingConversation = await ctx.db
       .query("conversations")
-      .withIndex("by_buyer_product", (q) =>
-        q.eq("buyerId", args.buyerId).eq("productId", args.productId)
-      )
+      .withIndex("by_buyer_product", (q) => q.eq("buyerId", args.buyerId).eq("productId", args.productId))
       .first();
 
     if (existingConversation) {
@@ -167,11 +157,8 @@ export const sendConversationMessage = mutation({
     ),
   },
   handler: async (ctx, args) => {
-    const { conversation, role } = await requireConversationParticipant(
-      ctx,
-      args.conversationId,
-      args.senderId
-    );
+    await assertRequestUser(ctx, args.senderId);
+    const { conversation, role } = await requireConversationParticipant(ctx, args.conversationId, args.senderId);
     const isBuyer = role === "buyer";
 
     if (conversation.status === "blocked") {
@@ -213,11 +200,11 @@ export const sendConversationMessage = mutation({
       userId: recipientId,
       type: "new_message",
       title: "New Message",
-      message: `${senderName}: ${args.content.substring(0, 50)}${args.content.length > 50 ? '...' : ''}`,
+      message: `${senderName}: ${args.content.substring(0, 50)}${args.content.length > 50 ? "..." : ""}`,
       data: {
         conversationId: args.conversationId,
         productId: conversation.productId,
-        productTitle: product?.title
+        productTitle: product?.title,
       },
       isRead: false,
       createdAt: now,
@@ -237,7 +224,9 @@ export const getConversation = query({
     await assertRequestUser(ctx, args.viewerId);
 
     const conversation = await ctx.db.get(args.conversationId);
-    if (!conversation) return null;
+    if (!conversation) {
+      return null;
+    }
 
     if (!getParticipantRole(conversation, args.viewerId)) {
       throw new Error("Unauthorized");
@@ -249,25 +238,31 @@ export const getConversation = query({
 
     return {
       ...conversation,
-      product: product ? {
-        _id: product._id,
-        title: product.title,
-        price: product.price,
-        images: product.images,
-        status: product.status,
-      } : null,
-      buyer: buyer ? {
-        _id: buyer._id,
-        firstName: buyer.firstName,
-        lastName: buyer.lastName,
-        avatar: buyer.avatar,
-      } : null,
-      seller: seller ? {
-        _id: seller._id,
-        firstName: seller.firstName,
-        lastName: seller.lastName,
-        avatar: seller.avatar,
-      } : null,
+      product: product
+        ? {
+            _id: product._id,
+            title: product.title,
+            price: product.price,
+            images: product.images,
+            status: product.status,
+          }
+        : null,
+      buyer: buyer
+        ? {
+            _id: buyer._id,
+            firstName: buyer.firstName,
+            lastName: buyer.lastName,
+            avatar: buyer.avatar,
+          }
+        : null,
+      seller: seller
+        ? {
+            _id: seller._id,
+            firstName: seller.firstName,
+            lastName: seller.lastName,
+            avatar: seller.avatar,
+          }
+        : null,
     };
   },
 });
@@ -280,6 +275,7 @@ export const getConversationMessages = query({
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    await assertRequestUser(ctx, args.viewerId);
     await requireConversationParticipant(ctx, args.conversationId, args.viewerId);
 
     const limit = Math.min(args.limit ?? 50, 100);
@@ -296,12 +292,14 @@ export const getConversationMessages = query({
         const sender = await ctx.db.get(msg.senderId);
         return {
           ...msg,
-          sender: sender ? {
-            _id: sender._id,
-            firstName: sender.firstName,
-            lastName: sender.lastName,
-            avatar: sender.avatar,
-          } : null,
+          sender: sender
+            ? {
+                _id: sender._id,
+                firstName: sender.firstName,
+                lastName: sender.lastName,
+                avatar: sender.avatar,
+              }
+            : null,
         };
       })
     );
@@ -317,9 +315,7 @@ export const getBuyerConversations = query({
   handler: async (ctx, args) => {
     await assertRequestUser(ctx, args.buyerId);
 
-    let query = ctx.db
-      .query("conversations")
-      .withIndex("by_buyer", (q) => q.eq("buyerId", args.buyerId));
+    let query = ctx.db.query("conversations").withIndex("by_buyer", (q) => q.eq("buyerId", args.buyerId));
 
     if (args.status) {
       query = query.filter((q) => q.eq(q.field("status"), args.status));
@@ -335,19 +331,23 @@ export const getBuyerConversations = query({
         const seller = await ctx.db.get(conv.sellerId);
         return {
           ...conv,
-          product: product ? {
-            _id: product._id,
-            title: product.title,
-            price: product.price,
-            images: product.images,
-            status: product.status,
-          } : null,
-          seller: seller ? {
-            _id: seller._id,
-            firstName: seller.firstName,
-            lastName: seller.lastName,
-            avatar: seller.avatar,
-          } : null,
+          product: product
+            ? {
+                _id: product._id,
+                title: product.title,
+                price: product.price,
+                images: product.images,
+                status: product.status,
+              }
+            : null,
+          seller: seller
+            ? {
+                _id: seller._id,
+                firstName: seller.firstName,
+                lastName: seller.lastName,
+                avatar: seller.avatar,
+              }
+            : null,
         };
       })
     );
@@ -363,9 +363,7 @@ export const getSellerConversations = query({
   handler: async (ctx, args) => {
     await assertRequestUser(ctx, args.sellerId);
 
-    let query = ctx.db
-      .query("conversations")
-      .withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
+    let query = ctx.db.query("conversations").withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
 
     if (args.status) {
       query = query.filter((q) => q.eq(q.field("status"), args.status));
@@ -381,19 +379,23 @@ export const getSellerConversations = query({
         const buyer = await ctx.db.get(conv.buyerId);
         return {
           ...conv,
-          product: product ? {
-            _id: product._id,
-            title: product.title,
-            price: product.price,
-            images: product.images,
-            status: product.status,
-          } : null,
-          buyer: buyer ? {
-            _id: buyer._id,
-            firstName: buyer.firstName,
-            lastName: buyer.lastName,
-            avatar: buyer.avatar,
-          } : null,
+          product: product
+            ? {
+                _id: product._id,
+                title: product.title,
+                price: product.price,
+                images: product.images,
+                status: product.status,
+              }
+            : null,
+          buyer: buyer
+            ? {
+                _id: buyer._id,
+                firstName: buyer.firstName,
+                lastName: buyer.lastName,
+                avatar: buyer.avatar,
+              }
+            : null,
         };
       })
     );
@@ -435,19 +437,23 @@ export const getUserConversations = query({
           ...conv,
           isBuyer,
           unreadCount: isBuyer ? conv.buyerUnreadCount : conv.sellerUnreadCount,
-          product: product ? {
-            _id: product._id,
-            title: product.title,
-            price: product.price,
-            images: product.images,
-            status: product.status,
-          } : null,
-          otherUser: otherUser ? {
-            _id: otherUser._id,
-            firstName: otherUser.firstName,
-            lastName: otherUser.lastName,
-            avatar: otherUser.avatar,
-          } : null,
+          product: product
+            ? {
+                _id: product._id,
+                title: product.title,
+                price: product.price,
+                images: product.images,
+                status: product.status,
+              }
+            : null,
+          otherUser: otherUser
+            ? {
+                _id: otherUser._id,
+                firstName: otherUser.firstName,
+                lastName: otherUser.lastName,
+                avatar: otherUser.avatar,
+              }
+            : null,
         };
       })
     );
@@ -461,23 +467,15 @@ export const markConversationRead = mutation({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const { role } = await requireConversationParticipant(
-      ctx,
-      args.conversationId,
-      args.userId
-    );
+    await assertRequestUser(ctx, args.userId);
+    const { role } = await requireConversationParticipant(ctx, args.conversationId, args.userId);
     const isBuyer = role === "buyer";
 
     // Mark all unread messages as read
     const unreadMessages = await ctx.db
       .query("conversationMessages")
       .withIndex("by_conversation", (q) => q.eq("conversationId", args.conversationId))
-      .filter((q) =>
-        q.and(
-          q.eq(q.field("isRead"), false),
-          q.neq(q.field("senderId"), args.userId)
-        )
-      )
+      .filter((q) => q.and(q.eq(q.field("isRead"), false), q.neq(q.field("senderId"), args.userId)))
       .collect();
 
     const now = Date.now();
@@ -506,11 +504,8 @@ export const archiveConversation = mutation({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const { conversation } = await requireConversationParticipant(
-      ctx,
-      args.conversationId,
-      args.userId
-    );
+    await assertRequestUser(ctx, args.userId);
+    const { conversation } = await requireConversationParticipant(ctx, args.conversationId, args.userId);
 
     if (conversation.status === "blocked") {
       throw new Error("This conversation has been blocked");
@@ -532,11 +527,8 @@ export const blockConversation = mutation({
     userId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const { conversation } = await requireConversationParticipant(
-      ctx,
-      args.conversationId,
-      args.userId
-    );
+    await assertRequestUser(ctx, args.userId);
+    const { conversation } = await requireConversationParticipant(ctx, args.conversationId, args.userId);
 
     if (conversation.status === "blocked") {
       return { success: true };
@@ -561,11 +553,7 @@ export const reportConversation = mutation({
     reason: v.optional(reportReasonValidator),
   },
   handler: async (ctx, args) => {
-    const { conversation, role } = await requireConversationParticipant(
-      ctx,
-      args.conversationId,
-      args.reporterId
-    );
+    const { conversation, role } = await requireConversationParticipant(ctx, args.conversationId, args.reporterId);
     const reportedUserId = role === "buyer" ? conversation.sellerId : conversation.buyerId;
     const reason = args.reason ?? "other";
     const now = Date.now();
@@ -612,24 +600,14 @@ export const getUnreadConversationCount = query({
     const buyerConversations = await ctx.db
       .query("conversations")
       .withIndex("by_buyer", (q) => q.eq("buyerId", args.userId))
-      .filter((q) =>
-        q.and(
-          q.gt(q.field("buyerUnreadCount"), 0),
-          q.neq(q.field("status"), "blocked")
-        )
-      )
+      .filter((q) => q.and(q.gt(q.field("buyerUnreadCount"), 0), q.neq(q.field("status"), "blocked")))
       .collect();
 
     // Count unread as seller
     const sellerConversations = await ctx.db
       .query("conversations")
       .withIndex("by_seller", (q) => q.eq("sellerId", args.userId))
-      .filter((q) =>
-        q.and(
-          q.gt(q.field("sellerUnreadCount"), 0),
-          q.neq(q.field("status"), "blocked")
-        )
-      )
+      .filter((q) => q.and(q.gt(q.field("sellerUnreadCount"), 0), q.neq(q.field("status"), "blocked")))
       .collect();
 
     return buyerConversations.length + sellerConversations.length;
@@ -647,12 +625,12 @@ export const getProductConversationHistory = query({
 
     const conversation = await ctx.db
       .query("conversations")
-      .withIndex("by_buyer_product", (q) =>
-        q.eq("buyerId", args.buyerId).eq("productId", args.productId)
-      )
+      .withIndex("by_buyer_product", (q) => q.eq("buyerId", args.buyerId).eq("productId", args.productId))
       .first();
 
-    if (!conversation) return null;
+    if (!conversation) {
+      return null;
+    }
     if (!getParticipantRole(conversation, args.buyerId)) {
       throw new Error("Unauthorized");
     }
@@ -697,9 +675,7 @@ export const getExistingConversation = query({
 
     const conversation = await ctx.db
       .query("conversations")
-      .withIndex("by_buyer_product", (q) =>
-        q.eq("buyerId", args.buyerId).eq("productId", args.productId)
-      )
+      .withIndex("by_buyer_product", (q) => q.eq("buyerId", args.buyerId).eq("productId", args.productId))
       .first();
 
     if (conversation && !getParticipantRole(conversation, args.viewerId)) {

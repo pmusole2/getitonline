@@ -1,7 +1,9 @@
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import { mutation, query, internalMutation } from "./_generated/server";
+import { requireUser } from "./lib/auth";
+import { ensureAdminActor } from "./lib/platform";
 
 const notificationTypeValidator = v.union(
   v.literal("order_placed"),
@@ -41,11 +43,7 @@ const campaignTypeValidator = v.union(
   v.literal("product_recommendation")
 );
 
-const campaignStatusValidator = v.union(
-  v.literal("draft"),
-  v.literal("active"),
-  v.literal("paused")
-);
+const campaignStatusValidator = v.union(v.literal("draft"), v.literal("active"), v.literal("paused"));
 
 const audienceSegmentValidator = v.union(
   v.literal("all_opted_in"),
@@ -55,29 +53,13 @@ const audienceSegmentValidator = v.union(
   v.literal("past_buyers")
 );
 
-const channelValidator = v.union(
-  v.literal("in_app"),
-  v.literal("mobile_push"),
-  v.literal("web_push")
-);
+const channelValidator = v.union(v.literal("in_app"), v.literal("mobile_push"), v.literal("web_push"));
 
-async function ensureAdmin(ctx: QueryCtx | MutationCtx, userId: Id<"users">) {
-  const user = await ctx.db.get(userId);
-  if (!user || user.role !== "admin") {
-    throw new Error("Unauthorized: Only admins can manage notification campaigns");
-  }
-  return user;
-}
-
-function defaultPreferencesEnabled(
-  user: { preferences?: { notificationsEnabled?: boolean } }
-) {
+function defaultPreferencesEnabled(user: { preferences?: { notificationsEnabled?: boolean } }) {
   return user.preferences?.notificationsEnabled !== false;
 }
 
-function campaignTypeToNotificationType(
-  type: "cart_reminder" | "low_stock" | "price_drop" | "product_recommendation"
-) {
+function campaignTypeToNotificationType(type: "cart_reminder" | "low_stock" | "price_drop" | "product_recommendation") {
   return type === "low_stock" ? "scarcity_alert" : type;
 }
 
@@ -122,18 +104,15 @@ async function getCampaignAudience(
   const events = await ctx.db
     .query("behaviorEvents")
     .withIndex("by_event_created", (q) =>
-      q.eq(
-        "eventType",
-        campaign.audienceSegment === "product_viewers"
-          ? "product_view"
-          : "category_browse"
-      )
+      q.eq("eventType", campaign.audienceSegment === "product_viewers" ? "product_view" : "category_browse")
     )
     .collect();
   const ids = new Set(
     events
       .filter((event) => {
-        if (!event.userId || !optedInIds.has(event.userId)) return false;
+        if (!event.userId || !optedInIds.has(event.userId)) {
+          return false;
+        }
         if (campaign.audienceSegment === "product_viewers" && campaign.productId) {
           return event.productId === campaign.productId;
         }
@@ -148,10 +127,7 @@ async function getCampaignAudience(
   return optedInUsers.filter((user) => ids.has(user._id));
 }
 
-async function countDeliveriesToday(
-  ctx: QueryCtx | MutationCtx,
-  userId: Id<"users">
-) {
+async function countDeliveriesToday(ctx: QueryCtx | MutationCtx, userId: Id<"users">) {
   const logs = await ctx.db
     .query("notificationDeliveryLogs")
     .withIndex("by_user_created", (q) => q.eq("userId", userId))
@@ -161,7 +137,7 @@ async function countDeliveriesToday(
 }
 
 // Create notification
-export const createNotification = mutation({
+export const createNotification = internalMutation({
   args: {
     userId: v.id("users"),
     type: notificationTypeValidator,
@@ -184,7 +160,8 @@ export const createNotification = mutation({
 
 export const recordBehaviorEvent = mutation({
   args: {
-    userId: v.optional(v.id("users")),
+    // A queued event may reject a changed session; this assertion never grants authority.
+    expectedClerkId: v.union(v.string(), v.null()),
     anonymousId: v.optional(v.string()),
     eventType: v.union(
       v.literal("product_view"),
@@ -201,8 +178,25 @@ export const recordBehaviorEvent = mutation({
     metadata: v.optional(v.any()),
   },
   handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+
+    if (args.expectedClerkId !== (identity?.subject ?? null)) {
+      throw new Error("Authentication changed. Discard the obsolete behavior event.");
+    }
+
+    // Only an actual anonymous identity is a guest. Denied accounts must not fall back to guest writes.
+    const actor = identity === null ? null : await requireUser(ctx);
+
     return await ctx.db.insert("behaviorEvents", {
-      ...args,
+      userId: actor?._id,
+      anonymousId: args.anonymousId,
+      eventType: args.eventType,
+      productId: args.productId,
+      categoryId: args.categoryId,
+      variantId: args.variantId,
+      durationMs: args.durationMs,
+      quantity: args.quantity,
+      metadata: args.metadata,
       createdAt: Date.now(),
     });
   },
@@ -210,14 +204,14 @@ export const recordBehaviorEvent = mutation({
 
 export const getUserBehaviorSummary = query({
   args: {
-    userId: v.id("users"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const limit = args.limit ?? 100;
     const events = await ctx.db
       .query("behaviorEvents")
-      .withIndex("by_user_created", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user_created", (q) => q.eq("userId", actor._id))
       .order("desc")
       .take(limit);
 
@@ -247,11 +241,7 @@ export const getUserBehaviorSummary = query({
         recentlyViewedCategoryIds.push(event.categoryId);
       }
 
-      if (
-        event.eventType === "purchase" &&
-        event.categoryId &&
-        !seenPurchaseCategories.has(event.categoryId)
-      ) {
+      if (event.eventType === "purchase" && event.categoryId && !seenPurchaseCategories.has(event.categoryId)) {
         seenPurchaseCategories.add(event.categoryId);
         purchaseCategoryIds.push(event.categoryId);
       }
@@ -267,7 +257,6 @@ export const getUserBehaviorSummary = query({
 
 export const upsertNotificationDevice = mutation({
   args: {
-    userId: v.id("users"),
     channel: v.union(v.literal("mobile_push"), v.literal("web_push")),
     token: v.optional(v.string()),
     subscription: v.optional(v.any()),
@@ -275,6 +264,7 @@ export const upsertNotificationDevice = mutation({
     isOptedIn: v.boolean(),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const now = Date.now();
     const existingByToken = args.token
       ? await ctx.db
@@ -285,7 +275,7 @@ export const upsertNotificationDevice = mutation({
 
     if (existingByToken) {
       await ctx.db.patch(existingByToken._id, {
-        userId: args.userId,
+        userId: actor._id,
         channel: args.channel,
         token: args.token,
         subscription: args.subscription,
@@ -299,6 +289,7 @@ export const upsertNotificationDevice = mutation({
 
     return await ctx.db.insert("notificationDevices", {
       ...args,
+      userId: actor._id,
       lastSeenAt: now,
       createdAt: now,
       updatedAt: now,
@@ -324,9 +315,9 @@ export const upsertNotificationCampaign = mutation({
     isAutomatic: v.boolean(),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    const admin = await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, campaignId, ...campaignInput } = args;
+    const { adminId: _adminId, campaignId, ...campaignInput } = args;
 
     if (campaignId) {
       await ctx.db.patch(campaignId, {
@@ -340,7 +331,7 @@ export const upsertNotificationCampaign = mutation({
     return await ctx.db.insert("notificationCampaigns", {
       ...campaignInput,
       maxPerUserPerDay: campaignInput.maxPerUserPerDay ?? 3,
-      createdByUserId: adminId,
+      createdByUserId: admin._id,
       createdAt: now,
       updatedAt: now,
     });
@@ -349,8 +340,8 @@ export const upsertNotificationCampaign = mutation({
 
 export const listNotificationCampaignsForAdmin = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+  handler: async (ctx) => {
+    await ensureAdminActor(ctx);
     return (await ctx.db.query("notificationCampaigns").collect()).sort(
       (left, right) => right.createdAt - left.createdAt
     );
@@ -363,10 +354,14 @@ export const sendNotificationCampaign = mutation({
     campaignId: v.id("notificationCampaigns"),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const campaign = await ctx.db.get(args.campaignId);
-    if (!campaign) throw new Error("Campaign not found");
-    if (campaign.status === "paused") throw new Error("Campaign is paused");
+    if (!campaign) {
+      throw new Error("Campaign not found");
+    }
+    if (campaign.status === "paused") {
+      throw new Error("Campaign is paused");
+    }
 
     const users = await getCampaignAudience(ctx, campaign);
     const notificationType = campaignTypeToNotificationType(campaign.type);
@@ -418,9 +413,7 @@ export const sendNotificationCampaign = mutation({
 
         const devices = await ctx.db
           .query("notificationDevices")
-          .withIndex("by_user_channel", (q) =>
-            q.eq("userId", user._id).eq("channel", channel)
-          )
+          .withIndex("by_user_channel", (q) => q.eq("userId", user._id).eq("channel", channel))
           .collect();
         const hasOptedInDevice = devices.some((device) => device.isOptedIn);
 
@@ -433,8 +426,11 @@ export const sendNotificationCampaign = mutation({
           reason: hasOptedInDevice ? undefined : "no_opted_in_device",
           createdAt: now,
         });
-        if (hasOptedInDevice) counts.queued += 1;
-        else counts.skipped += 1;
+        if (hasOptedInDevice) {
+          counts.queued += 1;
+        } else {
+          counts.skipped += 1;
+        }
       }
     }
 
@@ -450,23 +446,21 @@ export const sendNotificationCampaign = mutation({
 // Get user notifications
 export const getUserNotifications = query({
   args: {
-    userId: v.id("users"),
     limit: v.optional(v.number()),
     unreadOnly: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const limit = args.limit ?? 50;
 
     let notificationsQuery = ctx.db
       .query("notifications")
-      .withIndex("by_user_created", (q) => q.eq("userId", args.userId));
+      .withIndex("by_user_created", (q) => q.eq("userId", actor._id));
 
     if (args.unreadOnly) {
       notificationsQuery = ctx.db
         .query("notifications")
-        .withIndex("by_user_read", (q) =>
-          q.eq("userId", args.userId).eq("isRead", false)
-        );
+        .withIndex("by_user_read", (q) => q.eq("userId", actor._id).eq("isRead", false));
     }
 
     return await notificationsQuery.order("desc").take(limit);
@@ -477,12 +471,16 @@ export const getUserNotifications = query({
 export const markAsRead = mutation({
   args: {
     notificationId: v.id("notifications"),
-    userId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const notification = await ctx.db.get(args.notificationId);
-    if (!notification) throw new Error("Notification not found");
-    if (notification.userId !== args.userId) throw new Error("Unauthorized");
+    if (!notification) {
+      throw new Error("Notification not found");
+    }
+    if (notification.userId !== actor._id) {
+      throw new Error("Unauthorized");
+    }
 
     await ctx.db.patch(args.notificationId, {
       isRead: true,
@@ -492,13 +490,12 @@ export const markAsRead = mutation({
 
 // Mark all notifications as read
 export const markAllAsRead = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     const unreadNotifications = await ctx.db
       .query("notifications")
-      .withIndex("by_user_read", (q) =>
-        q.eq("userId", args.userId).eq("isRead", false)
-      )
+      .withIndex("by_user_read", (q) => q.eq("userId", actor._id).eq("isRead", false))
       .collect();
 
     for (const notification of unreadNotifications) {
@@ -513,13 +510,12 @@ export const markAllAsRead = mutation({
 
 // Get unread count
 export const getUnreadCount = query({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     const unreadNotifications = await ctx.db
       .query("notifications")
-      .withIndex("by_user_read", (q) =>
-        q.eq("userId", args.userId).eq("isRead", false)
-      )
+      .withIndex("by_user_read", (q) => q.eq("userId", actor._id).eq("isRead", false))
       .collect();
 
     return unreadNotifications.length;
@@ -530,12 +526,16 @@ export const getUnreadCount = query({
 export const deleteNotification = mutation({
   args: {
     notificationId: v.id("notifications"),
-    userId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const notification = await ctx.db.get(args.notificationId);
-    if (!notification) throw new Error("Notification not found");
-    if (notification.userId !== args.userId) throw new Error("Unauthorized");
+    if (!notification) {
+      throw new Error("Notification not found");
+    }
+    if (notification.userId !== actor._id) {
+      throw new Error("Unauthorized");
+    }
 
     await ctx.db.delete(args.notificationId);
   },
@@ -543,11 +543,12 @@ export const deleteNotification = mutation({
 
 // Delete all notifications for user
 export const deleteAllNotifications = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx) => {
+    const actor = await requireUser(ctx);
     const notifications = await ctx.db
       .query("notifications")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .collect();
 
     for (const notification of notifications) {
@@ -559,7 +560,7 @@ export const deleteAllNotifications = mutation({
 });
 
 // Helper: Create order notification for seller
-export const notifyOrderPlaced = mutation({
+export const notifyOrderPlaced = internalMutation({
   args: {
     sellerId: v.id("users"),
     orderNumber: v.string(),
@@ -581,7 +582,7 @@ export const notifyOrderPlaced = mutation({
 });
 
 // Helper: Create order status notification for buyer
-export const notifyOrderStatusUpdate = mutation({
+export const notifyOrderStatusUpdate = internalMutation({
   args: {
     buyerId: v.id("users"),
     orderNumber: v.string(),
@@ -611,7 +612,7 @@ export const notifyOrderStatusUpdate = mutation({
 });
 
 // Helper: Create dispute notification
-export const notifyDisputeUpdate = mutation({
+export const notifyDisputeUpdate = internalMutation({
   args: {
     userId: v.id("users"),
     disputeId: v.id("disputes"),
@@ -632,7 +633,7 @@ export const notifyDisputeUpdate = mutation({
 });
 
 // Helper: Create new message notification
-export const notifyNewMessage = mutation({
+export const notifyNewMessage = internalMutation({
   args: {
     userId: v.id("users"),
     disputeId: v.id("disputes"),
@@ -652,7 +653,7 @@ export const notifyNewMessage = mutation({
 });
 
 // Helper: Create funds released notification
-export const notifyFundsReleased = mutation({
+export const notifyFundsReleased = internalMutation({
   args: {
     sellerId: v.id("users"),
     orderId: v.id("orders"),
@@ -672,7 +673,7 @@ export const notifyFundsReleased = mutation({
 });
 
 // Helper: Create new review notification
-export const notifyNewReview = mutation({
+export const notifyNewReview = internalMutation({
   args: {
     sellerId: v.id("users"),
     reviewerName: v.string(),
@@ -693,7 +694,7 @@ export const notifyNewReview = mutation({
 });
 
 // Helper: Create product sold notification
-export const notifyProductSold = mutation({
+export const notifyProductSold = internalMutation({
   args: {
     sellerId: v.id("users"),
     productTitle: v.string(),

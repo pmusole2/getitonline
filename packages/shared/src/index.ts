@@ -1,6 +1,12 @@
 // Schemas
 export * from "./schemas";
 export * from "./guest-cart";
+export * from "./ai/assistantIdentity";
+export * from "./ai/aiConsent";
+export * from "./ai/aiCopy";
+export * from "./ai/aiGuestSession";
+export * from "./ai/aiRequests";
+export * from "./ai/aiResults";
 
 // Utils
 export * from "./utils";

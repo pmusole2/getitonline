@@ -1,0 +1,155 @@
+# Mobile EAS upload policy. Source signing fixtures remain untouched; remote credentials sign store builds.
+# Learn more https://docs.github.com/en/get-started/getting-started-with-git/ignoring-files
+
+# dependencies
+node_modules/
+
+# Expo
+.expo/
+dist/
+web-build/
+expo-env.d.ts
+
+# Native
+.kotlin/
+*.orig.*
+*.jks
+*.p8
+*.p12
+*.key
+*.mobileprovision
+
+# Metro
+.metro-health-check*
+
+# debug
+npm-debug.*
+yarn-debug.*
+yarn-error.*
+
+# macOS
+.DS_Store
+*.pem
+
+# local env files
+.env
+.env.*
+.env*.local
+
+# typescript
+*.tsbuildinfo
+
+# generated native folders
+/ios
+/android
+
+# Convex
+.convex/
+
+# Build outputs
+build/
+coverage/
+
+# IDE
+.idea/
+*.swp
+*.swo
+
+# Secrets
+credentials.json
+google-services.json
+GoogleService-Info.plist
+
+# Logs
+logs/
+*.log
+
+# Next.js
+.next/
+out/
+.vercel/
+
+# NestJS
+/apps/api/dist/
+
+# Testing
+.nyc_output/
+
+# Turbo
+.turbo/
+
+# Misc
+.claude/
+*.local
+
+# Private release evidence and downloaded app binaries
+/artifacts/
+*.apk
+*.aab
+*.ipa
+.superpowers/
+
+# Local store-service credentials
+*service-account*.json
+*service_account*.json
+
+# EAS 24.13.0 reads this file at the Git root and replaces ALL .gitignore files.
+# Keep the root protections above and the rebased native protections below.
+.git
+*.keystore
+
+# Android .gitignore protections (rebased from apps/mobile/android).
+/apps/mobile/android/**/.idea
+/apps/mobile/android/**/.gradle
+/apps/mobile/android/**/local.properties
+/apps/mobile/android/**/*.iml
+/apps/mobile/android/**/*.hprof
+/apps/mobile/android/**/.cxx/
+/apps/mobile/android/**/*.jsbundle
+
+# iOS .gitignore protections (rebased from apps/mobile/ios).
+/apps/mobile/ios/**/*.pbxuser
+!/apps/mobile/ios/**/default.pbxuser
+/apps/mobile/ios/**/*.mode1v3
+!/apps/mobile/ios/**/default.mode1v3
+/apps/mobile/ios/**/*.mode2v3
+!/apps/mobile/ios/**/default.mode2v3
+/apps/mobile/ios/**/*.perspectivev3
+!/apps/mobile/ios/**/default.perspectivev3
+/apps/mobile/ios/**/xcuserdata
+/apps/mobile/ios/**/*.xccheckout
+/apps/mobile/ios/**/*.moved-aside
+/apps/mobile/ios/**/DerivedData
+/apps/mobile/ios/**/*.hmap
+/apps/mobile/ios/**/*.xcuserstate
+/apps/mobile/ios/**/project.xcworkspace
+/apps/mobile/ios/**/.xcode.env.local
+/apps/mobile/ios/**/*.jsbundle
+/apps/mobile/ios/Pods/
+
+# Mobile builds install all root workspaces: keep each manifest for npm ci.
+# API/web implementations and their nested caches are retired or outside this upload.
+/apps/api/*
+!/apps/api/package.json
+/apps/web/*
+/apps/web/.*
+!/apps/web/package.json
+
+# Documentation, audit/release evidence, test inputs and retired deployment config.
+/docs/
+/tests/
+/scripts/
+/metadata/
+/.vscode/
+/railway.json
+/*.md
+/apps/mobile/README.md
+/convex/README.md
+/.gitleaks.toml
+**/*.test.*
+**/*.spec.*
+**/__tests__/
+**/__mocks__/
+
+# This helper is imported only by the excluded dispute/chat tests.
+/apps/mobile/src/components/auth/disputeAiHarness.ts

@@ -24,12 +24,12 @@ import {
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useAiActions } from '../../hooks/useAiActions';
+import { aiErrorMessage } from '../../services/aiAdapters';
 import { requestAIConsent } from '../../services/aiConsent';
-import {
-  apiService,
-  type ModerateListingResponse,
-} from '../../services/api';
 import { formatPrice } from '../../theme';
 import type { CategoryTreeChild, CategoryTreeItem, Id, RootStackParamList } from '../../types';
 import { isReviewerRole } from '../../utils/roles';
@@ -85,9 +85,19 @@ function findL3(subcategory: CategoryTreeChild | null, classificationId: string 
   return subcategory?.classifications?.find((classification) => classification._id === classificationId) ?? null;
 }
 
-export default function ListingReviewScreen({ navigation }: Props) {
+export default function ListingReviewScreen(props: Props) {
+  // Listing review is read only for a ready account, so no review query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Listing Review" />;
+  }
+  return <ListingReviewContent {...props} />;
+}
+
+function ListingReviewContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
+  const ai = useAiActions();
   const hasReviewAccess = isReviewerRole(user?.role);
 
   const [searchQuery, setSearchQuery] = useState('');
@@ -248,31 +258,30 @@ export default function ListingReviewScreen({ navigation }: Props) {
 
     try {
       const hasConsent = await requestAIConsent();
+      if (!ai.isCurrent()) return;
       if (!hasConsent) {
         Alert.alert('AI features off', 'Allow AI features before running AI listing moderation.');
         return;
       }
 
-      const result: ModerateListingResponse = await apiService.moderateListing({
-        reviewerId: user._id,
-        productId: listing._id,
-        title: listing.title,
-        description: listing.description,
-        price: listing.price,
-        quantity: listing.quantity,
-        imageUrls: listing.images,
-        categoryName: listing.category?.name,
-      });
+      // The backend reads the stored listing, so only its id is sent.
+      const result = await ai.moderateListing({ productId: listing._id });
+      if (!ai.isCurrent()) return;
 
-      Alert.alert(
-        'AI moderation complete',
-        result.summary ?? 'The AI moderation result has been stored for this listing.'
-      );
+      if (result.saved) {
+        Alert.alert('AI moderation complete', `Status: ${result.status}\n${result.summary}`);
+      } else {
+        // The fallback is never saved, so the reviewer is told it is not a moderation decision.
+        Alert.alert('AI moderation unavailable', `${result.summary}\nNothing was saved.`);
+      }
     } catch (error: unknown) {
-      const message = error instanceof Error ? error.message : 'Failed to run AI moderation';
-      Alert.alert('Error', message);
+      const message = aiErrorMessage(error);
+      if (message !== null && ai.isCurrent()) {
+        Alert.alert('Error', message);
+      }
     } finally {
-      setRunningAiFor(null);
+      // Keyed by the listing, so this clears only this listing's busy mark, never another running check.
+      setRunningAiFor((current) => (current === listing._id ? null : current));
     }
   };
 

@@ -3,7 +3,7 @@
 import { ChangeEvent, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../../../../convex/_generated/api";
 import { Id } from "../../../../../../../convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -44,7 +44,9 @@ import {
   AlertCircle,
 } from "lucide-react";
 import { ROUTES, CONDITION_DISPLAY_NAMES, ZAMBIAN_PROVINCES } from "@/lib/constants";
-import { useAuth } from "@/hooks/useAuth";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
 import {
   MIN_PRODUCT_IMAGE_COUNT,
   MAX_PRODUCT_IMAGE_COUNT,
@@ -53,6 +55,10 @@ import {
 } from "@/lib/product-image-upload";
 import { toast } from "sonner";
 import { canManageListings } from "@/lib/roles";
+import {
+  storageUploadMessage,
+  useStorageUpload,
+} from "@/hooks/useStorageUpload";
 
 interface ShippingOption {
   name: string;
@@ -187,17 +193,29 @@ function buildVariantCombinations(
 }
 
 export default function CreateListingPage() {
+  const access = useAccountAccess();
+  if (access.status !== "ready" || access.user === null) {
+    return (
+      <AccountAccessNotice
+        access={access}
+        heading="Create a Listing"
+        signInMessage="Please sign in to create a listing"
+      />
+    );
+  }
+  return <CreateListingContent user={access.user} />;
+}
+
+function CreateListingContent({ user }: { user: AccountUser }) {
   const router = useRouter();
-  const { user, isSignedIn, isLoading: authLoading } = useAuth();
   const vendorProfile = useQuery(
     api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : "skip"
+    user?._id && !user.isBanned ? {} : "skip"
   );
   const hasListingAccess = canManageListings(
     user?.role,
     vendorProfile?.status ?? null
   );
-  const convex = useConvex();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const [isSubmitting, setIsSubmitting] = useState(false);
@@ -262,7 +280,7 @@ export default function CreateListingPage() {
 
   // Mutations
   const createProduct = useMutation(api.products.createProduct);
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const uploadFile = useStorageUpload();
   const uploadedImageUrls = useMemo(
     () =>
       images
@@ -423,7 +441,6 @@ export default function CreateListingPage() {
           : undefined;
 
       const productId = await createProduct({
-        actorUserId: user._id,
         title: formData.title.trim(),
         brand: formData.brand.trim() || undefined,
         sku: formData.sku.trim() || undefined,
@@ -617,29 +634,10 @@ export default function CreateListingPage() {
   };
 
   const uploadImage = async (file: File, imageId: string) => {
-    try {
-      const uploadUrl = await generateUploadUrl();
-      const uploadResponse = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": file.type,
-        },
-        body: file,
-      });
-
-      if (!uploadResponse.ok) {
-        throw new Error("Upload request failed");
-      }
-
-      const { storageId } = (await uploadResponse.json()) as {
-        storageId: Id<"_storage">;
-      };
-      const publicUrl = await convex.query(api.storage.getUrl, { storageId });
-
-      if (!publicUrl) {
-        throw new Error("Unable to resolve the uploaded image URL");
-      }
-
+    // The image is used only once the file is registered to the signed-in owner. Any other outcome is shown on the image.
+    const outcome = await uploadFile(file);
+    if (outcome.status === "uploaded") {
+      const { storageId, url } = outcome;
       setImages((currentImages) =>
         currentImages.map((image) =>
           image.id === imageId
@@ -647,7 +645,7 @@ export default function CreateListingPage() {
                 ...image,
                 status: "uploaded",
                 storageId,
-                url: publicUrl,
+                url,
                 error: undefined,
               }
             : image
@@ -655,23 +653,21 @@ export default function CreateListingPage() {
       );
       clearImageError();
       return true;
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : "Image upload failed";
-
-      setImages((currentImages) =>
-        currentImages.map((image) =>
-          image.id === imageId
-            ? {
-                ...image,
-                status: "failed",
-                error: message,
-              }
-            : image
-        )
-      );
-      return false;
     }
+
+    const message = storageUploadMessage(outcome);
+    setImages((currentImages) =>
+      currentImages.map((image) =>
+        image.id === imageId
+          ? {
+              ...image,
+              status: "failed",
+              error: message,
+            }
+          : image
+      )
+    );
+    return false;
   };
 
   const handleImageUpload = async (event: ChangeEvent<HTMLInputElement>) => {
@@ -759,23 +755,17 @@ export default function CreateListingPage() {
     setImages(images.filter((_, i) => i !== index));
   };
 
-  // Not signed in
-  if (!authLoading && !isSignedIn) {
+  // Listing access depends on the vendor profile, so wait for it before deciding.
+  if (vendorProfile === undefined) {
     return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <Package className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Create a Listing</h1>
-        <p className="mt-2 text-muted-foreground">
-          Please sign in to create a listing
-        </p>
-        <Button asChild className="mt-6">
-          <Link href={ROUTES.SIGN_IN}>Sign In</Link>
-        </Button>
+      <div className="container space-y-6 py-6">
+        <Skeleton className="h-8 w-48" />
+        <Skeleton className="h-96" />
       </div>
     );
   }
 
-  if (!authLoading && isSignedIn && !hasListingAccess) {
+  if (!hasListingAccess) {
     return (
       <div className="container flex flex-col items-center justify-center py-16">
         <Package className="h-16 w-16 text-muted-foreground" />

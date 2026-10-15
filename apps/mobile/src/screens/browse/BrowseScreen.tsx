@@ -10,6 +10,7 @@ import type { RootStackParamList, CategoryTreeItem } from '../../types';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { CategoryChipSkeleton } from '../../components/ui/Skeleton';
 import { TabHeader } from '../../components/ui/Header';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useGuestCart } from '../../context/GuestCartProvider';
 
@@ -99,13 +100,15 @@ export default function BrowseScreen() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
+  // The signed-in cart is read only for a ready account; guests still see the public browse screen.
+  const accountReady = useAccountAccess().status === 'ready';
   const { summary: guestCartSummary } = useGuestCart();
   const [searchQuery, setSearchQuery] = useState('');
 
   const categories = useQuery(api.categories.getCategoriesTree);
   const cart = useQuery(
     api.cart.getCart,
-    user ? { userId: user._id } : 'skip'
+    accountReady ? {} : 'skip'
   );
   const cartCount = user ? cart?.itemCount || 0 : guestCartSummary.itemCount;
 

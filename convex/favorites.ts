@@ -1,23 +1,25 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { requireUser } from "./lib/auth";
+import { canViewerSeeProduct } from "./products";
 
 // Add product to favorites
 export const addFavorite = mutation({
   args: {
-    userId: v.id("users"),
     productId: v.id("products"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     // Check if product exists
     const product = await ctx.db.get(args.productId);
-    if (!product) throw new Error("Product not found");
+    if (!product || !(await canViewerSeeProduct(ctx, product, actor))) {
+      throw new Error("Product not found");
+    }
 
     // Check if already favorited
     const existing = await ctx.db
       .query("favorites")
-      .withIndex("by_user_product", (q) =>
-        q.eq("userId", args.userId).eq("productId", args.productId)
-      )
+      .withIndex("by_user_product", (q) => q.eq("userId", actor._id).eq("productId", args.productId))
       .first();
 
     if (existing) {
@@ -25,7 +27,7 @@ export const addFavorite = mutation({
     }
 
     return await ctx.db.insert("favorites", {
-      userId: args.userId,
+      userId: actor._id,
       productId: args.productId,
       createdAt: Date.now(),
     });
@@ -35,15 +37,13 @@ export const addFavorite = mutation({
 // Remove product from favorites
 export const removeFavorite = mutation({
   args: {
-    userId: v.id("users"),
     productId: v.id("products"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const favorite = await ctx.db
       .query("favorites")
-      .withIndex("by_user_product", (q) =>
-        q.eq("userId", args.userId).eq("productId", args.productId)
-      )
+      .withIndex("by_user_product", (q) => q.eq("userId", actor._id).eq("productId", args.productId))
       .first();
 
     if (favorite) {
@@ -55,15 +55,13 @@ export const removeFavorite = mutation({
 // Toggle favorite
 export const toggleFavorite = mutation({
   args: {
-    userId: v.id("users"),
     productId: v.id("products"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const existing = await ctx.db
       .query("favorites")
-      .withIndex("by_user_product", (q) =>
-        q.eq("userId", args.userId).eq("productId", args.productId)
-      )
+      .withIndex("by_user_product", (q) => q.eq("userId", actor._id).eq("productId", args.productId))
       .first();
 
     if (existing) {
@@ -71,8 +69,13 @@ export const toggleFavorite = mutation({
       return { isFavorited: false };
     }
 
+    const product = await ctx.db.get(args.productId);
+    if (!product || !(await canViewerSeeProduct(ctx, product, actor))) {
+      throw new Error("Product not found");
+    }
+
     await ctx.db.insert("favorites", {
-      userId: args.userId,
+      userId: actor._id,
       productId: args.productId,
       createdAt: Date.now(),
     });
@@ -84,15 +87,13 @@ export const toggleFavorite = mutation({
 // Check if product is favorited
 export const isFavorited = query({
   args: {
-    userId: v.id("users"),
     productId: v.id("products"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const favorite = await ctx.db
       .query("favorites")
-      .withIndex("by_user_product", (q) =>
-        q.eq("userId", args.userId).eq("productId", args.productId)
-      )
+      .withIndex("by_user_product", (q) => q.eq("userId", actor._id).eq("productId", args.productId))
       .first();
 
     return !!favorite;
@@ -102,22 +103,29 @@ export const isFavorited = query({
 // Get user's favorites with product details
 export const getUserFavorites = query({
   args: {
-    userId: v.id("users"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const limit = args.limit ?? 20;
 
     const favorites = await ctx.db
       .query("favorites")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .order("desc")
       .take(limit);
 
     const favoritesWithProducts = await Promise.all(
       favorites.map(async (fav) => {
         const product = await ctx.db.get(fav.productId);
-        if (!product) return null;
+        if (!product) {
+          return null;
+        }
+
+        // The row stays so the user can still remove it; the product fields are withheld.
+        if (!(await canViewerSeeProduct(ctx, product, actor))) {
+          return { ...fav, product: null };
+        }
 
         const seller = await ctx.db.get(product.sellerId);
 
@@ -150,11 +158,12 @@ export const getUserFavorites = query({
 
 // Get favorites count for user
 export const getFavoritesCount = query({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx, _args) => {
+    const actor = await requireUser(ctx);
     const favorites = await ctx.db
       .query("favorites")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .collect();
 
     return favorites.length;
@@ -176,11 +185,12 @@ export const getProductFavoriteCount = query({
 
 // Clear all favorites for a user
 export const clearFavorites = mutation({
-  args: { userId: v.id("users") },
-  handler: async (ctx, args) => {
+  args: {},
+  handler: async (ctx, _args) => {
+    const actor = await requireUser(ctx);
     const favorites = await ctx.db
       .query("favorites")
-      .withIndex("by_user", (q) => q.eq("userId", args.userId))
+      .withIndex("by_user", (q) => q.eq("userId", actor._id))
       .collect();
 
     for (const fav of favorites) {
@@ -192,7 +202,7 @@ export const clearFavorites = mutation({
 });
 
 // Remove favorites for a deleted product (cleanup)
-export const removeProductFavorites = mutation({
+export const removeProductFavorites = internalMutation({
   args: { productId: v.id("products") },
   handler: async (ctx, args) => {
     const favorites = await ctx.db

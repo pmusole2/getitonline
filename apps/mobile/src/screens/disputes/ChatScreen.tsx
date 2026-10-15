@@ -6,27 +6,41 @@ import { Avatar, Button, Card, IconButton, Snackbar, Surface, Text, TextInput, u
 import Animated, { FadeIn, FadeOut, SlideInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { ASSISTANT_NAME } from '../../config/assistant';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useAiActions } from '../../hooks/useAiActions';
 import { requestAIConsent } from '../../services/aiConsent';
-import { apiService, RephraseResponse } from '../../services/api';
+import { disputeFailureMessage } from '../../services/aiAdapters';
 import type { Id, MessageWithSender, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Chat'>;
 
-export default function ChatScreen({ route, navigation }: Props) {
+export default function ChatScreen(props: Props) {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Dispute Chat" />;
+  }
+  return <ChatContent {...props} />;
+}
+
+function ChatContent({ route, navigation }: Props) {
   const theme = useTheme();
   const { disputeId } = route.params;
   const { user } = useAppAuth();
   const flatListRef = useRef<FlatList>(null);
 
+  const ai = useAiActions();
   const [messageText, setMessageText] = useState('');
   const [sending, setSending] = useState(false);
-  const [rephraseResult, setRephraseResult] = useState<RephraseResponse | null>(null);
+  // A rewrite is kept with the draft it was made from, so it is offered only while that draft is still in the composer.
+  const [rephraseSuggestion, setRephraseSuggestion] = useState<{ draft: string; text: string } | null>(null);
   const [rephrasing, setRephrasing] = useState(false);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [responseSuggestions, setResponseSuggestions] = useState<string[]>([]);
+  const [suggestionError, setSuggestionError] = useState<string | null>(null);
   const [loadingSuggestions, setLoadingSuggestions] = useState(false);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
   const [snackbarMessage, setSnackbarMessage] = useState('');
@@ -43,12 +57,22 @@ export default function ChatScreen({ route, navigation }: Props) {
     }
   }, [messages?.length]);
 
-  // Reset rephrase result when message changes significantly
+  // Reset the rewrite when the composer no longer holds the draft it was made from
   useEffect(() => {
-    if (rephraseResult && messageText !== rephraseResult.rephrased && messageText !== rephraseResult.original) {
-      setRephraseResult(null);
+    if (rephraseSuggestion && messageText !== rephraseSuggestion.draft) {
+      setRephraseSuggestion(null);
     }
-  }, [messageText, rephraseResult]);
+  }, [messageText, rephraseSuggestion]);
+
+  // A result from another account is discarded by the AI layer. This clears what the previous account was shown.
+  useEffect(() => {
+    setRephraseSuggestion(null);
+    setRephrasing(false);
+    setShowSuggestions(false);
+    setResponseSuggestions([]);
+    setSuggestionError(null);
+    setLoadingSuggestions(false);
+  }, [ai.subject]);
 
   const handleSend = async (textToSend?: string) => {
     const finalText = textToSend || messageText;
@@ -58,11 +82,10 @@ export default function ChatScreen({ route, navigation }: Props) {
     try {
       await sendMessage({
         disputeId: disputeId as Id<'disputes'>,
-        senderId: user._id,
         content: finalText.trim(),
       });
       setMessageText('');
-      setRephraseResult(null);
+      setRephraseSuggestion(null);
       setShowSuggestions(false);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to send message';
@@ -79,42 +102,40 @@ export default function ChatScreen({ route, navigation }: Props) {
     setRephrasing(true);
     try {
       const hasConsent = await requestAIConsent();
+      if (!ai.isCurrent()) return;
       if (!hasConsent) {
         setSnackbarMessage(`${ASSISTANT_NAME} is off until you allow AI features.`);
         setSnackbarVisible(true);
         return;
       }
 
-      // Determine user's role in the dispute
-      const senderRole = user?._id === dispute?.buyerId ? 'buyer' :
-                        user?._id === dispute?.sellerId ? 'seller' : 'buyer';
+      // The backend reads the dispute and the viewer's side. Only the dispute id and the draft are sent.
+      const outcome = await ai.rephraseMessage({ disputeId, message: messageText });
+      if (!ai.isCurrent()) return;
 
-      const result = await apiService.rephraseMessage({
-        message: messageText,
-        senderRole,
-        disputeContext: dispute?.description || 'Dispute resolution conversation',
-      });
-
-      setRephraseResult(result);
-
-      if (!result.isProfessional && result.rephrased !== messageText) {
+      if (outcome.kind === 'suggested') {
+        setRephraseSuggestion({ draft: messageText, text: outcome.text });
         setSnackbarMessage(`${ASSISTANT_NAME} suggests a clearer message`);
       } else {
-        setSnackbarMessage('Your message looks professional!');
+        setRephraseSuggestion(null);
+        setSnackbarMessage(outcome.message);
       }
       setSnackbarVisible(true);
-    } catch {
-      setSnackbarMessage('Unable to check message right now');
-      setSnackbarVisible(true);
+    } catch (error: unknown) {
+      const message = disputeFailureMessage(error);
+      if (message !== null && ai.isCurrent()) {
+        setSnackbarMessage(message);
+        setSnackbarVisible(true);
+      }
     } finally {
-      setRephrasing(false);
+      if (ai.isCurrent()) setRephrasing(false);
     }
   };
 
   const handleAcceptRephrase = () => {
-    if (rephraseResult?.rephrased) {
-      setMessageText(rephraseResult.rephrased);
-      setRephraseResult(null);
+    if (rephraseSuggestion) {
+      setMessageText(rephraseSuggestion.text);
+      setRephraseSuggestion(null);
     }
   };
 
@@ -123,40 +144,27 @@ export default function ChatScreen({ route, navigation }: Props) {
 
     setLoadingSuggestions(true);
     setShowSuggestions(true);
+    setResponseSuggestions([]);
+    setSuggestionError(null);
 
     try {
       const hasConsent = await requestAIConsent();
+      if (!ai.isCurrent()) return;
       if (!hasConsent) {
-        setResponseSuggestions([]);
+        setSuggestionError(`${ASSISTANT_NAME} is off until you allow AI features.`);
         return;
       }
 
-      const conversationHistory = messages.slice(-10).map(m => ({
-        sender: m.senderId === dispute.buyerId ? 'buyer' :
-                m.senderId === dispute.sellerId ? 'seller' : 'moderator',
-        message: m.content,
-      }));
-
-      const respondAs = user?._id === dispute.buyerId ? 'buyer' :
-                       user?._id === dispute.sellerId ? 'seller' : 'buyer';
-
-      const suggestions = await apiService.getResponseSuggestions(
-        conversationHistory,
-        respondAs as 'buyer' | 'seller' | 'moderator',
-        dispute.description || 'Dispute resolution'
-      );
-
+      const suggestions = await ai.suggestResponses({ disputeId });
+      if (!ai.isCurrent()) return;
       setResponseSuggestions(suggestions);
-    } catch {
-      setResponseSuggestions([
-        "I understand your concern and would like to resolve this.",
-        "Could you provide more details about the issue?",
-        "I'm willing to work together on a solution.",
-      ]);
+    } catch (error: unknown) {
+      // A refused or failed request shows its reason. No suggestion is made up in its place.
+      if (ai.isCurrent()) setSuggestionError(disputeFailureMessage(error));
     } finally {
-      setLoadingSuggestions(false);
+      if (ai.isCurrent()) setLoadingSuggestions(false);
     }
-  }, [messages, dispute, user]);
+  }, [messages, dispute, ai, disputeId]);
 
   const handleUseSuggestion = (suggestion: string) => {
     setMessageText(suggestion);
@@ -189,9 +197,7 @@ export default function ChatScreen({ route, navigation }: Props) {
         <View
           style={[
             styles.messageBubble,
-            isOwnMessage
-              ? { backgroundColor: theme.colors.primary }
-              : { backgroundColor: theme.colors.surfaceVariant },
+            isOwnMessage ? { backgroundColor: theme.colors.primary } : { backgroundColor: theme.colors.surfaceVariant },
           ]}
         >
           {!isOwnMessage && (
@@ -199,10 +205,7 @@ export default function ChatScreen({ route, navigation }: Props) {
               {item.sender ? `${item.sender.firstName} ${item.sender.lastName}` : 'Unknown'}
             </Text>
           )}
-          <Text
-            variant="bodyMedium"
-            style={{ color: isOwnMessage ? theme.colors.onPrimary : theme.colors.onSurface }}
-          >
+          <Text variant="bodyMedium" style={{ color: isOwnMessage ? theme.colors.onPrimary : theme.colors.onSurface }}>
             {item.content}
           </Text>
 
@@ -231,7 +234,8 @@ export default function ChatScreen({ route, navigation }: Props) {
     );
   };
 
-  if (messages === undefined) {
+  // The conversation waits for the requested dispute, so no composer shows before the dispute is known.
+  if (messages === undefined || dispute === undefined) {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <StackHeader title="Chat" onBackPress={() => navigation.goBack()} />
@@ -242,13 +246,26 @@ export default function ChatScreen({ route, navigation }: Props) {
     );
   }
 
+  if (dispute === null) {
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader title="Dispute Chat" onBackPress={() => navigation.goBack()} />
+        <View style={[styles.centered, styles.missingState]}>
+          <Icon name="alert-circle-outline" size={48} color={theme.colors.onSurfaceVariant} />
+          <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16, textAlign: 'center' }}>
+            This dispute is no longer available.
+          </Text>
+          <Button mode="contained" onPress={() => navigation.goBack()} style={styles.missingAction}>
+            Back to disputes
+          </Button>
+        </View>
+      </View>
+    );
+  }
+
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <StackHeader
-        title="Dispute Chat"
-        onBackPress={() => navigation.goBack()}
-        showAIIndicator
-      />
+      <StackHeader title="Dispute Chat" onBackPress={() => navigation.goBack()} showAIIndicator />
 
       <KeyboardAvoidingView
         style={{ flex: 1 }}
@@ -293,6 +310,10 @@ export default function ChatScreen({ route, navigation }: Props) {
 
             {loadingSuggestions ? (
               <ActivityIndicator style={{ marginVertical: 16 }} />
+            ) : suggestionError !== null ? (
+              <Text variant="bodySmall" style={{ color: theme.colors.error, padding: 12 }}>
+                {suggestionError}
+              </Text>
             ) : (
               <View style={styles.suggestionsList}>
                 {responseSuggestions.map((suggestion, index) => (
@@ -312,8 +333,8 @@ export default function ChatScreen({ route, navigation }: Props) {
           </Animated.View>
         )}
 
-        {/* AI Rephrase Result Card */}
-        {rephraseResult && !rephraseResult.isProfessional && rephraseResult.rephrased !== messageText && (
+        {/* AI Rephrase Result Card, shown only for a rewrite the backend made */}
+        {rephraseSuggestion && (
           <Animated.View
             entering={FadeIn.duration(200)}
             exiting={FadeOut.duration(200)}
@@ -326,27 +347,14 @@ export default function ChatScreen({ route, navigation }: Props) {
               </Text>
             </View>
 
-            {rephraseResult.issues.length > 0 && (
-              <View style={styles.issuesList}>
-                {rephraseResult.issues.map((issue, index) => (
-                  <View key={index} style={styles.issueItem}>
-                    <Icon name="alert-circle-outline" size={14} color={theme.colors.error} />
-                    <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, marginLeft: 6, flex: 1 }}>
-                      {issue}
-                    </Text>
-                  </View>
-                ))}
-              </View>
-            )}
-
             <Surface style={[styles.rephrasedText, { backgroundColor: theme.colors.surface }]}>
               <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-                "{rephraseResult.rephrased}"
+                "{rephraseSuggestion.text}"
               </Text>
             </Surface>
 
             <View style={styles.rephraseActions}>
-              <Button mode="text" onPress={() => setRephraseResult(null)} compact>
+              <Button mode="text" onPress={() => setRephraseSuggestion(null)} compact>
                 Keep Original
               </Button>
               <Button mode="contained" onPress={handleAcceptRephrase} compact>
@@ -357,20 +365,14 @@ export default function ChatScreen({ route, navigation }: Props) {
         )}
 
         {/* AI Help Card */}
-        {messageText.length > 20 && !rephraseResult && !rephrasing && (
+        {messageText.length > 20 && !rephraseSuggestion && !rephrasing && (
           <Card style={[styles.aiCard, { backgroundColor: theme.colors.surfaceVariant }]}>
             <Card.Content style={styles.aiCardContent}>
               <Icon name="shield-check" size={18} color={theme.colors.tertiary} />
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1, marginHorizontal: 8 }}>
                 {ASSISTANT_NAME} can help make your message clearer
               </Text>
-              <Button
-                mode="text"
-                onPress={handleRephrase}
-                loading={rephrasing}
-                disabled={rephrasing}
-                compact
-              >
+              <Button mode="text" onPress={handleRephrase} loading={rephrasing} disabled={rephrasing} compact>
                 Check
               </Button>
             </Card.Content>
@@ -378,7 +380,12 @@ export default function ChatScreen({ route, navigation }: Props) {
         )}
 
         {/* Input Area */}
-        <View style={[styles.inputContainer, { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outlineVariant }]}>
+        <View
+          style={[
+            styles.inputContainer,
+            { backgroundColor: theme.colors.surface, borderTopColor: theme.colors.outlineVariant },
+          ]}
+        >
           <View style={styles.inputRow}>
             <IconButton
               icon="lightbulb-outline"
@@ -400,22 +407,14 @@ export default function ChatScreen({ route, navigation }: Props) {
                 sending ? (
                   <TextInput.Icon icon={() => <ActivityIndicator size={20} />} />
                 ) : (
-                  <TextInput.Icon
-                    icon="send"
-                    onPress={() => handleSend()}
-                    disabled={!messageText.trim()}
-                  />
+                  <TextInput.Icon icon="send" onPress={() => handleSend()} disabled={!messageText.trim()} />
                 )
               }
             />
           </View>
         </View>
 
-        <Snackbar
-          visible={snackbarVisible}
-          onDismiss={() => setSnackbarVisible(false)}
-          duration={3000}
-        >
+        <Snackbar visible={snackbarVisible} onDismiss={() => setSnackbarVisible(false)} duration={3000}>
           {snackbarMessage}
         </Snackbar>
       </KeyboardAvoidingView>
@@ -430,6 +429,13 @@ const styles = StyleSheet.create({
   centered: {
     justifyContent: 'center',
     alignItems: 'center',
+  },
+  missingState: {
+    flex: 1,
+    padding: 24,
+  },
+  missingAction: {
+    marginTop: 24,
   },
   messagesList: {
     padding: 16,
@@ -506,14 +512,6 @@ const styles = StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     marginBottom: 12,
-  },
-  issuesList: {
-    marginBottom: 12,
-    gap: 4,
-  },
-  issueItem: {
-    flexDirection: 'row',
-    alignItems: 'flex-start',
   },
   rephrasedText: {
     padding: 12,

@@ -2,28 +2,32 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
+import { optionalUser, requireUser, requireRole } from "./lib/auth";
+import { canViewerSeeProduct } from "./products";
 
 // Create a review
 export const createReview = mutation({
   args: {
     orderId: v.id("orders"),
-    reviewerId: v.id("users"),
     rating: v.number(), // 1-5
     title: v.optional(v.string()),
     comment: v.optional(v.string()),
     photoUrls: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     // Validate rating
     if (args.rating < 1 || args.rating > 5) {
       throw new Error("Rating must be between 1 and 5");
     }
 
     const order = await ctx.db.get(args.orderId);
-    if (!order) throw new Error("Order not found");
+    if (!order) {
+      throw new Error("Order not found");
+    }
 
     // Only buyer can review
-    if (order.buyerId !== args.reviewerId) {
+    if (order.buyerId !== actor._id) {
       throw new Error("Only buyers can leave reviews");
     }
 
@@ -44,11 +48,13 @@ export const createReview = mutation({
 
     // Get product ID from order (first item for simplicity)
     const productId = order.items[0]?.productId;
-    if (!productId) throw new Error("Product not found in order");
+    if (!productId) {
+      throw new Error("Product not found in order");
+    }
 
     const reviewId = await ctx.db.insert("reviews", {
       orderId: args.orderId,
-      reviewerId: args.reviewerId,
+      reviewerId: actor._id,
       revieweeId: order.sellerId, // Seller being reviewed
       productId,
       rating: args.rating,
@@ -61,10 +67,7 @@ export const createReview = mutation({
     // Update seller's rating
     await updateUserRating(ctx, order.sellerId);
 
-    const [reviewer, product] = await Promise.all([
-      ctx.db.get(args.reviewerId),
-      ctx.db.get(productId),
-    ]);
+    const [reviewer, product] = await Promise.all([ctx.db.get(actor._id), ctx.db.get(productId)]);
 
     await ctx.db.insert("notifications", {
       userId: order.sellerId,
@@ -87,7 +90,9 @@ async function updateUserRating(ctx: MutationCtx, userId: Id<"users">) {
     .withIndex("by_reviewee", (q) => q.eq("revieweeId", userId))
     .collect();
 
-  if (reviews.length === 0) return;
+  if (reviews.length === 0) {
+    return;
+  }
 
   const totalRating = reviews.reduce((sum, review) => sum + review.rating, 0);
   const averageRating = totalRating / reviews.length;
@@ -123,11 +128,13 @@ export const getSellerReviews = query({
       .withIndex("by_reviewee", (q) => q.eq("revieweeId", args.sellerId))
       .order("desc")
       .take(limit);
+    const viewer = await optionalUser(ctx);
 
     return await Promise.all(
       reviews.map(async (review) => {
         const reviewer = await ctx.db.get(review.reviewerId);
         const product = await ctx.db.get(review.productId);
+        const canSeeProduct = product !== null && (await canViewerSeeProduct(ctx, product, viewer));
 
         return {
           ...review,
@@ -139,13 +146,14 @@ export const getSellerReviews = query({
                 avatar: reviewer.avatar,
               }
             : null,
-          product: product
-            ? {
-                _id: product._id,
-                title: product.title,
-                images: product.images,
-              }
-            : null,
+          product:
+            product && canSeeProduct
+              ? {
+                  _id: product._id,
+                  title: product.title,
+                  images: product.images,
+                }
+              : null,
         };
       })
     );
@@ -190,15 +198,15 @@ export const getProductReviews = query({
 // Get reviews by user (reviews they've written)
 export const getUserWrittenReviews = query({
   args: {
-    userId: v.id("users"),
     limit: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const limit = args.limit ?? 20;
 
     const reviews = await ctx.db
       .query("reviews")
-      .withIndex("by_reviewer", (q) => q.eq("reviewerId", args.userId))
+      .withIndex("by_reviewer", (q) => q.eq("reviewerId", actor._id))
       .order("desc")
       .take(limit);
 
@@ -206,6 +214,7 @@ export const getUserWrittenReviews = query({
       reviews.map(async (review) => {
         const reviewee = await ctx.db.get(review.revieweeId);
         const product = await ctx.db.get(review.productId);
+        const canSeeProduct = product !== null && (await canViewerSeeProduct(ctx, product, actor));
 
         return {
           ...review,
@@ -216,13 +225,14 @@ export const getUserWrittenReviews = query({
                 lastName: reviewee.lastName,
               }
             : null,
-          product: product
-            ? {
-                _id: product._id,
-                title: product.title,
-                images: product.images,
-              }
-            : null,
+          product:
+            product && canSeeProduct
+              ? {
+                  _id: product._id,
+                  title: product.title,
+                  images: product.images,
+                }
+              : null,
         };
       })
     );
@@ -266,13 +276,15 @@ export const getSellerReviewStats = query({
 export const canReviewOrder = query({
   args: {
     orderId: v.id("orders"),
-    userId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const order = await ctx.db.get(args.orderId);
-    if (!order) return { canReview: false, reason: "Order not found" };
+    if (!order) {
+      return { canReview: false, reason: "Order not found" };
+    }
 
-    if (order.buyerId !== args.userId) {
+    if (order.buyerId !== actor._id) {
       return { canReview: false, reason: "Only buyers can review" };
     }
 
@@ -297,16 +309,18 @@ export const canReviewOrder = query({
 export const deleteReview = mutation({
   args: {
     reviewId: v.id("reviews"),
-    adminId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
+    const actor = await requireRole(ctx, ["admin"]);
+    const admin = await ctx.db.get(actor._id);
     if (!admin || admin.role !== "admin") {
       throw new Error("Unauthorized: Only admins can delete reviews");
     }
 
     const review = await ctx.db.get(args.reviewId);
-    if (!review) throw new Error("Review not found");
+    if (!review) {
+      throw new Error("Review not found");
+    }
 
     const revieweeId = review.revieweeId;
 

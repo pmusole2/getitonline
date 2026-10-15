@@ -1,7 +1,9 @@
 import { v } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { decideAccess, optionalUser, requireUser } from "./lib/auth";
+import { areStorableFlags, normalizeSummary } from "./lib/aiModerationPolicy";
 import {
   aiModerationStatusValidator,
   buildSellerPublicProfile,
@@ -10,6 +12,7 @@ import {
   ensureCatalogActor,
   ensureReviewerActor,
   getPlatformSettings,
+  isReviewerRole,
   isStaffViewer,
   isPublicStorefrontSeller,
   productStatusValidator,
@@ -43,11 +46,7 @@ const availabilityStatusValidator = v.union(
 );
 
 const warrantyValidator = v.object({
-  type: v.union(
-    v.literal("manufacturer"),
-    v.literal("seller"),
-    v.literal("none")
-  ),
+  type: v.union(v.literal("manufacturer"), v.literal("seller"), v.literal("none")),
   durationDays: v.optional(v.number()),
   provider: v.optional(v.string()),
   terms: v.optional(v.string()),
@@ -88,11 +87,7 @@ const variantCombinationValidator = v.object({
   attributes: v.array(v.object({ name: v.string(), value: v.string() })),
   price: v.number(),
   stock: v.number(),
-  status: v.union(
-    v.literal("active"),
-    v.literal("inactive"),
-    v.literal("out_of_stock")
-  ),
+  status: v.union(v.literal("active"), v.literal("inactive"), v.literal("out_of_stock")),
   primaryImage: v.optional(v.string()),
   galleryImages: v.optional(v.array(v.string())),
 });
@@ -149,9 +144,7 @@ const productMutationArgs = {
   manufacturerPartNumber: v.optional(v.string()),
   material: v.optional(v.string()),
   color: v.optional(v.string()),
-  specifications: v.optional(
-    v.array(v.object({ key: v.string(), value: v.string() }))
-  ),
+  specifications: v.optional(v.array(v.object({ key: v.string(), value: v.string() }))),
   tags: v.optional(v.array(v.string())),
   location: v.optional(v.object({ city: v.string(), province: v.string() })),
   shippingOptions: v.array(shippingOptionValidator),
@@ -188,9 +181,15 @@ function cleanToken(value: string) {
 }
 
 function skuPart(value: string) {
-  const normalized = cleanToken(value).toUpperCase().replace(/[^A-Z0-9]+/g, "");
-  if (!normalized) return "OPT";
-  if (/^\d+$/.test(normalized)) return normalized;
+  const normalized = cleanToken(value)
+    .toUpperCase()
+    .replace(/[^A-Z0-9]+/g, "");
+  if (!normalized) {
+    return "OPT";
+  }
+  if (/^\d+$/.test(normalized)) {
+    return normalized;
+  }
   const consonants = normalized.replace(/[AEIOU]/g, "");
   return (consonants || normalized).slice(0, 4);
 }
@@ -204,15 +203,17 @@ function buildBaseProductCode(input: ProductVariantInput) {
     .filter(Boolean);
 
   if (words.length > 1) {
-    return words.map((word) => word[0]).join("").toUpperCase().slice(0, 8);
+    return words
+      .map((word) => word[0])
+      .join("")
+      .toUpperCase()
+      .slice(0, 8);
   }
 
   return (words[0] ?? "SKU").toUpperCase().slice(0, 8);
 }
 
-function normalizeVariantAttributes(
-  attributes?: VariantAttribute[]
-): VariantAttribute[] | undefined {
+function normalizeVariantAttributes(attributes?: VariantAttribute[]): VariantAttribute[] | undefined {
   const normalized = (attributes ?? [])
     .map((attribute) => {
       const name = cleanToken(attribute.name);
@@ -222,7 +223,9 @@ function normalizeVariantAttributes(
         .filter(Boolean)
         .filter((value) => {
           const key = value.toLowerCase();
-          if (seen.has(key)) return false;
+          if (seen.has(key)) {
+            return false;
+          }
           seen.add(key);
           return true;
         });
@@ -241,10 +244,7 @@ function buildCombinationId(attributes: Array<{ name: string; value: string }>) 
     .toLowerCase();
 }
 
-function buildCombinationSku(
-  productInput: ProductVariantInput,
-  attributes: Array<{ name: string; value: string }>
-) {
+function buildCombinationSku(productInput: ProductVariantInput, attributes: Array<{ name: string; value: string }>) {
   const base = buildBaseProductCode(productInput);
   return [base, ...attributes.map((attribute) => skuPart(attribute.value))].join("-");
 }
@@ -321,8 +321,12 @@ function normalizeVariantCombinations(
     const sku = cleanToken(combination.sku) || buildCombinationSku(productInput, normalizedAttributes);
     const skuKey = sku.toUpperCase();
 
-    if (seenIds.has(id)) throw new Error(`Duplicate variant ID: ${id}`);
-    if (seenSkus.has(skuKey)) throw new Error(`Duplicate variant SKU: ${sku}`);
+    if (seenIds.has(id)) {
+      throw new Error(`Duplicate variant ID: ${id}`);
+    }
+    if (seenSkus.has(skuKey)) {
+      throw new Error(`Duplicate variant SKU: ${sku}`);
+    }
 
     seenIds.add(id);
     seenSkus.add(skuKey);
@@ -345,10 +349,7 @@ async function ensureUniqueProductSkus(
   productInput: ProductVariantInput,
   currentProductId?: Id<"products">
 ) {
-  const skus = [
-    productInput.sku,
-    ...(productInput.variantCombinations ?? []).map((combination) => combination.sku),
-  ]
+  const skus = [productInput.sku, ...(productInput.variantCombinations ?? []).map((combination) => combination.sku)]
     .map((sku) => sku?.trim())
     .filter((sku): sku is string => Boolean(sku));
   const uniqueSkus = new Set(skus.map((sku) => sku.toUpperCase()));
@@ -359,13 +360,13 @@ async function ensureUniqueProductSkus(
 
   const products = await ctx.db.query("products").collect();
   for (const product of products) {
-    if (currentProductId && product._id === currentProductId) continue;
+    if (currentProductId && product._id === currentProductId) {
+      continue;
+    }
 
     const otherSkus = [
       product.sku,
-      ...((product.variantCombinations ?? []) as VariantCombination[]).map(
-        (combination) => combination.sku
-      ),
+      ...((product.variantCombinations ?? []) as VariantCombination[]).map((combination) => combination.sku),
     ]
       .map((sku) => sku?.trim().toUpperCase())
       .filter((sku): sku is string => Boolean(sku));
@@ -384,10 +385,7 @@ async function normalizeProductVariantFields(
   currentProductId?: Id<"products">
 ) {
   const variantAttributes = normalizeVariantAttributes(productInput.variantAttributes);
-  const variantCombinations = normalizeVariantCombinations(
-    { ...productInput, variantAttributes },
-    variantAttributes
-  );
+  const variantCombinations = normalizeVariantCombinations({ ...productInput, variantAttributes }, variantAttributes);
 
   const normalizedProductInput = {
     ...productInput,
@@ -409,12 +407,7 @@ async function normalizeProductVariantFields(
 async function notifyUser(
   ctx: MutationCtx,
   userId: ProductDoc["sellerId"],
-  type:
-    | "product_submitted"
-    | "listing_approved"
-    | "listing_rejected"
-    | "listing_changes_requested"
-    | "low_stock",
+  type: "product_submitted" | "listing_approved" | "listing_rejected" | "listing_changes_requested" | "low_stock",
   title: string,
   message: string,
   data?: Record<string, unknown>
@@ -430,13 +423,16 @@ async function notifyUser(
   });
 }
 
-async function notifyReviewers(
-  ctx: MutationCtx,
-  product: Pick<ProductDoc, "_id" | "title" | "sellerId">
-) {
+async function notifyReviewers(ctx: MutationCtx, product: Pick<ProductDoc, "_id" | "title" | "sellerId">) {
   const reviewerGroups = await Promise.all([
-    ctx.db.query("users").withIndex("by_role", (q) => q.eq("role", "admin")).collect(),
-    ctx.db.query("users").withIndex("by_role", (q) => q.eq("role", "moderator")).collect(),
+    ctx.db
+      .query("users")
+      .withIndex("by_role", (q) => q.eq("role", "admin"))
+      .collect(),
+    ctx.db
+      .query("users")
+      .withIndex("by_role", (q) => q.eq("role", "moderator"))
+      .collect(),
   ]);
   const reviewers = reviewerGroups.flat();
 
@@ -454,28 +450,24 @@ async function notifyReviewers(
   );
 }
 
-async function isProductPublic(
-  ctx: ReaderCtx,
-  product: Pick<ProductDoc, "sellerId" | "status">
-) {
-  return (
-    product.status === "active" &&
-    (await isPublicStorefrontSeller(ctx, product.sellerId))
-  );
+async function isProductPublic(ctx: ReaderCtx, product: Pick<ProductDoc, "sellerId" | "status">) {
+  return product.status === "active" && (await isPublicStorefrontSeller(ctx, product.sellerId));
 }
 
-async function enrichProduct(
-  ctx: ReaderCtx,
-  product: ProductDoc
-) {
+// The one rule for a product's customer-facing fields: public listings, plus the owner and staff viewers. Pass the
+// verified viewer from `optionalUser` or `requireUser`. Never pass a caller-supplied user.
+export async function canViewerSeeProduct(ctx: ReaderCtx, product: ProductDoc, viewer: Doc<"users"> | null) {
+  if (canViewerInspectProduct(product, viewer)) {
+    return true;
+  }
+  return await isProductPublic(ctx, product);
+}
+
+async function enrichProduct(ctx: ReaderCtx, product: ProductDoc) {
   const seller = await buildSellerPublicProfile(ctx, product.sellerId);
   const category = await ctx.db.get(product.categoryId);
-  const subcategory = product.subcategoryId
-    ? await ctx.db.get(product.subcategoryId)
-    : null;
-  const classification = product.classificationId
-    ? await ctx.db.get(product.classificationId)
-    : null;
+  const subcategory = product.subcategoryId ? await ctx.db.get(product.subcategoryId) : null;
+  const classification = product.classificationId ? await ctx.db.get(product.classificationId) : null;
 
   return {
     ...product,
@@ -486,9 +478,7 @@ async function enrichProduct(
   };
 }
 
-function hasCustomerFacingChanges(
-  updates: Record<string, unknown>
-) {
+function hasCustomerFacingChanges(updates: Record<string, unknown>) {
   const customerFacingKeys = [
     "title",
     "brand",
@@ -535,19 +525,16 @@ function hasCustomerFacingChanges(
 // Create a new product listing
 export const createProduct = mutation({
   args: {
-    actorUserId: v.id("users"),
     ...productMutationArgs,
     status: v.optional(v.union(v.literal("draft"), v.literal("pending_review"))),
   },
   handler: async (ctx, args) => {
-    const listingActor = await resolveListingActor(ctx, args.actorUserId);
-    const { actorUserId, status, ...productInput } = args;
+    const actor = await requireUser(ctx);
+    const listingActor = await resolveListingActor(ctx, actor);
+    const { status, ...productInput } = args;
     const nextStatus = status ?? "draft";
     const now = Date.now();
-    const normalizedVariantFields = await normalizeProductVariantFields(
-      ctx,
-      productInput
-    );
+    const normalizedVariantFields = await normalizeProductVariantFields(ctx, productInput);
     const normalizedProductInput = {
       ...productInput,
       ...normalizedVariantFields,
@@ -556,7 +543,7 @@ export const createProduct = mutation({
     const productId = await ctx.db.insert("products", {
       ...normalizedProductInput,
       sellerId: listingActor.sellerId,
-      managedByUserId: actorUserId,
+      managedByUserId: actor._id,
       status: nextStatus,
       submittedAt: nextStatus === "pending_review" ? now : undefined,
       views: 0,
@@ -580,17 +567,15 @@ export const createProduct = mutation({
 export const getProduct = query({
   args: {
     productId: v.id("products"),
-    viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
-    if (!product) return null;
+    if (!product) {
+      return null;
+    }
 
-    const canInspectHidden = await canViewerInspectProduct(
-      ctx,
-      product,
-      args.viewerUserId
-    );
+    const viewer = await optionalUser(ctx);
+    const canInspectHidden = canViewerInspectProduct(product, viewer);
 
     if (!(await isProductPublic(ctx, product)) && !canInspectHidden) {
       return null;
@@ -605,24 +590,17 @@ export const getProductsBySeller = query({
   args: {
     sellerId: v.id("users"),
     status: v.optional(productStatusValidator),
-    viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
-    let productsQuery = ctx.db
-      .query("products")
-      .withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
+    let productsQuery = ctx.db.query("products").withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
 
     if (args.status) {
-      productsQuery = productsQuery.filter((q) =>
-        q.eq(q.field("status"), args.status)
-      );
+      productsQuery = productsQuery.filter((q) => q.eq(q.field("status"), args.status));
     }
 
     const products = await productsQuery.order("desc").collect();
-    const canInspectHidden = args.viewerUserId
-      ? args.viewerUserId === args.sellerId ||
-        (await isStaffViewer(ctx, args.viewerUserId))
-      : false;
+    const viewer = await optionalUser(ctx);
+    const canInspectHidden = viewer !== null && (viewer._id === args.sellerId || isStaffViewer(viewer));
 
     return (
       await Promise.all(
@@ -640,21 +618,17 @@ export const getProductsBySeller = query({
 
 export const getMyListings = query({
   args: {
-    actorUserId: v.id("users"),
     status: v.optional(productStatusValidator),
   },
   handler: async (ctx, args) => {
-    const listingActor = await resolveListingActor(ctx, args.actorUserId);
+    const actor = await requireUser(ctx);
+    const listingActor = await resolveListingActor(ctx, actor);
     const sellerId = listingActor.sellerId;
 
-    let productsQuery = ctx.db
-      .query("products")
-      .withIndex("by_seller", (q) => q.eq("sellerId", sellerId));
+    let productsQuery = ctx.db.query("products").withIndex("by_seller", (q) => q.eq("sellerId", sellerId));
 
     if (args.status) {
-      productsQuery = productsQuery.filter((q) =>
-        q.eq(q.field("status"), args.status)
-      );
+      productsQuery = productsQuery.filter((q) => q.eq(q.field("status"), args.status));
     }
 
     return await productsQuery.order("desc").collect();
@@ -679,11 +653,7 @@ export const getProductsByCategory = query({
       .take(limit * 3);
 
     const visibleProducts = (
-      await Promise.all(
-        products.map(async (product) =>
-          (await isProductPublic(ctx, product)) ? product : null
-        )
-      )
+      await Promise.all(products.map(async (product) => ((await isProductPublic(ctx, product)) ? product : null)))
     ).filter((product) => product !== null);
 
     const items = visibleProducts.slice(0, limit);
@@ -715,11 +685,7 @@ export const getProductsBySubcategory = query({
       .take(limit * 3);
 
     const visibleProducts = (
-      await Promise.all(
-        products.map(async (product) =>
-          (await isProductPublic(ctx, product)) ? product : null
-        )
-      )
+      await Promise.all(products.map(async (product) => ((await isProductPublic(ctx, product)) ? product : null)))
     ).filter((product) => product !== null);
 
     return visibleProducts.slice(0, limit);
@@ -743,11 +709,7 @@ export const getProductsByClassification = query({
       .take(limit * 3);
 
     const visibleProducts = (
-      await Promise.all(
-        products.map(async (product) =>
-          (await isProductPublic(ctx, product)) ? product : null
-        )
-      )
+      await Promise.all(products.map(async (product) => ((await isProductPublic(ctx, product)) ? product : null)))
     ).filter((product) => product !== null);
 
     return visibleProducts.slice(0, limit);
@@ -804,24 +766,22 @@ export const searchProducts = query({
   handler: async (ctx, args) => {
     const limit = args.limit ?? 20;
 
-    let searchQuery = ctx.db
-      .query("products")
-      .withSearchIndex("search_products", (q) => {
-        let search = q.search("title", args.query);
-        if (args.categoryId) {
-          search = search.eq("categoryId", args.categoryId);
-        }
-        if (args.subcategoryId) {
-          search = search.eq("subcategoryId", args.subcategoryId);
-        }
-        if (args.classificationId) {
-          search = search.eq("classificationId", args.classificationId);
-        }
-        if (args.condition) {
-          search = search.eq("condition", args.condition);
-        }
-        return search.eq("status", "active");
-      });
+    const searchQuery = ctx.db.query("products").withSearchIndex("search_products", (q) => {
+      let search = q.search("title", args.query);
+      if (args.categoryId) {
+        search = search.eq("categoryId", args.categoryId);
+      }
+      if (args.subcategoryId) {
+        search = search.eq("subcategoryId", args.subcategoryId);
+      }
+      if (args.classificationId) {
+        search = search.eq("classificationId", args.classificationId);
+      }
+      if (args.condition) {
+        search = search.eq("condition", args.condition);
+      }
+      return search.eq("status", "active");
+    });
 
     let results = await searchQuery.take(limit * 4);
 
@@ -838,11 +798,7 @@ export const searchProducts = query({
     }
 
     const visibleProducts = (
-      await Promise.all(
-        results.map(async (product) =>
-          (await isProductPublic(ctx, product)) ? product : null
-        )
-      )
+      await Promise.all(results.map(async (product) => ((await isProductPublic(ctx, product)) ? product : null)))
     ).filter((product) => product !== null);
 
     return visibleProducts.slice(0, limit);
@@ -862,11 +818,7 @@ export const getRecentProducts = query({
       .take(limit * 4);
 
     const visibleProducts = (
-      await Promise.all(
-        products.map(async (product) =>
-          (await isProductPublic(ctx, product)) ? product : null
-        )
-      )
+      await Promise.all(products.map(async (product) => ((await isProductPublic(ctx, product)) ? product : null)))
     ).filter((product) => product !== null);
 
     return visibleProducts.slice(0, limit);
@@ -885,16 +837,10 @@ export const getPopularProducts = query({
       .collect();
 
     const visibleProducts = (
-      await Promise.all(
-        products.map(async (product) =>
-          (await isProductPublic(ctx, product)) ? product : null
-        )
-      )
+      await Promise.all(products.map(async (product) => ((await isProductPublic(ctx, product)) ? product : null)))
     ).filter((product) => product !== null);
 
-    return visibleProducts
-      .sort((left, right) => right.views - left.views)
-      .slice(0, limit);
+    return visibleProducts.sort((left, right) => right.views - left.views).slice(0, limit);
   },
 });
 
@@ -902,7 +848,6 @@ export const getPopularProducts = query({
 export const updateProduct = mutation({
   args: {
     productId: v.id("products"),
-    actorUserId: v.id("users"),
     title: v.optional(v.string()),
     brand: v.optional(v.string()),
     sku: v.optional(v.string()),
@@ -942,46 +887,38 @@ export const updateProduct = mutation({
     manufacturerPartNumber: v.optional(v.string()),
     material: v.optional(v.string()),
     color: v.optional(v.string()),
-    specifications: v.optional(
-      v.array(v.object({ key: v.string(), value: v.string() }))
-    ),
+    specifications: v.optional(v.array(v.object({ key: v.string(), value: v.string() }))),
     tags: v.optional(v.array(v.string())),
     location: v.optional(v.object({ city: v.string(), province: v.string() })),
     shippingOptions: v.optional(v.array(shippingOptionValidator)),
     status: v.optional(v.union(v.literal("draft"), v.literal("pending_review"))),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const product = await ctx.db.get(args.productId);
-    if (!product) throw new Error("Product not found");
+    if (!product) {
+      throw new Error("Product not found");
+    }
 
-    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    const canManage = await canActorManageProduct(ctx, actor, product);
     if (!canManage) {
       throw new Error("Unauthorized");
     }
 
-    const { productId, actorUserId, status, ...updates } = args;
-    const filteredUpdates = Object.fromEntries(
-      Object.entries(updates).filter(([_, value]) => value !== undefined)
-    );
+    const { productId, status, ...updates } = args;
+    const filteredUpdates = Object.fromEntries(Object.entries(updates).filter(([_, value]) => value !== undefined));
     const mergedProductInput = {
       title: (filteredUpdates.title as string | undefined) ?? product.title,
       sku: (filteredUpdates.sku as string | undefined) ?? product.sku,
       price: (filteredUpdates.price as number | undefined) ?? product.price,
-      quantity:
-        (filteredUpdates.quantity as number | undefined) ?? product.quantity,
+      quantity: (filteredUpdates.quantity as number | undefined) ?? product.quantity,
       images: (filteredUpdates.images as string[] | undefined) ?? product.images,
       variantAttributes:
-        (filteredUpdates.variantAttributes as VariantAttribute[] | undefined) ??
-        product.variantAttributes,
+        (filteredUpdates.variantAttributes as VariantAttribute[] | undefined) ?? product.variantAttributes,
       variantCombinations:
-        (filteredUpdates.variantCombinations as VariantCombination[] | undefined) ??
-        product.variantCombinations,
+        (filteredUpdates.variantCombinations as VariantCombination[] | undefined) ?? product.variantCombinations,
     };
-    const normalizedVariantFields = await normalizeProductVariantFields(
-      ctx,
-      mergedProductInput,
-      productId
-    );
+    const normalizedVariantFields = await normalizeProductVariantFields(ctx, mergedProductInput, productId);
     const normalizedUpdates =
       "variantAttributes" in filteredUpdates ||
       "variantCombinations" in filteredUpdates ||
@@ -994,17 +931,13 @@ export const updateProduct = mutation({
         : filteredUpdates;
 
     const now = Date.now();
-    const shouldResubmitActiveListing =
-      product.status === "active" && hasCustomerFacingChanges(normalizedUpdates);
+    const shouldResubmitActiveListing = product.status === "active" && hasCustomerFacingChanges(normalizedUpdates);
 
     await ctx.db.patch(productId, {
       ...normalizedUpdates,
-      managedByUserId: actorUserId,
+      managedByUserId: actor._id,
       status: status ?? (shouldResubmitActiveListing ? "pending_review" : product.status),
-      submittedAt:
-        status === "pending_review" || shouldResubmitActiveListing
-          ? now
-          : product.submittedAt,
+      submittedAt: status === "pending_review" || shouldResubmitActiveListing ? now : product.submittedAt,
       updatedAt: now,
     });
 
@@ -1023,15 +956,15 @@ export const updateProduct = mutation({
 export const submitForReview = mutation({
   args: {
     productId: v.id("products"),
-    actorUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const product = await ctx.db.get(args.productId);
     if (!product) {
       throw new Error("Product not found");
     }
 
-    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    const canManage = await canActorManageProduct(ctx, actor, product);
     if (!canManage) {
       throw new Error("Unauthorized");
     }
@@ -1043,7 +976,7 @@ export const submitForReview = mutation({
     await ctx.db.patch(args.productId, {
       status: "pending_review",
       submittedAt: Date.now(),
-      managedByUserId: args.actorUserId,
+      managedByUserId: actor._id,
       updatedAt: Date.now(),
     });
 
@@ -1056,12 +989,10 @@ export const submitForReview = mutation({
 export const getPendingReviewListings = query({
   args: {
     reviewerId: v.id("users"),
-    status: v.optional(
-      v.union(v.literal("pending_review"), v.literal("changes_requested"))
-    ),
+    status: v.optional(v.union(v.literal("pending_review"), v.literal("changes_requested"))),
   },
   handler: async (ctx, args) => {
-    await ensureReviewerActor(ctx, args.reviewerId);
+    await ensureReviewerActor(ctx);
     const status = args.status ?? "pending_review";
 
     const products = await ctx.db
@@ -1070,9 +1001,7 @@ export const getPendingReviewListings = query({
       .order("desc")
       .collect();
 
-    return await Promise.all(
-      products.map(async (product) => enrichProduct(ctx, product))
-    );
+    return await Promise.all(products.map(async (product) => enrichProduct(ctx, product)));
   },
 });
 
@@ -1093,7 +1022,7 @@ export const reviewListing = mutation({
     skuOverride: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await ensureReviewerActor(ctx, args.reviewerId);
+    const reviewer = await ensureReviewerActor(ctx);
 
     const product = await ctx.db.get(args.productId);
     if (!product) {
@@ -1107,7 +1036,7 @@ export const reviewListing = mutation({
           ? "changes_requested"
           : args.decision === "rejected"
             ? "rejected"
-          : "suspended";
+            : "suspended";
 
     await ctx.db.patch(args.productId, {
       status,
@@ -1116,7 +1045,7 @@ export const reviewListing = mutation({
       subcategoryId: args.correctedSubcategoryId ?? product.subcategoryId,
       classificationId: args.correctedClassificationId ?? product.classificationId,
       sku: args.skuOverride?.trim() || product.sku,
-      reviewedByUserId: args.reviewerId,
+      reviewedByUserId: reviewer._id,
       reviewedAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -1167,7 +1096,7 @@ export const bulkReviewListings = mutation({
     reviewNotes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await ensureReviewerActor(ctx, args.reviewerId);
+    const reviewer = await ensureReviewerActor(ctx);
 
     const status =
       args.decision === "approved"
@@ -1182,12 +1111,14 @@ export const bulkReviewListings = mutation({
 
     for (const productId of args.productIds) {
       const product = await ctx.db.get(productId);
-      if (!product) continue;
+      if (!product) {
+        continue;
+      }
 
       await ctx.db.patch(productId, {
         status,
         reviewNotes: args.reviewNotes,
-        reviewedByUserId: args.reviewerId,
+        reviewedByUserId: reviewer._id,
         reviewedAt: now,
         updatedAt: now,
       });
@@ -1228,7 +1159,11 @@ export const bulkReviewListings = mutation({
   },
 });
 
-export const storeListingModerationResult = mutation({
+// Legacy moderation write, internal only: no client can call it. Its only caller, the retired Railway route, is gone, so
+// the result rules of aiModerationData apply here too. The reviewer is rechecked by id, an error status is refused, and the
+// summary and flags are normalised and checked. It keeps updatedAt, because moderation metadata is not a listing edit. It
+// has no revision check, so it must not gain callers that write results for listings the seller may have changed.
+export const storeListingModerationResult = internalMutation({
   args: {
     productId: v.id("products"),
     reviewerId: v.id("users"),
@@ -1237,18 +1172,26 @@ export const storeListingModerationResult = mutation({
     flags: v.array(v.string()),
   },
   handler: async (ctx, args) => {
-    await ensureReviewerActor(ctx, args.reviewerId);
+    const reviewer = await ctx.db.get(args.reviewerId);
+    const decision = decideAccess({ subject: reviewer?.clerkId ?? null, user: reviewer });
+    if (!decision.ok || !isReviewerRole(decision.user.role)) {
+      throw new Error("Unauthorized");
+    }
 
     const product = await ctx.db.get(args.productId);
     if (!product) {
       throw new Error("Product not found");
     }
 
+    const summary = normalizeSummary(args.summary);
+    if (args.status === "error" || summary === null || !areStorableFlags(args.flags)) {
+      throw new Error("Invalid moderation result");
+    }
+
     await ctx.db.patch(args.productId, {
       aiModerationStatus: args.status,
-      aiModerationSummary: args.summary,
+      aiModerationSummary: summary,
       aiModerationFlags: args.flags,
-      updatedAt: Date.now(),
     });
 
     return await ctx.db.get(args.productId);
@@ -1259,13 +1202,15 @@ export const storeListingModerationResult = mutation({
 export const deleteProduct = mutation({
   args: {
     productId: v.id("products"),
-    actorUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const product = await ctx.db.get(args.productId);
-    if (!product) throw new Error("Product not found");
+    if (!product) {
+      throw new Error("Product not found");
+    }
 
-    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    const canManage = await canActorManageProduct(ctx, actor, product);
     if (!canManage) {
       throw new Error("Unauthorized");
     }
@@ -1279,7 +1224,9 @@ export const incrementViews = mutation({
   args: { productId: v.id("products") },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
-    if (!product || !(await isProductPublic(ctx, product))) return;
+    if (!product || !(await isProductPublic(ctx, product))) {
+      return;
+    }
 
     await ctx.db.patch(args.productId, {
       views: product.views + 1,
@@ -1291,20 +1238,22 @@ export const incrementViews = mutation({
 export const markAsSold = mutation({
   args: {
     productId: v.id("products"),
-    actorUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const product = await ctx.db.get(args.productId);
-    if (!product) throw new Error("Product not found");
+    if (!product) {
+      throw new Error("Product not found");
+    }
 
-    const canManage = await canActorManageProduct(ctx, args.actorUserId, product);
+    const canManage = await canActorManageProduct(ctx, actor, product);
     if (!canManage) {
       throw new Error("Unauthorized");
     }
 
     await ctx.db.patch(args.productId, {
       status: "sold",
-      managedByUserId: args.actorUserId,
+      managedByUserId: actor._id,
       updatedAt: Date.now(),
     });
   },
@@ -1312,11 +1261,10 @@ export const markAsSold = mutation({
 
 export const getManagedCatalogProducts = query({
   args: {
-    actorUserId: v.id("users"),
     status: v.optional(productStatusValidator),
   },
   handler: async (ctx, args) => {
-    await ensureCatalogActor(ctx, args.actorUserId);
+    await ensureCatalogActor(ctx);
     const settings = await getPlatformSettings(ctx);
     if (!settings) {
       return [];
@@ -1327,9 +1275,7 @@ export const getManagedCatalogProducts = query({
       .withIndex("by_seller", (q) => q.eq("sellerId", settings.companySellerUserId));
 
     if (args.status) {
-      productsQuery = productsQuery.filter((q) =>
-        q.eq(q.field("status"), args.status)
-      );
+      productsQuery = productsQuery.filter((q) => q.eq(q.field("status"), args.status));
     }
 
     return await productsQuery.order("desc").collect();
@@ -1343,11 +1289,11 @@ export const suspendProduct = mutation({
     moderatorId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    await ensureReviewerActor(ctx, args.moderatorId);
+    const moderator = await ensureReviewerActor(ctx);
 
     await ctx.db.patch(args.productId, {
       status: "suspended",
-      reviewedByUserId: args.moderatorId,
+      reviewedByUserId: moderator._id,
       reviewedAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -1355,17 +1301,21 @@ export const suspendProduct = mutation({
 });
 
 // Decrease product quantity
-export const decreaseQuantity = mutation({
+export const decreaseQuantity = internalMutation({
   args: {
     productId: v.id("products"),
     amount: v.number(),
   },
   handler: async (ctx, args) => {
     const product = await ctx.db.get(args.productId);
-    if (!product) throw new Error("Product not found");
+    if (!product) {
+      throw new Error("Product not found");
+    }
 
     const newQuantity = product.quantity - args.amount;
-    if (newQuantity < 0) throw new Error("Insufficient quantity");
+    if (newQuantity < 0) {
+      throw new Error("Insufficient quantity");
+    }
 
     await ctx.db.patch(args.productId, {
       quantity: newQuantity,
@@ -1373,8 +1323,7 @@ export const decreaseQuantity = mutation({
       availabilityStatus:
         newQuantity === 0
           ? "out_of_stock"
-          : product.lowStockThreshold !== undefined &&
-              newQuantity <= product.lowStockThreshold
+          : product.lowStockThreshold !== undefined && newQuantity <= product.lowStockThreshold
             ? "low_stock"
             : product.availabilityStatus,
       updatedAt: Date.now(),
@@ -1419,9 +1368,7 @@ export const getProductsByIds = query({
 
     return (
       await Promise.all(
-        products.map(async (product) =>
-          product && (await isProductPublic(ctx, product)) ? product : null
-        )
+        products.map(async (product) => (product && (await isProductPublic(ctx, product)) ? product : null))
       )
     ).filter((product) => product !== null);
   },
@@ -1452,9 +1399,7 @@ export const getProductsByCategories = query({
 
     const visibleProducts = (
       await Promise.all(
-        allProducts.map(async (product) =>
-          product && (await isProductPublic(ctx, product)) ? product : null
-        )
+        allProducts.map(async (product) => (product && (await isProductPublic(ctx, product)) ? product : null))
       )
     ).filter((product) => product !== null);
 
@@ -1468,8 +1413,6 @@ export const getProductsByCategories = query({
       return true;
     });
 
-    return uniqueProducts
-      .sort(() => Math.random() - 0.5)
-      .slice(0, limit);
+    return uniqueProducts.sort(() => Math.random() - 0.5).slice(0, limit);
   },
 });

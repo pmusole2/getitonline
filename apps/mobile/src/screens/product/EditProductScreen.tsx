@@ -3,37 +3,19 @@ import { useMutation, useQuery } from 'convex/react';
 import { LinearGradient } from 'expo-linear-gradient';
 import { MotiView } from 'moti';
 import React, { useEffect, useRef, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  Switch,
-  View,
-} from 'react-native';
-import {
-  Button,
-  Chip,
-  Dialog,
-  MD3Theme,
-  Portal,
-  Surface,
-  Text,
-  TextInput,
-  useTheme,
-} from 'react-native-paper';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, Switch, View } from 'react-native';
+import { Button, Chip, Dialog, MD3Theme, Portal, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { calculateDisplayPrice, PLATFORM_FEE_PERCENTAGE } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
-import type { CategoryTreeChild, CategoryTreeItem, Id, ProductCondition, RootStackParamList } from '../../types';
-import { canManageCatalog } from '../../utils/roles';
+import type { CategoryTreeItem, Id, ProductCondition, RootStackParamList } from '../../types';
 import { canManageListings } from '../../utils/roles';
 import { ProductVariantEditor } from './ProductVariantEditor';
 import {
@@ -143,12 +125,8 @@ function findL2(category: CategoryTreeItem | null, subcategoryId: string | null)
   return category?.subcategories.find((subcategory) => subcategory._id === subcategoryId) ?? null;
 }
 
-function findL3(subcategory: CategoryTreeChild | null, classificationId: string | null) {
-  return subcategory?.classifications?.find((classification) => classification._id === classificationId) ?? null;
-}
-
 interface ConditionButtonProps {
-  condition: typeof CONDITIONS[0];
+  condition: (typeof CONDITIONS)[0];
   isSelected: boolean;
   onPress: () => void;
   theme: MD3Theme;
@@ -166,17 +144,8 @@ function ConditionButton({ condition, isSelected, onPress, theme }: ConditionBut
         },
       ]}
     >
-      <Icon
-        name={condition.icon}
-        size={16}
-        color={isSelected ? '#FFFFFF' : theme.colors.onSurfaceVariant}
-      />
-      <Text
-        style={[
-          styles.conditionButtonText,
-          { color: isSelected ? '#FFFFFF' : theme.colors.onSurfaceVariant },
-        ]}
-      >
+      <Icon name={condition.icon} size={16} color={isSelected ? '#FFFFFF' : theme.colors.onSurfaceVariant} />
+      <Text style={[styles.conditionButtonText, { color: isSelected ? '#FFFFFF' : theme.colors.onSurfaceVariant }]}>
         {condition.label}
       </Text>
     </Pressable>
@@ -232,10 +201,7 @@ function StatusToggle({ status, onStatusChange, theme }: StatusToggleProps) {
           color={status === 'draft' ? '#FFFFFF' : theme.colors.onSurfaceVariant}
         />
         <Text
-          style={[
-            styles.statusButtonText,
-            { color: status === 'draft' ? '#FFFFFF' : theme.colors.onSurfaceVariant },
-          ]}
+          style={[styles.statusButtonText, { color: status === 'draft' ? '#FFFFFF' : theme.colors.onSurfaceVariant }]}
         >
           Draft
         </Text>
@@ -244,14 +210,19 @@ function StatusToggle({ status, onStatusChange, theme }: StatusToggleProps) {
   );
 }
 
-export default function EditProductScreen({ route, navigation }: Props) {
+export default function EditProductScreen(props: Props) {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Edit Listing" />;
+  }
+  return <EditProductContent {...props} />;
+}
+
+function EditProductContent({ route, navigation }: Props) {
   const theme = useTheme() as MD3Theme;
   const { productId } = route.params;
   const { user } = useAppAuth();
-  const vendorProfile = useQuery(
-    api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : 'skip'
-  );
+  const vendorProfile = useQuery(api.vendors.getMyVendorProfile, user?._id && !user.isBanned ? {} : 'skip');
   const hasListingAccess = canManageListings(user?.role, vendorProfile?.status ?? null);
   const upload = useImageUpload();
 
@@ -274,16 +245,10 @@ export default function EditProductScreen({ route, navigation }: Props) {
   const [keyFeaturesText, setKeyFeaturesText] = useState('');
   const [specificationsText, setSpecificationsText] = useState('');
   const [variantAttributes, setVariantAttributes] = useState<VariantAttribute[]>([]);
-  const [storedVariantCombinations, setStoredVariantCombinations] = useState<
-    VariantCombination[]
-  >([]);
-  const [variantPatches, setVariantPatches] = useState<
-    Record<string, VariantCombinationPatch>
-  >({});
+  const [storedVariantCombinations, setStoredVariantCombinations] = useState<VariantCombination[]>([]);
+  const [variantPatches, setVariantPatches] = useState<Record<string, VariantCombinationPatch>>({});
   const [colorMedia, setColorMedia] = useState<Record<string, string[]>>({});
-  const [combinationMedia, setCombinationMedia] = useState<
-    Record<string, string[]>
-  >({});
+  const [combinationMedia, setCombinationMedia] = useState<Record<string, string[]>>({});
   const [addOnsText, setAddOnsText] = useState('');
   const [weightKg, setWeightKg] = useState('');
   const [lengthCm, setLengthCm] = useState('');
@@ -311,20 +276,15 @@ export default function EditProductScreen({ route, navigation }: Props) {
 
   const product = useQuery(api.products.getProduct, {
     productId: productId as Id<'products'>,
-    viewerUserId: user?._id,
   });
   const categories = useQuery(api.categories.getCategoriesTree);
   const updateProduct = useMutation(api.products.updateProduct);
   const deleteProduct = useMutation(api.products.deleteProduct);
   const selectedL1 = findL1(categories, categoryId);
   const selectedL2 = findL2(selectedL1, subcategoryId);
-  const selectedL3 = findL3(selectedL2, classificationId);
   const keyFeatures = parseLines(keyFeaturesText, 10);
   const specifications = parseKeyValueLines(specificationsText);
-  const allImageUrls = [
-    ...existingImages,
-    ...upload.images.map((image) => image.url),
-  ].slice(0, MAX_IMAGES);
+  const allImageUrls = [...existingImages, ...upload.images.map((image) => image.url)].slice(0, MAX_IMAGES);
   const variantCombinations = reconcileVariantCombinations({
     attributes: variantAttributes,
     existing: storedVariantCombinations,
@@ -363,9 +323,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
     }
     if (quantityValue < 0) errors.push('Stock quantity cannot be negative.');
     if (variantAttributes.length > 0) {
-      errors.push(
-        ...variantValidationIssues.map((issue) => issue.message),
-      );
+      errors.push(...variantValidationIssues.map((issue) => issue.message));
     }
     if (!deliveryName.trim()) errors.push('Delivery option name is required.');
     if (!deliveryEta.trim()) errors.push('Delivery ETA is required.');
@@ -382,11 +340,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
       setDescription(product.description);
       setPrice(product.price.toString());
       setCompareAtPrice(product.compareAtPrice?.toString() ?? '');
-      setQuantity(
-        product.variantCombinations?.length
-          ? '0'
-          : (product.quantity || 1).toString(),
-      );
+      setQuantity(product.variantCombinations?.length ? '0' : (product.quantity || 1).toString());
       setLowStockThreshold(product.lowStockThreshold?.toString() ?? '3');
       setAvailabilityStatus(product.availabilityStatus ?? 'in_stock');
       setIsPreorder(product.preorder?.isPreorder ?? false);
@@ -397,24 +351,21 @@ export default function EditProductScreen({ route, navigation }: Props) {
       setClassificationId(product.classificationId ?? null);
       setKeyFeaturesText((product.keyFeatures ?? []).join('\n'));
       setSpecificationsText(stringifyKeyValues(product.specifications));
-      const storedAttributes: VariantAttribute[] =
-        product.variantAttributes?.length
-          ? product.variantAttributes.map((attribute) => ({
-              name: attribute.name,
-              values: [...attribute.values],
-            }))
-          : (product.variants ?? []).map((variant) => ({
-              name: variant.name,
-              values: variant.options.map((option) => option.value),
-            }));
+      const storedAttributes: VariantAttribute[] = product.variantAttributes?.length
+        ? product.variantAttributes.map((attribute) => ({
+            name: attribute.name,
+            values: [...attribute.values],
+          }))
+        : (product.variants ?? []).map((variant) => ({
+            name: variant.name,
+            values: variant.options.map((option) => option.value),
+          }));
       const variantEditorState = createVariantEditorState({
         attributes: storedAttributes,
         combinations: product.variantCombinations ?? [],
       });
       setVariantAttributes(variantEditorState.attributes);
-      setStoredVariantCombinations(
-        variantEditorState.existingCombinations,
-      );
+      setStoredVariantCombinations(variantEditorState.existingCombinations);
       setVariantPatches(variantEditorState.combinationPatches);
       setColorMedia(variantEditorState.colorMedia);
       setCombinationMedia(variantEditorState.combinationMedia);
@@ -432,9 +383,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
       setMaterial(product.material ?? '');
       setColor(product.color ?? '');
       setExistingImages(product.images ?? []);
-      setPrimaryWhiteBackground(
-        product.imageMetadata?.find((image) => image.isPrimary)?.hasWhiteBackground ?? false,
-      );
+      setPrimaryWhiteBackground(product.imageMetadata?.find((image) => image.isPrimary)?.hasWhiteBackground ?? false);
       if (product.location) {
         setCity(product.location.city || '');
         setProvince(product.location.province || '');
@@ -458,9 +407,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
     }
   }, [product]);
 
-  const performUpdate = async (
-    persistedVariantCombinations: VariantCombination[],
-  ) => {
+  const performUpdate = async (persistedVariantCombinations: VariantCombination[]) => {
     if (!user || !product) return;
 
     const priceNum = parseMoney(price);
@@ -493,7 +440,6 @@ export default function EditProductScreen({ route, navigation }: Props) {
 
       await updateProduct({
         productId: product._id,
-        actorUserId: user._id,
         title: title.trim(),
         brand: brand.trim(),
         sku: sku.trim(),
@@ -532,16 +478,16 @@ export default function EditProductScreen({ route, navigation }: Props) {
         color: deriveProductColor(variantAttributes, color),
         specifications,
         location: city.trim() || province.trim() ? { city: city.trim(), province: province.trim() } : undefined,
-        shippingOptions: [{
-          name: deliveryName.trim() || (deliveryType === 'free' ? 'Free Delivery' : 'Standard Delivery'),
-          price: deliveryType === 'free' ? 0 : parseFloat(deliveryFee) || 0,
-          estimatedDays: deliveryEta.trim(),
-        }],
+        shippingOptions: [
+          {
+            name: deliveryName.trim() || (deliveryType === 'free' ? 'Free Delivery' : 'Standard Delivery'),
+            price: deliveryType === 'free' ? 0 : parseFloat(deliveryFee) || 0,
+            estimatedDays: deliveryEta.trim(),
+          },
+        ],
       });
 
-      Alert.alert('Success', 'Your listing has been updated!', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      Alert.alert('Success', 'Your listing has been updated!', [{ text: 'OK', onPress: () => navigation.goBack() }]);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to update listing';
       Alert.alert('Error', errorMessage);
@@ -581,18 +527,15 @@ export default function EditProductScreen({ route, navigation }: Props) {
     } catch (error: unknown) {
       Alert.alert(
         'Variant media is not ready',
-        error instanceof Error
-          ? error.message
-          : 'Review the images assigned to product variants.',
+        error instanceof Error ? error.message : 'Review the images assigned to product variants.',
       );
       return;
     }
 
-    const removedStockedCombinations =
-      findRemovedStockedCombinations(
-        storedVariantCombinations,
-        persistedVariantCombinations,
-      );
+    const removedStockedCombinations = findRemovedStockedCombinations(
+      storedVariantCombinations,
+      persistedVariantCombinations,
+    );
     const save = () => {
       void performUpdate(persistedVariantCombinations);
     };
@@ -602,10 +545,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
       return;
     }
 
-    const totalRemainingStock = removedStockedCombinations.reduce(
-      (total, combination) => total + combination.stock,
-      0,
-    );
+    const totalRemainingStock = removedStockedCombinations.reduce((total, combination) => total + combination.stock, 0);
     Alert.alert(
       'Remove stocked variants?',
       `${removedStockedCombinations.map(({ sku: removedSku }) => removedSku).join(', ')} still hold ${totalRemainingStock} unit${totalRemainingStock === 1 ? '' : 's'}. Saving will remove these combinations.`,
@@ -629,12 +569,9 @@ export default function EditProductScreen({ route, navigation }: Props) {
     try {
       await deleteProduct({
         productId: product._id,
-        actorUserId: user._id,
       });
 
-      Alert.alert('Deleted', 'Your listing has been removed', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      Alert.alert('Deleted', 'Your listing has been removed', [{ text: 'OK', onPress: () => navigation.goBack() }]);
     } catch (error: unknown) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to delete listing';
       Alert.alert('Error', errorMessage);
@@ -653,7 +590,10 @@ export default function EditProductScreen({ route, navigation }: Props) {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
             Listing access is restricted
           </Text>
-          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
             Only approved vendors and catalog staff can edit listings.
           </Text>
         </View>
@@ -693,8 +633,8 @@ export default function EditProductScreen({ route, navigation }: Props) {
         <View style={styles.loadingContainer}>
           <Icon name="alert-circle-outline" size={64} color={theme.colors.error} />
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
-          Product not found
-        </Text>
+            Product not found
+          </Text>
           <Pressable
             onPress={() => navigation.goBack()}
             style={[styles.backButton, { backgroundColor: theme.colors.primary }]}
@@ -742,11 +682,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
           ]}
         />
 
-        <ScrollView
-          style={styles.scrollView}
-          showsVerticalScrollIndicator={false}
-          keyboardShouldPersistTaps="handled"
-        >
+        <ScrollView style={styles.scrollView} showsVerticalScrollIndicator={false} keyboardShouldPersistTaps="handled">
           {/* Product Preview Card */}
           <Animated.View entering={FadeInDown.duration(400)}>
             <Surface style={[styles.previewCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
@@ -759,7 +695,11 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   </View>
                 )}
                 <View style={styles.previewInfo}>
-                  <Text variant="titleMedium" numberOfLines={1} style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
+                  <Text
+                    variant="titleMedium"
+                    numberOfLines={1}
+                    style={{ color: theme.colors.onSurface, fontWeight: '600' }}
+                  >
                     {title || product.title}
                   </Text>
                   <Text variant="titleLarge" style={{ color: theme.colors.primary, fontWeight: '800', marginTop: 4 }}>
@@ -806,8 +746,12 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   Product Images
                 </Text>
               </View>
-              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20, marginBottom: 12 }}>
-                Maintain {MIN_IMAGES}-{MAX_IMAGES} JPG/PNG images. New uploads must be at least 1000x1000 and 5 MB or smaller.
+              <Text
+                variant="bodySmall"
+                style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20, marginBottom: 12 }}
+              >
+                Maintain {MIN_IMAGES}-{MAX_IMAGES} JPG/PNG images. New uploads must be at least 1000x1000 and 5 MB or
+                smaller.
               </Text>
               {upload.validationErrors.map((message) => (
                 <Text key={message} variant="bodySmall" style={{ color: theme.colors.error, marginBottom: 8 }}>
@@ -821,7 +765,11 @@ export default function EditProductScreen({ route, navigation }: Props) {
                     <Pressable style={styles.removeImageButton} onPress={() => removeExistingImage(imageUrl)}>
                       <Icon name="close" size={16} color="#FFFFFF" />
                     </Pressable>
-                    {index === 0 && <Chip compact style={styles.primaryBadge}>Primary</Chip>}
+                    {index === 0 && (
+                      <Chip compact style={styles.primaryBadge}>
+                        Primary
+                      </Chip>
+                    )}
                   </View>
                 ))}
                 {upload.images.map((image, index) => (
@@ -830,7 +778,11 @@ export default function EditProductScreen({ route, navigation }: Props) {
                     <Pressable style={styles.removeImageButton} onPress={() => upload.removeImage(index)}>
                       <Icon name="close" size={16} color="#FFFFFF" />
                     </Pressable>
-                    {existingImages.length === 0 && index === 0 && <Chip compact style={styles.primaryBadge}>Primary</Chip>}
+                    {existingImages.length === 0 && index === 0 && (
+                      <Chip compact style={styles.primaryBadge}>
+                        Primary
+                      </Chip>
+                    )}
                   </View>
                 ))}
                 {allImageUrls.length < MAX_IMAGES && (
@@ -869,12 +821,30 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   Retail Taxonomy
                 </Text>
               </View>
-              <TaxonomyGroup title="L1 Category" items={categories ?? []} selectedId={categoryId} onSelect={resetSubcategory} />
-              <TaxonomyGroup title="L2 Subcategory" items={selectedL1?.subcategories ?? []} selectedId={subcategoryId} onSelect={resetClassification} disabled={!selectedL1} />
-              <TaxonomyGroup title="L3 Classification" items={selectedL2?.classifications ?? []} selectedId={classificationId} onSelect={setClassificationId} disabled={!selectedL2} />
+              <TaxonomyGroup
+                title="L1 Category"
+                items={categories ?? []}
+                selectedId={categoryId}
+                onSelect={resetSubcategory}
+              />
+              <TaxonomyGroup
+                title="L2 Subcategory"
+                items={selectedL1?.subcategories ?? []}
+                selectedId={subcategoryId}
+                onSelect={resetClassification}
+                disabled={!selectedL1}
+              />
+              <TaxonomyGroup
+                title="L3 Classification"
+                items={selectedL2?.classifications ?? []}
+                selectedId={classificationId}
+                onSelect={setClassificationId}
+                disabled={!selectedL2}
+              />
               {selectedL2 && (selectedL2.classifications?.length ?? 0) === 0 ? (
                 <Text variant="bodySmall" style={{ color: theme.colors.error, marginTop: 10 }}>
-                  This L2 category has no active L3 classifications. Ask an admin to complete the taxonomy before resubmitting.
+                  This L2 category has no active L3 classifications. Ask an admin to complete the taxonomy before
+                  resubmitting.
                 </Text>
               ) : null}
             </Surface>
@@ -890,18 +860,66 @@ export default function EditProductScreen({ route, navigation }: Props) {
                 </Text>
               </View>
               <View style={styles.formRow}>
-                <TextInput mode="outlined" label="Brand" value={brand} onChangeText={setBrand} style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput mode="outlined" label="SKU" value={sku} onChangeText={setSku} style={styles.flexInput} outlineStyle={styles.inputOutline} autoCapitalize="characters" />
+                <TextInput
+                  mode="outlined"
+                  label="Brand"
+                  value={brand}
+                  onChangeText={setBrand}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="SKU"
+                  value={sku}
+                  onChangeText={setSku}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                  autoCapitalize="characters"
+                />
               </View>
-              <TextInput mode="outlined" label="Title" value={title} onChangeText={setTitle} maxLength={150} style={styles.input} outlineStyle={styles.inputOutline} />
-              <TextInput mode="outlined" label="Short description" value={shortDescription} onChangeText={setShortDescription} maxLength={300} multiline style={[styles.input, styles.textArea]} outlineStyle={styles.inputOutline} />
-              <TextInput mode="outlined" label="Full description" value={description} onChangeText={setDescription} multiline numberOfLines={5} maxLength={5000} style={[styles.input, styles.textArea]} outlineStyle={styles.inputOutline} />
+              <TextInput
+                mode="outlined"
+                label="Title"
+                value={title}
+                onChangeText={setTitle}
+                maxLength={150}
+                style={styles.input}
+                outlineStyle={styles.inputOutline}
+              />
+              <TextInput
+                mode="outlined"
+                label="Short description"
+                value={shortDescription}
+                onChangeText={setShortDescription}
+                maxLength={300}
+                multiline
+                style={[styles.input, styles.textArea]}
+                outlineStyle={styles.inputOutline}
+              />
+              <TextInput
+                mode="outlined"
+                label="Full description"
+                value={description}
+                onChangeText={setDescription}
+                multiline
+                numberOfLines={5}
+                maxLength={5000}
+                style={[styles.input, styles.textArea]}
+                outlineStyle={styles.inputOutline}
+              />
               <Text variant="labelMedium" style={[styles.groupLabel, { color: theme.colors.onSurfaceVariant }]}>
                 Condition
               </Text>
               <View style={styles.conditionContainer}>
                 {CONDITIONS.map((c) => (
-                  <ConditionButton key={c.value} condition={c} isSelected={condition === c.value} onPress={() => setCondition(c.value)} theme={theme} />
+                  <ConditionButton
+                    key={c.value}
+                    condition={c}
+                    isSelected={condition === c.value}
+                    onPress={() => setCondition(c.value)}
+                    theme={theme}
+                  />
                 ))}
               </View>
             </Surface>
@@ -917,14 +935,34 @@ export default function EditProductScreen({ route, navigation }: Props) {
                 </Text>
               </View>
               <View style={styles.formRow}>
-                <TextInput mode="outlined" label="Price (ZMW)" value={price} onChangeText={setPrice} keyboardType="decimal-pad" left={<TextInput.Affix text="K" textStyle={{ fontWeight: '700', color: theme.colors.primary }} />} style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput mode="outlined" label="Compare-at" value={compareAtPrice} onChangeText={setCompareAtPrice} keyboardType="decimal-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  mode="outlined"
+                  label="Price (ZMW)"
+                  value={price}
+                  onChangeText={setPrice}
+                  keyboardType="decimal-pad"
+                  left={<TextInput.Affix text="K" textStyle={{ fontWeight: '700', color: theme.colors.primary }} />}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="Compare-at"
+                  value={compareAtPrice}
+                  onChangeText={setCompareAtPrice}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
               <View style={[styles.feeInfoCard, { backgroundColor: theme.colors.primaryContainer + '40' }]}>
                 <Icon name="information-outline" size={18} color={theme.colors.primary} />
                 <View style={{ flex: 1, marginLeft: 10 }}>
                   <Text variant="labelMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
-                    Buyers will see: {price ? `K${calculateDisplayPrice(parseMoney(price)).toLocaleString('en-ZM', { minimumFractionDigits: 2 })}` : 'K0.00'}
+                    Buyers will see:{' '}
+                    {price
+                      ? `K${calculateDisplayPrice(parseMoney(price)).toLocaleString('en-ZM', { minimumFractionDigits: 2 })}`
+                      : 'K0.00'}
                   </Text>
                   <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
                     A {PLATFORM_FEE_PERCENTAGE * 100}% service fee is added to your price for secure payments & escrow.
@@ -934,11 +972,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
               <View style={styles.formRow}>
                 <TextInput
                   mode="outlined"
-                  label={
-                    variantAttributes.length > 0
-                      ? 'Default stock for new variants'
-                      : 'Quantity'
-                  }
+                  label={variantAttributes.length > 0 ? 'Default stock for new variants' : 'Quantity'}
                   value={quantity}
                   onChangeText={setQuantity}
                   keyboardType="number-pad"
@@ -946,14 +980,26 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   style={styles.flexInput}
                   outlineStyle={styles.inputOutline}
                 />
-                <TextInput mode="outlined" label="Low-stock alert" value={lowStockThreshold} onChangeText={setLowStockThreshold} keyboardType="number-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  mode="outlined"
+                  label="Low-stock alert"
+                  value={lowStockThreshold}
+                  onChangeText={setLowStockThreshold}
+                  keyboardType="number-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
               <Text variant="labelMedium" style={[styles.groupLabel, { color: theme.colors.onSurfaceVariant }]}>
                 Availability
               </Text>
               <View style={styles.chipWrap}>
                 {availabilityOptions.map((option) => (
-                  <Chip key={option.value} selected={availabilityStatus === option.value} onPress={() => setAvailabilityStatus(option.value)}>
+                  <Chip
+                    key={option.value}
+                    selected={availabilityStatus === option.value}
+                    onPress={() => setAvailabilityStatus(option.value)}
+                  >
                     {option.label}
                   </Chip>
                 ))}
@@ -981,9 +1027,29 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   Features, Specs, Variants
                 </Text>
               </View>
-              <TextInput mode="outlined" label="Key features (one per line, 3-5)" value={keyFeaturesText} onChangeText={setKeyFeaturesText} multiline numberOfLines={6} style={[styles.input, styles.textArea]} outlineStyle={styles.inputOutline} />
-              <Text variant="labelSmall" style={styles.counterText}>{keyFeatures.length}/5 features</Text>
-              <TextInput mode="outlined" label="Specifications (Key: Value per line)" value={specificationsText} onChangeText={setSpecificationsText} multiline numberOfLines={5} style={[styles.input, styles.textArea]} outlineStyle={styles.inputOutline} />
+              <TextInput
+                mode="outlined"
+                label="Key features (one per line, 3-5)"
+                value={keyFeaturesText}
+                onChangeText={setKeyFeaturesText}
+                multiline
+                numberOfLines={6}
+                style={[styles.input, styles.textArea]}
+                outlineStyle={styles.inputOutline}
+              />
+              <Text variant="labelSmall" style={styles.counterText}>
+                {keyFeatures.length}/5 features
+              </Text>
+              <TextInput
+                mode="outlined"
+                label="Specifications (Key: Value per line)"
+                value={specificationsText}
+                onChangeText={setSpecificationsText}
+                multiline
+                numberOfLines={5}
+                style={[styles.input, styles.textArea]}
+                outlineStyle={styles.inputOutline}
+              />
               <ProductVariantEditor
                 attributes={variantAttributes}
                 combinations={variantCombinations}
@@ -1015,19 +1081,81 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   }))
                 }
               />
-              <TextInput mode="outlined" label="Add-ons (Name|Price|Description|required)" value={addOnsText} onChangeText={setAddOnsText} multiline numberOfLines={3} style={[styles.input, styles.textArea]} outlineStyle={styles.inputOutline} />
+              <TextInput
+                mode="outlined"
+                label="Add-ons (Name|Price|Description|required)"
+                value={addOnsText}
+                onChangeText={setAddOnsText}
+                multiline
+                numberOfLines={3}
+                style={[styles.input, styles.textArea]}
+                outlineStyle={styles.inputOutline}
+              />
               <View style={styles.formRow}>
-                <TextInput label="Weight kg" mode="outlined" value={weightKg} onChangeText={setWeightKg} keyboardType="decimal-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput label="Origin" mode="outlined" value={countryOfOrigin} onChangeText={setCountryOfOrigin} style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  label="Weight kg"
+                  mode="outlined"
+                  value={weightKg}
+                  onChangeText={setWeightKg}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  label="Origin"
+                  mode="outlined"
+                  value={countryOfOrigin}
+                  onChangeText={setCountryOfOrigin}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
               <View style={styles.formRow}>
-                <TextInput label="Length cm" mode="outlined" value={lengthCm} onChangeText={setLengthCm} keyboardType="decimal-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput label="Width cm" mode="outlined" value={widthCm} onChangeText={setWidthCm} keyboardType="decimal-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput label="Height cm" mode="outlined" value={heightCm} onChangeText={setHeightCm} keyboardType="decimal-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  label="Length cm"
+                  mode="outlined"
+                  value={lengthCm}
+                  onChangeText={setLengthCm}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  label="Width cm"
+                  mode="outlined"
+                  value={widthCm}
+                  onChangeText={setWidthCm}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  label="Height cm"
+                  mode="outlined"
+                  value={heightCm}
+                  onChangeText={setHeightCm}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
               <View style={styles.formRow}>
-                <TextInput label="Model" mode="outlined" value={modelNumber} onChangeText={setModelNumber} style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput label="Material" mode="outlined" value={material} onChangeText={setMaterial} style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  label="Model"
+                  mode="outlined"
+                  value={modelNumber}
+                  onChangeText={setModelNumber}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  label="Material"
+                  mode="outlined"
+                  value={material}
+                  onChangeText={setMaterial}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
               <TextInput
                 label="Color (single-option products)"
@@ -1036,10 +1164,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
                 onChangeText={setColor}
                 style={styles.input}
                 outlineStyle={styles.inputOutline}
-                disabled={variantAttributes.some(
-                  (attribute) =>
-                    attribute.name.trim().toLocaleLowerCase() === 'color',
-                )}
+                disabled={variantAttributes.some((attribute) => attribute.name.trim().toLocaleLowerCase() === 'color')}
               />
             </Surface>
           </Animated.View>
@@ -1064,22 +1189,67 @@ export default function EditProductScreen({ route, navigation }: Props) {
                 ))}
               </View>
               <View style={styles.formRow}>
-                <TextInput label="Warranty days" mode="outlined" value={warrantyDays} onChangeText={setWarrantyDays} keyboardType="number-pad" style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput label="Provider" mode="outlined" value={warrantyProvider} onChangeText={setWarrantyProvider} style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  label="Warranty days"
+                  mode="outlined"
+                  value={warrantyDays}
+                  onChangeText={setWarrantyDays}
+                  keyboardType="number-pad"
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  label="Provider"
+                  mode="outlined"
+                  value={warrantyProvider}
+                  onChangeText={setWarrantyProvider}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
-              <TextInput label="Warranty terms" mode="outlined" value={warrantyTerms} onChangeText={setWarrantyTerms} multiline style={[styles.input, styles.textArea]} outlineStyle={styles.inputOutline} />
+              <TextInput
+                label="Warranty terms"
+                mode="outlined"
+                value={warrantyTerms}
+                onChangeText={setWarrantyTerms}
+                multiline
+                style={[styles.input, styles.textArea]}
+                outlineStyle={styles.inputOutline}
+              />
               <View style={styles.formRow}>
-                <TextInput label="City" mode="outlined" value={city} onChangeText={setCity} style={styles.flexInput} outlineStyle={styles.inputOutline} />
-                <TextInput label="Province" mode="outlined" value={province} onChangeText={setProvince} style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  label="City"
+                  mode="outlined"
+                  value={city}
+                  onChangeText={setCity}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
+                <TextInput
+                  label="Province"
+                  mode="outlined"
+                  value={province}
+                  onChangeText={setProvince}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
-              <TextInput label="Delivery option" mode="outlined" value={deliveryName} onChangeText={setDeliveryName} style={styles.input} outlineStyle={styles.inputOutline} />
+              <TextInput
+                label="Delivery option"
+                mode="outlined"
+                value={deliveryName}
+                onChangeText={setDeliveryName}
+                style={styles.input}
+                outlineStyle={styles.inputOutline}
+              />
               <View style={styles.deliveryOptionsRow}>
                 <Pressable
                   onPress={() => setDeliveryType('free')}
                   style={[
                     styles.deliveryOption,
                     {
-                      backgroundColor: deliveryType === 'free' ? theme.colors.secondaryContainer : theme.colors.surfaceVariant,
+                      backgroundColor:
+                        deliveryType === 'free' ? theme.colors.secondaryContainer : theme.colors.surfaceVariant,
                       borderColor: deliveryType === 'free' ? theme.colors.secondary : 'transparent',
                     },
                   ]}
@@ -1106,7 +1276,8 @@ export default function EditProductScreen({ route, navigation }: Props) {
                   style={[
                     styles.deliveryOption,
                     {
-                      backgroundColor: deliveryType === 'paid' ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
+                      backgroundColor:
+                        deliveryType === 'paid' ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
                       borderColor: deliveryType === 'paid' ? theme.colors.primary : 'transparent',
                     },
                   ]}
@@ -1130,13 +1301,35 @@ export default function EditProductScreen({ route, navigation }: Props) {
               </View>
 
               <View style={styles.formRow}>
-                <TextInput mode="outlined" label="Delivery Fee (ZMW)" value={deliveryFee} onChangeText={setDeliveryFee} placeholder="e.g., 50" keyboardType="decimal-pad" left={<TextInput.Affix text="K" textStyle={{ color: theme.colors.primary, fontWeight: '600' }} />} style={styles.flexInput} outlineStyle={styles.inputOutline} disabled={deliveryType === 'free'} />
-                <TextInput mode="outlined" label="ETA" value={deliveryEta} onChangeText={setDeliveryEta} style={styles.flexInput} outlineStyle={styles.inputOutline} />
+                <TextInput
+                  mode="outlined"
+                  label="Delivery Fee (ZMW)"
+                  value={deliveryFee}
+                  onChangeText={setDeliveryFee}
+                  placeholder="e.g., 50"
+                  keyboardType="decimal-pad"
+                  left={<TextInput.Affix text="K" textStyle={{ color: theme.colors.primary, fontWeight: '600' }} />}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                  disabled={deliveryType === 'free'}
+                />
+                <TextInput
+                  mode="outlined"
+                  label="ETA"
+                  value={deliveryEta}
+                  onChangeText={setDeliveryEta}
+                  style={styles.flexInput}
+                  outlineStyle={styles.inputOutline}
+                />
               </View>
               {validationErrors.length > 0 ? (
                 <Surface style={[styles.errorCard, { backgroundColor: theme.colors.errorContainer }]} elevation={0}>
                   {validationErrors.slice(0, 5).map((error) => (
-                    <Text key={error} variant="bodySmall" style={{ color: theme.colors.onErrorContainer, marginBottom: 4 }}>
+                    <Text
+                      key={error}
+                      variant="bodySmall"
+                      style={{ color: theme.colors.onErrorContainer, marginBottom: 4 }}
+                    >
                       {error}
                     </Text>
                   ))}
@@ -1148,8 +1341,8 @@ export default function EditProductScreen({ route, navigation }: Props) {
           {/* Action Buttons */}
           <Animated.View entering={FadeInUp.delay(350).duration(400)} style={styles.actionsContainer}>
             <Pressable
-            onPress={handleSubmit}
-            disabled={loading || validationErrors.length > 0}
+              onPress={handleSubmit}
+              disabled={loading || validationErrors.length > 0}
               style={({ pressed }) => [
                 styles.saveButton,
                 { opacity: pressed ? 0.9 : 1 },
@@ -1161,7 +1354,7 @@ export default function EditProductScreen({ route, navigation }: Props) {
                 start={{ x: 0, y: 0 }}
                 end={{ x: 1, y: 1 }}
                 style={styles.saveButtonGradient}
-          >
+              >
                 {loading ? (
                   <ActivityIndicator color="#FFFFFF" size="small" />
                 ) : (
@@ -1174,18 +1367,16 @@ export default function EditProductScreen({ route, navigation }: Props) {
             </Pressable>
 
             <Pressable
-            onPress={() => setDeleteDialogVisible(true)}
-            disabled={loading}
+              onPress={() => setDeleteDialogVisible(true)}
+              disabled={loading}
               style={[styles.deleteButton, { borderColor: theme.colors.error }]}
-          >
+            >
               <Icon name="trash-can-outline" size={20} color={theme.colors.error} />
-              <Text style={[styles.deleteButtonText, { color: theme.colors.error }]}>
-            Delete Listing
-              </Text>
+              <Text style={[styles.deleteButtonText, { color: theme.colors.error }]}>Delete Listing</Text>
             </Pressable>
           </Animated.View>
         </ScrollView>
-        </View>
+      </View>
 
       <Portal>
         {/* Delete Confirmation Dialog */}

@@ -58,16 +58,15 @@ export default function AdminDeliveryPage() {
   const [isSavingZone, setIsSavingZone] = useState(false);
   const [isSavingMethod, setIsSavingMethod] = useState(false);
 
-  const zones = useQuery(api.delivery.listDeliveryZones, {
-    includeInactive: true,
-  });
-  const methods = useQuery(api.delivery.listDeliveryMethods, {
-    includeInactive: true,
-  });
+  // The backend refuses includeInactive for non-admins, so the queries wait until the user is known to be an admin.
+  const isAdmin = !isLoading && user?.role === "admin";
+  const inactiveArgs = isAdmin ? { includeInactive: true } : "skip";
+  const zones = useQuery(api.delivery.listDeliveryZones, inactiveArgs);
+  const methods = useQuery(api.delivery.listDeliveryMethods, inactiveArgs);
   const upsertDeliveryZone = useMutation(api.delivery.upsertDeliveryZone);
   const upsertDeliveryMethod = useMutation(api.delivery.upsertDeliveryMethod);
 
-  if (isLoading || zones === undefined || methods === undefined) {
+  if (isLoading) {
     return (
       <div className="space-y-6">
         <Skeleton className="h-8 w-56" />
@@ -86,6 +85,15 @@ export default function AdminDeliveryPage() {
           Only Super Admins can manage delivery settings.
         </CardContent>
       </Card>
+    );
+  }
+
+  if (zones === undefined || methods === undefined) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-64 w-full" />
+      </div>
     );
   }
 

@@ -24,7 +24,7 @@ export default function FavoritesPage() {
   // Get favorites
   const favorites = useQuery(
     api.favorites.getUserFavorites,
-    user?._id ? { userId: user._id } : "skip"
+    user?._id ? {} : "skip"
   );
 
   // Loading state

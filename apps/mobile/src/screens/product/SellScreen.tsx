@@ -2,38 +2,21 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useMutation, useQuery } from 'convex/react';
 import React, { useEffect, useMemo, useState } from 'react';
-import {
-  ActivityIndicator,
-  Alert,
-  Image,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Chip, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { TabHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { formatPrice } from '../../theme';
 import type { RootStackParamList } from '../../types';
-import {
-  canManageCatalog,
-  canManageListings,
-  isReviewerRole,
-} from '../../utils/roles';
-import {
-  getVendorApplicationValidationMessage,
-  type VendorApplicationForm,
-} from './vendorApplicationValidation';
+import { canManageCatalog, canManageListings, isReviewerRole } from '../../utils/roles';
+import { getVendorApplicationValidationMessage, type VendorApplicationForm } from './vendorApplicationValidation';
 
-type VendorStatus =
-  | 'pending'
-  | 'approved'
-  | 'changes_requested'
-  | 'suspended';
+type VendorStatus = 'pending' | 'approved' | 'changes_requested' | 'suspended';
 
 const emptyForm: VendorApplicationForm = {
   storeName: '',
@@ -61,9 +44,7 @@ const vendorStatusCopy: Record<VendorStatus, string> = {
 function normalizeOptionalUrl(value: string) {
   const trimmed = value.trim();
   if (!trimmed) return undefined;
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   try {
     const parsed = new URL(withProtocol);
     if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
@@ -76,13 +57,7 @@ function normalizeOptionalUrl(value: string) {
 }
 
 const productStatusCopy: Record<
-  | 'draft'
-  | 'pending_review'
-  | 'changes_requested'
-  | 'rejected'
-  | 'active'
-  | 'sold'
-  | 'suspended',
+  'draft' | 'pending_review' | 'changes_requested' | 'rejected' | 'active' | 'sold' | 'suspended',
   string
 > = {
   draft: 'Draft',
@@ -95,14 +70,19 @@ const productStatusCopy: Record<
 };
 
 export default function SellScreen() {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Sell" />;
+  }
+  return <SellContent />;
+}
+
+function SellContent() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
   const storefront = useQuery(api.platform.getStorefront);
-  const vendorProfile = useQuery(
-    api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : 'skip'
-  );
+  const vendorProfile = useQuery(api.vendors.getMyVendorProfile, user?._id && !user.isBanned ? {} : 'skip');
   const submitApplication = useMutation(api.vendors.submitApplication);
 
   const logoUpload = useImageUpload();
@@ -114,13 +94,11 @@ export default function SellScreen() {
 
   const companyListings = useQuery(
     api.products.getManagedCatalogProducts,
-    user?._id && isCompanyCatalogManager ? { actorUserId: user._id } : 'skip'
+    user?._id && isCompanyCatalogManager ? {} : 'skip',
   );
   const vendorListings = useQuery(
     api.products.getMyListings,
-    user?._id && !isCompanyCatalogManager && vendorProfile?.status === 'approved'
-      ? { actorUserId: user._id }
-      : 'skip'
+    user?._id && !isCompanyCatalogManager && vendorProfile?.status === 'approved' ? {} : 'skip',
   );
 
   const [form, setForm] = useState<VendorApplicationForm>(emptyForm);
@@ -163,8 +141,8 @@ export default function SellScreen() {
   }, [bannerUpload.images]);
 
   const listings = useMemo(
-    () => (isCompanyCatalogManager ? companyListings ?? [] : vendorListings ?? []),
-    [companyListings, isCompanyCatalogManager, vendorListings]
+    () => (isCompanyCatalogManager ? (companyListings ?? []) : (vendorListings ?? [])),
+    [companyListings, isCompanyCatalogManager, vendorListings],
   );
 
   const stats = useMemo(
@@ -174,7 +152,7 @@ export default function SellScreen() {
       pending: listings.filter((product) => product.status === 'pending_review').length,
       changesRequested: listings.filter((product) => product.status === 'changes_requested').length,
     }),
-    [listings]
+    [listings],
   );
 
   const isStorefrontConfigured = storefront?.isConfigured ?? false;
@@ -195,7 +173,6 @@ export default function SellScreen() {
 
     try {
       await submitApplication({
-        ownerUserId: user._id,
         storeName: form.storeName.trim(),
         description: form.description.trim(),
         logoUrl: normalizeOptionalUrl(form.logoUrl),
@@ -218,11 +195,10 @@ export default function SellScreen() {
         'Application submitted',
         vendorProfile
           ? 'Your vendor application has been resubmitted for review.'
-          : 'Your vendor application has been submitted for review.'
+          : 'Your vendor application has been submitted for review.',
       );
     } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : 'Unable to submit your vendor application.';
+      const message = error instanceof Error ? error.message : 'Unable to submit your vendor application.';
       Alert.alert('Unable to submit application', message);
     } finally {
       setSubmitting(false);
@@ -305,7 +281,7 @@ export default function SellScreen() {
     return (
       <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
         <TabHeader
-          title={isCompanyCatalogManager ? 'Company Catalog' : (vendorProfile?.storeName || 'My Store')}
+          title={isCompanyCatalogManager ? 'Company Catalog' : vendorProfile?.storeName || 'My Store'}
           subtitle={
             isCompanyCatalogManager
               ? 'Manage official Gettitonline inventory'
@@ -385,20 +361,36 @@ export default function SellScreen() {
             <>
               <View style={styles.statsRow}>
                 <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>{stats.total}</Text>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Listings</Text>
+                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>
+                    {stats.total}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    Listings
+                  </Text>
                 </Surface>
                 <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>{stats.active}</Text>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Active</Text>
+                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>
+                    {stats.active}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    Active
+                  </Text>
                 </Surface>
                 <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>{stats.pending}</Text>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Pending</Text>
+                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>
+                    {stats.pending}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    Pending
+                  </Text>
                 </Surface>
                 <Surface style={[styles.statCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
-                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>{stats.changesRequested}</Text>
-                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>Action Needed</Text>
+                  <Text variant="headlineSmall" style={{ color: theme.colors.primary }}>
+                    {stats.changesRequested}
+                  </Text>
+                  <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+                    Action Needed
+                  </Text>
                 </Surface>
               </View>
 
@@ -460,18 +452,91 @@ export default function SellScreen() {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface }}>
             Store Details
           </Text>
-          <TextInput label="Store name" mode="outlined" value={form.storeName} onChangeText={(value) => setForm((current) => ({ ...current, storeName: value }))} style={styles.input} />
-          <TextInput label="Description" mode="outlined" multiline value={form.description} onChangeText={(value) => setForm((current) => ({ ...current, description: value }))} style={styles.input} />
-          <TextInput label="Contact email" mode="outlined" value={form.contactEmail} onChangeText={(value) => setForm((current) => ({ ...current, contactEmail: value }))} style={styles.input} />
-          <TextInput label="Contact phone" mode="outlined" value={form.contactPhone} onChangeText={(value) => setForm((current) => ({ ...current, contactPhone: value }))} style={styles.input} />
-          <TextInput label="Street" mode="outlined" value={form.street} onChangeText={(value) => setForm((current) => ({ ...current, street: value }))} style={styles.input} />
-          <TextInput label="City" mode="outlined" value={form.city} onChangeText={(value) => setForm((current) => ({ ...current, city: value }))} style={styles.input} />
-          <TextInput label="Province" mode="outlined" value={form.province} onChangeText={(value) => setForm((current) => ({ ...current, province: value }))} style={styles.input} />
-          <TextInput label="Country" mode="outlined" value={form.country} onChangeText={(value) => setForm((current) => ({ ...current, country: value }))} style={styles.input} />
-          <TextInput label="Website" mode="outlined" value={form.website} onChangeText={(value) => setForm((current) => ({ ...current, website: value }))} style={styles.input} />
-          <TextInput label="Instagram" mode="outlined" value={form.instagram} onChangeText={(value) => setForm((current) => ({ ...current, instagram: value }))} style={styles.input} />
-          <TextInput label="Facebook" mode="outlined" value={form.facebook} onChangeText={(value) => setForm((current) => ({ ...current, facebook: value }))} style={styles.input} />
-          <TextInput label="Store banner URL" mode="outlined" value={form.bannerUrl} onChangeText={(value) => setForm((current) => ({ ...current, bannerUrl: value }))} style={styles.input} />
+          <TextInput
+            label="Store name"
+            mode="outlined"
+            value={form.storeName}
+            onChangeText={(value) => setForm((current) => ({ ...current, storeName: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Description"
+            mode="outlined"
+            multiline
+            value={form.description}
+            onChangeText={(value) => setForm((current) => ({ ...current, description: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Contact email"
+            mode="outlined"
+            value={form.contactEmail}
+            onChangeText={(value) => setForm((current) => ({ ...current, contactEmail: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Contact phone"
+            mode="outlined"
+            value={form.contactPhone}
+            onChangeText={(value) => setForm((current) => ({ ...current, contactPhone: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Street"
+            mode="outlined"
+            value={form.street}
+            onChangeText={(value) => setForm((current) => ({ ...current, street: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="City"
+            mode="outlined"
+            value={form.city}
+            onChangeText={(value) => setForm((current) => ({ ...current, city: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Province"
+            mode="outlined"
+            value={form.province}
+            onChangeText={(value) => setForm((current) => ({ ...current, province: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Country"
+            mode="outlined"
+            value={form.country}
+            onChangeText={(value) => setForm((current) => ({ ...current, country: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Website"
+            mode="outlined"
+            value={form.website}
+            onChangeText={(value) => setForm((current) => ({ ...current, website: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Instagram"
+            mode="outlined"
+            value={form.instagram}
+            onChangeText={(value) => setForm((current) => ({ ...current, instagram: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Facebook"
+            mode="outlined"
+            value={form.facebook}
+            onChangeText={(value) => setForm((current) => ({ ...current, facebook: value }))}
+            style={styles.input}
+          />
+          <TextInput
+            label="Store banner URL"
+            mode="outlined"
+            value={form.bannerUrl}
+            onChangeText={(value) => setForm((current) => ({ ...current, bannerUrl: value }))}
+            style={styles.input}
+          />
 
           <View style={styles.assetRow}>
             <Button mode="outlined" onPress={pickLogo} loading={logoUpload.isUploading}>
@@ -486,7 +551,11 @@ export default function SellScreen() {
             </Button>
           </View>
           {form.bannerUrl ? (
-            <Image source={{ uri: normalizeOptionalUrl(form.bannerUrl) ?? form.bannerUrl }} style={styles.bannerPreview} resizeMode="cover" />
+            <Image
+              source={{ uri: normalizeOptionalUrl(form.bannerUrl) ?? form.bannerUrl }}
+              style={styles.bannerPreview}
+              resizeMode="cover"
+            />
           ) : null}
 
           <Button mode="contained" onPress={handleSubmitApplication} loading={submitting} style={styles.primaryButton}>

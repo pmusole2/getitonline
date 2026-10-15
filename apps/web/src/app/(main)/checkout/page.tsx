@@ -1,11 +1,11 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useLayoutEffect, useMemo, useRef, useState, type JSX } from "react";
 import Link from "next/link";
-import { useRouter } from "next/navigation";
-import { useConvex, useQuery, useMutation } from "convex/react";
+import { useConvex, useQuery } from "convex/react";
 import { api } from "../../../../../../convex/_generated/api";
-import { Id } from "../../../../../../convex/_generated/dataModel";
+import type { Id } from "../../../../../../convex/_generated/dataModel";
+import type { FunctionArgs } from "convex/server";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
@@ -17,7 +17,6 @@ import {
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
-import { Separator } from "@/components/ui/separator";
 import { Skeleton } from "@/components/ui/skeleton";
 import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
 import {
@@ -27,576 +26,448 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import {
-  Breadcrumb,
-  BreadcrumbItem,
-  BreadcrumbLink,
-  BreadcrumbList,
-  BreadcrumbPage,
-  BreadcrumbSeparator,
-} from "@/components/ui/breadcrumb";
-import {
-  Accordion,
-  AccordionContent,
-  AccordionItem,
-  AccordionTrigger,
-} from "@/components/ui/accordion";
-import {
-  ShoppingCart,
-  Wallet,
-  Shield,
-  Package,
-  Loader2,
-  CheckCircle,
-  AlertTriangle,
-  Tag,
-  Truck,
-} from "lucide-react";
 import { ROUTES, ZAMBIAN_PROVINCES } from "@/lib/constants";
 import { formatZMW } from "@gettitonline/shared";
-import { useAuth } from "@/hooks/useAuth";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
+import { usePaymentAvailability } from "@/hooks/usePaymentAvailability";
+import { useWalletCheckout } from "@/hooks/useWalletCheckout";
+import { walletBalanceCents } from "@/lib/walletCheckoutState";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
 import { toast } from "sonner";
 import { useGuestCart } from "@/providers/GuestCartProvider";
 
-// Platform fee percentage
-const PLATFORM_FEE_PERCENTAGE = 0.05;
-
-interface ShippingAddress {
-  street: string;
-  city: string;
-  province: string;
-  country: string;
-  phone: string;
-}
-
+type ShippingAddress = FunctionArgs<
+  typeof api.checkoutQuote.quoteCheckout
+>["shippingAddress"];
 interface AppliedPromo {
-  promoCodeId: Id<"promoCodes">;
   code: string;
   title: string;
-  discountAmount: number;
 }
 
-function roundMoney(amount: number) {
-  return Math.round(amount * 100) / 100;
+export default function CheckoutPage(): JSX.Element {
+  const access = useAccountAccess();
+  const user = access.user;
+
+  if (access.status !== "ready" || !user) {
+    return (
+      <AccountAccessNotice
+        access={access}
+        heading="Checkout"
+        signInMessage="Please sign in to complete your purchase"
+        signInHref={`${ROUTES.SIGN_IN}?redirect_url=${encodeURIComponent(ROUTES.CHECKOUT)}`}
+      />
+    );
+  }
+
+  return <CheckoutContent key={`${user.clerkId}/${user._id}`} user={user} />;
 }
 
-export default function CheckoutPage() {
-  const router = useRouter();
+function CheckoutContent({ user }: { user: AccountUser }): JSX.Element {
   const convex = useConvex();
-  const { user, isSignedIn, isLoading: authLoading } = useAuth();
-  const {
-    isHydrated: guestCartHydrated,
-    isMerging: guestCartMerging,
-    hasPendingMerge,
-  } = useGuestCart();
-
-  const [isProcessing, setIsProcessing] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<"wallet">("wallet");
-  const [selectedDeliveryMethodId, setSelectedDeliveryMethodId] = useState<string>("");
+  const guest = useGuestCart();
+  const mergeReady =
+    guest.isHydrated &&
+    !guest.isMerging &&
+    !guest.hasPendingMerge &&
+    !guest.mergeFailed;
+  const paymentsAvailable = usePaymentAvailability() === "available";
+  const [shippingAddress, setShippingAddress] = useState<ShippingAddress>(
+    () => ({
+      street: user.address?.street ?? "",
+      city: user.address?.city ?? "",
+      province: user.address?.province ?? "",
+      country: user.address?.country ?? "",
+      phone: user.phone ?? "",
+    }),
+  );
+  const [methodId, setMethodId] = useState<Id<"deliveryMethods"> | null>(null);
+  const [pointId, setPointId] = useState<Id<"pickupPoints"> | null>(null);
   const [promoCodeInput, setPromoCodeInput] = useState("");
   const [appliedPromo, setAppliedPromo] = useState<AppliedPromo | null>(null);
   const [promoError, setPromoError] = useState<string | null>(null);
   const [isApplyingPromo, setIsApplyingPromo] = useState(false);
-  const [shippingAddress, setShippingAddress] = useState<ShippingAddress>({
-    street: "",
-    city: "",
-    province: "",
-    country: "Zambia",
-    phone: "",
-  });
-  const [errors, setErrors] = useState<Partial<ShippingAddress>>({});
-
-  // Get cart grouped by seller
+  const cart = useQuery(api.cart.getCart, user._id ? {} : "skip");
   const cartBySeller = useQuery(
     api.cart.getCartBySeller,
-    user?._id ? { userId: user._id } : "skip"
+    user._id ? {} : "skip",
   );
-
-  // Get cart totals
-  const cart = useQuery(
-    api.cart.getCart,
-    user?._id ? { userId: user._id } : "skip"
-  );
-
-  // Validate cart
-  const validation = useQuery(
-    api.cart.validateCart,
-    user?._id ? { userId: user._id } : "skip"
-  );
-
-  // Get wallet balance
+  const validation = useQuery(api.cart.validateCart, user._id ? {} : "skip");
   const wallet = useQuery(
     api.wallet.getWallet,
-    user?._id ? { userId: user._id } : "skip"
+    user._id ? { userId: user._id } : "skip",
   );
-
-  const subtotal = cart?.subtotal || 0;
+  const methods = useQuery(api.delivery.listDeliveryMethods, {});
+  const subtotal = cart?.subtotal ?? 0;
   const deliveryWeightKg =
     cart?.items.reduce(
-      (total, item) =>
-        total + ((item.product.weightKg ?? 0) * item.quantity),
-      0
+      (sum, item) => sum + (item.product.weightKg ?? 0) * item.quantity,
+      0,
     ) ?? 0;
-
   const deliveryQuotes = useQuery(
     api.delivery.calculateDeliveryQuote,
-    shippingAddress.province && shippingAddress.city && subtotal > 0
+    shippingAddress.province.trim() &&
+      shippingAddress.city.trim() &&
+      subtotal > 0
       ? {
-          province: shippingAddress.province,
-          city: shippingAddress.city,
+          province: shippingAddress.province.trim(),
+          city: shippingAddress.city.trim(),
           subtotal,
           weightKg: deliveryWeightKg,
         }
-      : "skip"
+      : "skip",
   );
-
-  // Mutations
-  const createOrder = useMutation(api.orders.createOrder);
-  const markPaidByWallet = useMutation(api.orders.markPaidByWallet);
-  const debitWallet = useMutation(api.wallet.debitWallet);
-  const clearCart = useMutation(api.cart.clearCart);
-  const recordPromoCodeRedemption = useMutation(
-    api.promotions.recordPromoCodeRedemption
+  const selectedMethod = methods?.find(
+    (method) => method._id === methodId && method.isActive,
   );
-
-  // Load user's saved address if available
-  useEffect(() => {
-    if (user?.address) {
-      setShippingAddress({
-        street: user.address.street || "",
-        city: user.address.city || "",
-        province: user.address.province || "",
-        country: user.address.country || "Zambia",
-        phone: user.phone || "",
-      });
+  const selectedEligible =
+    selectedMethod &&
+    deliveryQuotes?.some((method) => method.methodId === selectedMethod._id);
+  const pickup = selectedMethod?.type === "pickup";
+  const points = useQuery(
+    api.delivery.listPickupPoints,
+    pickup && selectedEligible
+      ? selectedMethod.zoneId
+        ? { zoneId: selectedMethod.zoneId }
+        : {}
+      : "skip",
+  );
+  useLayoutEffect(() => {
+    if (!selectedEligible || !pickup) {
+      setPointId(null);
     }
-  }, [user]);
+  }, [selectedEligible, pickup, methodId]);
+  const selectedPoint = points?.find(
+    (point) =>
+      point._id === pointId &&
+      point.isActive &&
+      (!selectedMethod?.zoneId || point.zoneId === selectedMethod.zoneId),
+  );
+  const deliveryReady =
+    deliveryQuotes !== undefined &&
+    methods !== undefined &&
+    (deliveryQuotes.length === 0
+      ? methodId === null
+      : Boolean(selectedEligible && (!pickup || selectedPoint)));
+  // Only stored row identity/quantity/custom selections retire approval. Names, thumbnails and preview totals do not.
+  const cartIdentity = JSON.stringify(
+    cart?.items
+      .map((item) => ({
+        id: item._id,
+        productId: item.product._id,
+        quantity: item.quantity,
+        variantId:
+          "selectedVariant" in item
+            ? item.selectedVariant?.variantId
+            : undefined,
+        options:
+          "selectedVariantOptions" in item
+            ? item.selectedVariantOptions
+                ?.map((option) => ({ name: option.name, value: option.value }))
+                .sort(
+                  (a, b) =>
+                    a.name.localeCompare(b.name) ||
+                    a.value.localeCompare(b.value),
+                )
+            : undefined,
+        addOns:
+          "selectedAddOns" in item
+            ? item.selectedAddOns?.map((addon) => addon.name).sort()
+            : undefined,
+        shipping: item.selectedShipping?.name,
+      }))
+      .sort((a, b) => a.id.localeCompare(b.id)) ?? null,
+  );
+  const checkout = useWalletCheckout({
+    owner: `${user.clerkId}/${user._id}`,
+    cartIdentity,
+    mergeReady,
+    selectors:
+      deliveryReady && cart && cart.items.length > 0
+        ? {
+            source: "cart",
+            shippingAddress,
+            ...(selectedEligible
+              ? { deliveryMethodId: selectedMethod._id }
+              : {}),
+            ...(pickup && selectedPoint
+              ? { pickupPointId: selectedPoint._id }
+              : {}),
+            ...(appliedPromo ? { promoCode: appliedPromo.code } : {}),
+          }
+        : null,
+    available: paymentsAvailable,
+    balance: wallet?.balance,
+  });
+  const quote = checkout.quote;
+  const balanceCents = walletBalanceCents(wallet?.balance);
 
-  useEffect(() => {
-    if (!deliveryQuotes || deliveryQuotes.length === 0) {
-      setSelectedDeliveryMethodId("");
-      return;
-    }
-
-    const hasSelectedQuote = deliveryQuotes.some(
-      (quote) => quote.methodId === selectedDeliveryMethodId
-    );
-    if (!hasSelectedQuote) {
-      setSelectedDeliveryMethodId(deliveryQuotes[0].methodId);
-    }
-  }, [deliveryQuotes, selectedDeliveryMethodId]);
-
-  // Calculate totals
-  const selectedDeliveryQuote =
-    deliveryQuotes?.find((quote) => quote.methodId === selectedDeliveryMethodId) ??
-    null;
-  const shippingTotal = selectedDeliveryQuote?.fee ?? cart?.shippingTotal ?? 0;
-  const discountAmount = Math.min(appliedPromo?.discountAmount ?? 0, subtotal);
-  const discountedSubtotal = Math.max(0, subtotal - discountAmount);
-  const platformFee =
-    Math.ceil(discountedSubtotal * PLATFORM_FEE_PERCENTAGE * 100) / 100;
-  const totalAmount = discountedSubtotal + shippingTotal + platformFee;
-
-  const getPromoScope = () => {
-    const categoryIds = new Set<Id<"categories">>();
-    const productIds: Id<"products">[] = [];
-
-    for (const item of cart?.items ?? []) {
-      productIds.push(item.product._id);
-      categoryIds.add(item.product.categoryId);
-      if (item.product.subcategoryId) categoryIds.add(item.product.subcategoryId);
-      if (item.product.classificationId) {
-        categoryIds.add(item.product.classificationId);
+  // Promo feedback owns a committed client/session AND a semantic draft generation. Render never publishes ownership.
+  const mounted = useRef<object | null>(null);
+  const [session, setSession] = useState<object | null>(null);
+  useLayoutEffect(() => {
+    const next = {};
+    mounted.current = next;
+    setSession(next);
+    return () => {
+      if (mounted.current === next) {
+        mounted.current = null;
       }
-    }
-
-    return {
-      categoryIds: Array.from(categoryIds),
-      productIds,
     };
-  };
+  }, [convex, user._id, user.clerkId]);
+  const promoIdentity = JSON.stringify([
+    shippingAddress,
+    methodId,
+    pointId,
+    promoCodeInput.trim(),
+    cartIdentity,
+    mergeReady,
+  ]);
+  const promoContext = useMemo(
+    () => ({ identity: promoIdentity }),
+    [promoIdentity],
+  );
+  const committedPromo = useRef<object | null>(null);
+  const promoWork = useRef<object | null>(null);
+  useLayoutEffect(() => {
+    committedPromo.current = promoContext;
+    promoWork.current = null;
+    setIsApplyingPromo(false);
+    return () => {
+      if (committedPromo.current === promoContext) {
+        committedPromo.current = null;
+      }
+    };
+  }, [promoContext]);
 
   const handleApplyPromo = async () => {
-    if (!user) return;
-
+    if (
+      !session ||
+      mounted.current !== session ||
+      committedPromo.current !== promoContext ||
+      promoWork.current
+    ) {
+      return;
+    }
     const code = promoCodeInput.trim();
     if (!code) {
       setPromoError("Enter a promo code");
       return;
     }
-
+    const work = {};
+    promoWork.current = work;
+    const current = () =>
+      mounted.current === session &&
+      committedPromo.current === promoContext &&
+      promoWork.current === work;
+    const categoryIds = new Set<Id<"categories">>();
+    const productIds: Id<"products">[] = [];
+    for (const item of cart?.items ?? []) {
+      productIds.push(item.product._id);
+      categoryIds.add(item.product.categoryId);
+      if (item.product.subcategoryId) {
+        categoryIds.add(item.product.subcategoryId);
+      }
+      if (item.product.classificationId) {
+        categoryIds.add(item.product.classificationId);
+      }
+    }
     setIsApplyingPromo(true);
     setPromoError(null);
-
     try {
-      const promoScope = getPromoScope();
       const result = await convex.query(api.promotions.validatePromoCode, {
         code,
-        userId: user._id,
         subtotal,
-        categoryIds: promoScope.categoryIds,
-        productIds: promoScope.productIds,
+        categoryIds: Array.from(categoryIds),
+        productIds,
       });
-
-      const promoCodeId = result.promoCodeId;
-      const validatedCode = result.code;
-      const promoTitle = result.title;
-      const nextDiscountAmount = result.discountAmount;
-
+      if (!current()) {
+        return;
+      }
       if (
         result.valid !== true ||
-        !promoCodeId ||
-        !validatedCode ||
-        !promoTitle ||
-        typeof nextDiscountAmount !== "number"
+        !result.code ||
+        !result.title ||
+        !result.promoCodeId ||
+        typeof result.discountAmount !== "number"
       ) {
         setAppliedPromo(null);
         setPromoError(result.reason ?? "Promo code is not valid");
         return;
       }
-
-      setAppliedPromo({
-        promoCodeId,
-        code: validatedCode,
-        title: promoTitle,
-        discountAmount: nextDiscountAmount,
-      });
-      setPromoCodeInput(validatedCode);
+      setAppliedPromo({ code: result.code, title: result.title });
+      setPromoCodeInput(result.code);
       toast.success("Promo code applied");
-    } catch (error: unknown) {
-      const message =
-        error instanceof Error ? error.message : "Failed to apply promo code";
-      setPromoError(message);
-      toast.error(message);
-    } finally {
-      setIsApplyingPromo(false);
-    }
-  };
-
-  const removePromo = () => {
-    setAppliedPromo(null);
-    setPromoError(null);
-  };
-
-  const validateForm = (): boolean => {
-    const newErrors: Partial<ShippingAddress> = {};
-
-    if (!shippingAddress.street.trim()) {
-      newErrors.street = "Street address is required";
-    }
-    if (!shippingAddress.city.trim()) {
-      newErrors.city = "City is required";
-    }
-    if (!shippingAddress.province) {
-      newErrors.province = "Province is required";
-    }
-    if (!shippingAddress.phone.trim()) {
-      newErrors.phone = "Phone number is required";
-    } else if (!/^(\+260|0)?[79]\d{8}$/.test(shippingAddress.phone.replace(/\s/g, ""))) {
-      newErrors.phone = "Please enter a valid Zambian phone number";
-    }
-
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
-  };
-
-  const handlePlaceOrder = async () => {
-    if (!user || !cartBySeller || cartBySeller.length === 0) return;
-
-    if (!validateForm()) {
-      toast.error("Please fill in all required fields");
-      return;
-    }
-
-    if (validation && !validation.isValid) {
-      toast.error("Some items in your cart are no longer available");
-      return;
-    }
-
-    // Check wallet balance
-    if (paymentMethod === "wallet") {
-      if (!wallet || wallet.balance < totalAmount) {
-        toast.error("Insufficient wallet balance");
+    } catch {
+      if (!current()) {
         return;
       }
-    }
-
-    setIsProcessing(true);
-
-    try {
-      const orderIds: Id<"orders">[] = [];
-      const promoScope = getPromoScope();
-
-      if (appliedPromo) {
-        const promoCheck = await convex.query(api.promotions.validatePromoCode, {
-          code: appliedPromo.code,
-          userId: user._id,
-          subtotal,
-          categoryIds: promoScope.categoryIds,
-          productIds: promoScope.productIds,
-        });
-
-        if (promoCheck.valid !== true) {
-          setAppliedPromo(null);
-          const reason = promoCheck.reason ?? "Promo code is no longer valid";
-          setPromoError(reason);
-          toast.error(reason);
-          return;
-        }
-      }
-
-      let allocatedDiscount = 0;
-      let allocatedShipping = 0;
-      const sellerGroups = cartBySeller;
-
-      // Create orders for each seller
-      for (let index = 0; index < sellerGroups.length; index += 1) {
-        const sellerGroup = sellerGroups[index];
-        const isLastSeller = index === sellerGroups.length - 1;
-        const sellerSubtotal = sellerGroup.subtotal;
-        const sellerDiscount = isLastSeller
-          ? roundMoney(discountAmount - allocatedDiscount)
-          : roundMoney(
-              subtotal > 0
-                ? discountAmount * (sellerSubtotal / subtotal)
-                : 0
-            );
-        allocatedDiscount = roundMoney(allocatedDiscount + sellerDiscount);
-
-        const sellerShipping = selectedDeliveryQuote
-          ? isLastSeller
-            ? roundMoney(shippingTotal - allocatedShipping)
-            : roundMoney(
-                subtotal > 0
-                  ? shippingTotal * (sellerSubtotal / subtotal)
-                  : shippingTotal / sellerGroups.length
-              )
-          : sellerGroup.shippingTotal;
-        allocatedShipping = roundMoney(allocatedShipping + sellerShipping);
-
-        const orderId = await createOrder({
-          buyerId: user._id,
-          sellerId: sellerGroup.sellerId as Id<"users">,
-          items: sellerGroup.items.map((item) => ({
-            productId: item.productId as Id<"products">,
-            title: item.product.title,
-            price: item.lineUnitPrice ?? item.product.price,
-            quantity: item.quantity,
-            image: item.selectedVariant?.image || item.product.images?.[0] || "",
-            selectedVariant: item.selectedVariant,
-            selectedVariantOptions: item.selectedVariantOptions,
-            selectedAddOns: item.selectedAddOns,
-            customizationKey: item.customizationKey,
-          })),
-          subtotal: sellerSubtotal,
-          discountAmount: sellerDiscount,
-          promoCodeId: appliedPromo?.promoCodeId,
-          promoCode: appliedPromo?.code,
-          shippingCost: sellerShipping,
-          deliveryMethodId: selectedDeliveryQuote?.methodId,
-          deliveryMethodName: selectedDeliveryQuote?.name,
-          deliveryEta: selectedDeliveryQuote
-            ? {
-                minDays: selectedDeliveryQuote.minDays,
-                maxDays: selectedDeliveryQuote.maxDays,
-              }
-            : undefined,
-          shippingAddress,
-        });
-
-        orderIds.push(orderId);
-      }
-
-      if (appliedPromo && orderIds[0]) {
-        await recordPromoCodeRedemption({
-          promoCodeId: appliedPromo.promoCodeId,
-          userId: user._id,
-          orderId: orderIds[0],
-          discountAmount,
-        });
-      }
-
-      // Process wallet payment
-      if (paymentMethod === "wallet") {
-        // Deduct from wallet
-        await debitWallet({
-          userId: user._id,
-          amount: totalAmount,
-          source: "purchase",
-          description: `Payment for orders`,
-        });
-
-        // Mark orders as paid
-        for (const orderId of orderIds) {
-          await markPaidByWallet({
-            orderId,
-            walletReference: `WALLET-${Date.now()}`,
-          });
-        }
-      }
-
-      // Clear cart
-      await clearCart({ userId: user._id });
-
-      toast.success("Order placed successfully!");
-
-      // Redirect to order confirmation
-      if (orderIds.length === 1) {
-        router.push(ROUTES.ORDER(orderIds[0]));
-      } else {
-        router.push(ROUTES.ORDERS);
-      }
-    } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to place order";
-      toast.error(errorMessage);
+      setPromoError("Failed to apply promo code");
+      toast.error("Failed to apply promo code");
     } finally {
-      setIsProcessing(false);
+      if (current()) {
+        promoWork.current = null;
+        setIsApplyingPromo(false);
+      }
     }
   };
 
-  // Loading state
-  if (
-    !guestCartHydrated ||
-    authLoading ||
-    (isSignedIn &&
-      (cart === undefined || guestCartMerging || hasPendingMerge))
-  ) {
-    return <CheckoutSkeleton />;
-  }
-
-  // Not signed in
-  if (!isSignedIn) {
-    return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <ShoppingCart className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Checkout</h1>
-        <p className="mt-2 text-muted-foreground">
-          Please sign in to complete your purchase
-        </p>
-        <Button asChild className="mt-6">
-          <Link
-            href={`${ROUTES.SIGN_IN}?redirect_url=${encodeURIComponent(
-              ROUTES.CHECKOUT
-            )}`}
-          >
-            Sign In
-          </Link>
-        </Button>
-      </div>
-    );
-  }
-
-  // Empty cart
-  if (!cart || cart.items.length === 0) {
-    return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <Package className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Your cart is empty</h1>
-        <p className="mt-2 text-muted-foreground">
-          Add some items to your cart before checkout
-        </p>
-        <Button asChild className="mt-6">
-          <Link href={ROUTES.BROWSE}>Browse Products</Link>
-        </Button>
-      </div>
-    );
-  }
-
-  return (
-    <div className="container py-6">
-      {/* Breadcrumb */}
-      <Breadcrumb className="mb-6">
-        <BreadcrumbList>
-          <BreadcrumbItem>
-            <BreadcrumbLink href={ROUTES.HOME}>Home</BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbLink href={ROUTES.CART}>Cart</BreadcrumbLink>
-          </BreadcrumbItem>
-          <BreadcrumbSeparator />
-          <BreadcrumbItem>
-            <BreadcrumbPage>Checkout</BreadcrumbPage>
-          </BreadcrumbItem>
-        </BreadcrumbList>
-      </Breadcrumb>
-
-      <h1 className="mb-6 text-2xl font-bold">Checkout</h1>
-
-      {/* Validation Issues */}
-      {validation && !validation.isValid && (
-        <Card className="mb-6 border-destructive">
-          <CardContent className="flex items-start gap-3 p-4">
-            <AlertTriangle className="h-5 w-5 text-destructive" />
-            <div>
-              <p className="font-medium text-destructive">Cart Issues</p>
-              <ul className="mt-1 text-sm text-muted-foreground list-disc list-inside">
-                {validation.issues.map((issue, index) => (
-                  <li key={index}>{issue.issue}</li>
-                ))}
-              </ul>
-              <Button asChild variant="outline" size="sm" className="mt-3">
-                <Link href={ROUTES.CART}>Return to Cart</Link>
-              </Button>
-            </div>
+  const recovery = (
+    <>
+      {checkout.retained && (
+        <Card className="mb-6">
+          <CardHeader>
+            <CardTitle>Retained wallet checkout</CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p>
+              This checkout is retained. Do not start another payment. Refresh
+              its status or contact support.
+            </p>
+            {checkout.status?.result === "review" ||
+            (checkout.status?.result === "found" &&
+              (checkout.status.reviewNeeded ||
+                checkout.status.application === "review")) ? (
+              <p>
+                Payment needs review. Accounting history does not confirm
+                completion.
+              </p>
+            ) : (
+              <p>Payment completion has not been verified.</p>
+            )}
+            {checkout.status?.result === "found" && (
+              <p>
+                Fee:{" "}
+                {checkout.status.feeCents === null
+                  ? "Unknown"
+                  : formatZMW(checkout.status.feeCents / 100)}
+              </p>
+            )}
+            <Button
+              onClick={() => void checkout.refresh()}
+              disabled={checkout.busy}
+            >
+              Refresh checkout status
+            </Button>
           </CardContent>
         </Card>
       )}
+      {checkout.error && (
+        <p role="alert" className="mb-4 text-destructive">
+          {checkout.error}
+        </p>
+      )}
+      {checkout.outcome === "success" && (
+        <Card className="mb-6">
+          <CardContent>
+            <p>
+              Wallet purchase completed and accounting verified. Approved
+              refunds are credited to your marketplace wallet.
+            </p>
+            <Link href={ROUTES.ORDERS}>View orders</Link>
+          </CardContent>
+        </Card>
+      )}
+    </>
+  );
 
-      <div className="grid gap-6 lg:grid-cols-3">
-        {/* Main Content */}
-        <div className="lg:col-span-2 space-y-6">
-          {/* Shipping Address */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Shipping Address</CardTitle>
-              <CardDescription>
-                Where should we deliver your order?
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
-                <Label htmlFor="street">Street Address *</Label>
-                <Input
-                  id="street"
-                  placeholder="123 Main Street, Apt 4"
-                  value={shippingAddress.street}
-                  onChange={(e) =>
-                    setShippingAddress({ ...shippingAddress, street: e.target.value })
-                  }
-                  className={errors.street ? "border-destructive" : ""}
-                />
-                {errors.street && (
-                  <p className="text-sm text-destructive">{errors.street}</p>
-                )}
-              </div>
-
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="space-y-2">
-                  <Label htmlFor="city">City *</Label>
-                  <Input
-                    id="city"
-                    placeholder="Lusaka"
-                    value={shippingAddress.city}
-                    onChange={(e) =>
-                      setShippingAddress({ ...shippingAddress, city: e.target.value })
+  return (
+    <div className="container py-6">
+      <h1 className="mb-6 text-2xl font-bold">Checkout</h1>
+      {recovery}
+      {!mergeReady ? (
+        <Card>
+          <CardContent>
+            {guest.mergeFailed ? (
+              <>
+                <p>
+                  Guest cart sync failed. Your guest items have not been
+                  approved for checkout.
+                </p>
+                <Button
+                  onClick={() => {
+                    if (session && mounted.current === session) {
+                      window.location.reload();
                     }
-                    className={errors.city ? "border-destructive" : ""}
-                  />
-                  {errors.city && (
-                    <p className="text-sm text-destructive">{errors.city}</p>
+                  }}
+                >
+                  Reload to retry cart sync
+                </Button>
+              </>
+            ) : (
+              <p>
+                {!guest.isHydrated
+                  ? "Loading saved guest cart..."
+                  : guest.isMerging
+                    ? "Syncing guest cart..."
+                    : "Guest cart sync is pending..."}
+              </p>
+            )}
+          </CardContent>
+        </Card>
+      ) : cart === undefined ? (
+        <CheckoutSkeleton />
+      ) : !cart || cart.items.length === 0 ? (
+        <div>
+          <h2>Your cart is empty</h2>
+          <Link href={ROUTES.BROWSE}>Browse Products</Link>
+        </div>
+      ) : (
+        <>
+          {validation && !validation.isValid && (
+            <Card className="mb-6 border-destructive">
+              <CardContent>
+                <p>Cart Issues</p>
+                {validation.issues.map((issue, index) => (
+                  <p key={index}>{issue.issue}</p>
+                ))}
+                <Link href={ROUTES.CART}>Return to Cart</Link>
+              </CardContent>
+            </Card>
+          )}
+          <div className="grid gap-6 lg:grid-cols-3">
+            <div className="space-y-6 lg:col-span-2">
+              <Card>
+                <CardHeader>
+                  <CardTitle>Shipping Address</CardTitle>
+                  <CardDescription>
+                    All five fields are required, including for pickup.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {(["street", "city", "country", "phone"] as const).map(
+                    (field) => (
+                      <div key={field} className="space-y-2">
+                        <Label htmlFor={field}>
+                          {field === "street"
+                            ? "Street Address"
+                            : field === "phone"
+                              ? "Phone Number"
+                              : field === "country"
+                                ? "Country"
+                                : "City"}{" "}
+                          *
+                        </Label>
+                        <Input
+                          id={field}
+                          value={shippingAddress[field]}
+                          onChange={(event) =>
+                            setShippingAddress({
+                              ...shippingAddress,
+                              [field]: event.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    ),
                   )}
-                </div>
-
-                <div className="space-y-2">
                   <Label htmlFor="province">Province *</Label>
                   <Select
                     value={shippingAddress.province}
-                    onValueChange={(value) =>
-                      setShippingAddress({ ...shippingAddress, province: value })
+                    onValueChange={(province) =>
+                      setShippingAddress({ ...shippingAddress, province })
                     }
                   >
-                    <SelectTrigger className={errors.province ? "border-destructive" : ""}>
+                    <SelectTrigger id="province">
                       <SelectValue placeholder="Select province" />
                     </SelectTrigger>
                     <SelectContent>
@@ -607,351 +478,334 @@ export default function CheckoutPage() {
                       ))}
                     </SelectContent>
                   </Select>
-                  {errors.province && (
-                    <p className="text-sm text-destructive">{errors.province}</p>
-                  )}
-                </div>
-              </div>
-
-              <div className="space-y-2">
-                <Label htmlFor="phone">Phone Number *</Label>
-                <Input
-                  id="phone"
-                  placeholder="+260 97 1234567"
-                  value={shippingAddress.phone}
-                  onChange={(e) =>
-                    setShippingAddress({ ...shippingAddress, phone: e.target.value })
-                  }
-                  className={errors.phone ? "border-destructive" : ""}
-                />
-                {errors.phone && (
-                  <p className="text-sm text-destructive">{errors.phone}</p>
-                )}
-              </div>
-            </CardContent>
-          </Card>
-
-          {/* Delivery Options */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Delivery Option</CardTitle>
-              <CardDescription>
-                Zone-based rates are shown after city and province are set.
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              {deliveryQuotes === undefined &&
-              shippingAddress.city &&
-              shippingAddress.province ? (
-                <div className="flex items-center gap-2 text-sm text-muted-foreground">
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Calculating delivery options...
-                </div>
-              ) : deliveryQuotes && deliveryQuotes.length > 0 ? (
-                <RadioGroup
-                  value={selectedDeliveryMethodId}
-                  onValueChange={setSelectedDeliveryMethodId}
-                  className="space-y-3"
-                >
-                  {deliveryQuotes.map((quote) => (
-                    <div
-                      key={quote.methodId}
-                      className="flex items-start space-x-3 rounded-lg border p-4"
-                    >
-                      <RadioGroupItem
-                        value={quote.methodId}
-                        id={`delivery-${quote.methodId}`}
-                        className="mt-1"
-                      />
-                      <div className="flex-1">
-                        <Label
-                          htmlFor={`delivery-${quote.methodId}`}
-                          className="flex cursor-pointer items-center gap-2"
-                        >
-                          <Truck className="h-5 w-5" />
-                          {quote.name}
-                        </Label>
-                        <p className="mt-1 text-sm text-muted-foreground">
-                          {quote.minDays === quote.maxDays
-                            ? `${quote.minDays} day ETA`
-                            : `${quote.minDays}-${quote.maxDays} day ETA`}
-                          {quote.courierName ? ` • ${quote.courierName}` : ""}
-                        </p>
-                      </div>
-                      <p className="font-medium">
-                        {quote.fee > 0 ? formatZMW(quote.fee) : "Free"}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Delivery Option</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  {deliveryQuotes === undefined || methods === undefined ? (
+                    <p>Set city and province to load delivery options.</p>
+                  ) : deliveryQuotes.length === 0 ? (
+                    <>
+                      <p>
+                        Seller-defined shipping will be reviewed in the
+                        canonical quote.
                       </p>
-                    </div>
-                  ))}
-                </RadioGroup>
-              ) : (
-                <div className="rounded-lg border border-dashed p-4 text-sm text-muted-foreground">
-                  Using seller-defined shipping until an admin configures matching delivery zones.
-                </div>
-              )}
-            </CardContent>
-          </Card>
-
-          {/* Order Items by Seller */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Order Items</CardTitle>
-              <CardDescription>
-                {cartBySeller?.length === 1
-                  ? "Your items from 1 store"
-                  : `Your items from ${cartBySeller?.length || 0} stores`}
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <Accordion type="multiple" defaultValue={cartBySeller?.map((_, i) => `seller-${i}`)}>
-                {cartBySeller?.map((sellerGroup, index) => (
-                  <AccordionItem key={sellerGroup.sellerId} value={`seller-${index}`}>
-                    <AccordionTrigger>
-                      <div className="flex items-center gap-2">
-                        <span className="font-medium">{sellerGroup.sellerName}</span>
-                        <span className="text-sm text-muted-foreground">
-                          ({sellerGroup.items.length} {sellerGroup.items.length === 1 ? "item" : "items"})
-                        </span>
-                      </div>
-                    </AccordionTrigger>
-                    <AccordionContent>
-                      <div className="space-y-3">
-                        {sellerGroup.items.map((item) => (
-                          <div key={item._id} className="flex gap-3">
-                            <div className="h-16 w-16 shrink-0 overflow-hidden rounded-lg bg-muted">
-                              <img
-                                src={item.selectedVariant?.image || item.product.images?.[0] || "/placeholder.png"}
-                                alt={item.product.title}
-                                className="h-full w-full object-contain"
+                      {methodId && (
+                        <Button
+                          onClick={() => {
+                            setMethodId(null);
+                            setPointId(null);
+                          }}
+                        >
+                          Use current seller shipping
+                        </Button>
+                      )}
+                    </>
+                  ) : (
+                    <>
+                      <p>
+                        Choose an eligible delivery method. An invalidated
+                        choice needs explicit correction.
+                      </p>
+                      <RadioGroup
+                        aria-label="Delivery method"
+                        value={methodId ?? ""}
+                        onValueChange={(value) => {
+                          const method = methods.find(
+                            (candidate) =>
+                              candidate._id === value &&
+                              candidate.isActive &&
+                              deliveryQuotes.some(
+                                (item) => item.methodId === value,
+                              ),
+                          );
+                          if (method) {
+                            setMethodId(method._id);
+                            setPointId(null);
+                          }
+                        }}
+                      >
+                        {deliveryQuotes
+                          .filter((item) =>
+                            methods.some(
+                              (method) =>
+                                method._id === item.methodId && method.isActive,
+                            ),
+                          )
+                          .map((method) => (
+                            <div key={method.methodId}>
+                              <RadioGroupItem
+                                id={`delivery-${method.methodId}`}
+                                value={method.methodId}
                               />
+                              <Label htmlFor={`delivery-${method.methodId}`}>
+                                {method.name} (delivery preview)
+                              </Label>
                             </div>
-                            <div className="flex-1 min-w-0">
-                              <p className="font-medium line-clamp-1">
-                                {item.product.title}
-                              </p>
-                              <p className="text-sm text-muted-foreground">
-                                Qty: {item.quantity} x {formatZMW(item.lineUnitPrice ?? item.product.price)}
-                              </p>
-                              {item.selectedVariant?.attributes?.length ? (
-                                <p className="text-sm text-muted-foreground line-clamp-1">
-                                  {item.selectedVariant.attributes
-                                    .map((attribute) => `${attribute.name}: ${attribute.value}`)
-                                    .join(" • ")}
-                                </p>
-                              ) : null}
-                              {item.selectedVariant?.sku ? (
-                                <p className="text-xs text-muted-foreground">
-                                  SKU: {item.selectedVariant.sku}
-                                </p>
-                              ) : null}
+                          ))}
+                      </RadioGroup>
+                    </>
+                  )}
+                  {methodId && !selectedEligible && (
+                    <p role="alert">
+                      Selected delivery is no longer eligible. Choose a current
+                      method.
+                    </p>
+                  )}
+                  {pickup && selectedEligible && (
+                    <>
+                      <p>
+                        Select an active pickup point. No point is selected
+                        automatically.
+                      </p>
+                      <RadioGroup
+                        aria-label="Pickup point"
+                        value={pointId ?? ""}
+                        onValueChange={(value) => {
+                          const point = points?.find(
+                            (candidate) =>
+                              candidate._id === value &&
+                              candidate.isActive &&
+                              (!selectedMethod.zoneId ||
+                                candidate.zoneId === selectedMethod.zoneId),
+                          );
+                          if (point) {
+                            setPointId(point._id);
+                          }
+                        }}
+                      >
+                        {points
+                          ?.filter(
+                            (point) =>
+                              point.isActive &&
+                              (!selectedMethod.zoneId ||
+                                point.zoneId === selectedMethod.zoneId),
+                          )
+                          .map((point) => (
+                            <div key={point._id}>
+                              <RadioGroupItem
+                                id={`pickup-${point._id}`}
+                                value={point._id}
+                              />
+                              <Label htmlFor={`pickup-${point._id}`}>
+                                {point.name}
+                              </Label>
                             </div>
-                            <p className="font-medium">
-                              {formatZMW((item.lineUnitPrice ?? item.product.price) * item.quantity)}
+                          ))}
+                      </RadioGroup>
+                      {!selectedPoint && (
+                        <p>Choose an available pickup point before review.</p>
+                      )}
+                    </>
+                  )}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Canonical order review</CardTitle>
+                  <CardDescription>
+                    Only the server quote below authorizes payment.
+                  </CardDescription>
+                </CardHeader>
+                <CardContent className="space-y-4">
+                  {!quote && (
+                    <p>
+                      Complete the address and delivery choices to load your
+                      quote.
+                    </p>
+                  )}
+                  {checkout.quoteError && (
+                    <p role="alert">{checkout.quoteError}</p>
+                  )}
+                  {quote?.sellers.map((seller) => (
+                    <section key={seller.sellerId}>
+                      <h3 className="font-semibold">
+                        {cartBySeller?.find(
+                          (group) => group.sellerId === seller.sellerId,
+                        )?.sellerName || "Seller"}
+                      </h3>
+                      {quote.lines
+                        .filter((line) => line.sellerId === seller.sellerId)
+                        .map((line, index) => (
+                          <div
+                            key={
+                              line.cartItemId ??
+                              `${line.customizationKey}/${index}`
+                            }
+                            className="my-3"
+                          >
+                            <p>
+                              {line.title} — Qty: {line.quantity} ×{" "}
+                              {formatZMW(line.unitCents / 100)} ={" "}
+                              {formatZMW(line.lineTotalCents / 100)}
                             </p>
+                            {line.variant && (
+                              <p>
+                                Variant:{" "}
+                                {line.variant.attributes
+                                  .map((item) => `${item.name}: ${item.value}`)
+                                  .join(", ")}
+                                ; SKU: {line.variant.sku}
+                              </p>
+                            )}
+                            {line.optionPairs.map((option) => (
+                              <p key={`${option.name}/${option.value}`}>
+                                {option.name}: {option.value} (
+                                {formatZMW(option.deltaCents / 100)})
+                              </p>
+                            ))}
+                            {line.addOns.map((addon) => (
+                              <p key={addon.name}>
+                                {addon.name}:{" "}
+                                {formatZMW(addon.priceCents / 100)}
+                              </p>
+                            ))}
+                            {line.fallbackShipping && (
+                              <p>
+                                Shipping: {line.fallbackShipping.name} (
+                                {formatZMW(
+                                  line.fallbackShipping.priceCents / 100,
+                                )}
+                                )
+                              </p>
+                            )}
                           </div>
                         ))}
-                        <Separator />
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">Subtotal</span>
-                          <span>{formatZMW(sellerGroup.subtotal)}</span>
-                        </div>
-                        <div className="flex justify-between text-sm">
-                          <span className="text-muted-foreground">Shipping</span>
-                          <span>
-                            {sellerGroup.shippingTotal > 0
-                              ? formatZMW(sellerGroup.shippingTotal)
-                              : "Free"}
-                          </span>
-                        </div>
-                      </div>
-                    </AccordionContent>
-                  </AccordionItem>
-                ))}
-              </Accordion>
-            </CardContent>
-          </Card>
-
-          {/* Payment Method */}
-          <Card>
-            <CardHeader>
-              <CardTitle>Payment Method</CardTitle>
-              <CardDescription>
-                Choose how you want to pay
-              </CardDescription>
-            </CardHeader>
-            <CardContent>
-              <RadioGroup
-                value={paymentMethod}
-                onValueChange={(value) => setPaymentMethod(value as "wallet")}
-              >
-                <div className="flex items-start space-x-3 p-4 rounded-lg border">
-                  <RadioGroupItem value="wallet" id="wallet" className="mt-1" />
-                  <div className="flex-1">
-                    <Label htmlFor="wallet" className="flex items-center gap-2 cursor-pointer">
-                      <Wallet className="h-5 w-5" />
-                      Pay with Wallet
-                    </Label>
-                    <p className="text-sm text-muted-foreground mt-1">
-                      Current balance: {formatZMW(wallet?.balance || 0)}
-                    </p>
-                    {wallet && wallet.balance < totalAmount && (
-                      <p className="text-sm text-destructive mt-1">
-                        Insufficient balance. You need {formatZMW(totalAmount - wallet.balance)} more.
+                      <p>
+                        Seller subtotal {formatZMW(seller.subtotalCents / 100)};
+                        shipping {formatZMW(seller.shippingCents / 100)}; total{" "}
+                        {formatZMW(seller.totalAmountCents / 100)}
+                      </p>
+                    </section>
+                  ))}
+                  {quote && <p>Delivery: {quote.delivery.name}</p>}
+                </CardContent>
+              </Card>
+              <Card>
+                <CardHeader>
+                  <CardTitle>Pay with Wallet</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <p>Current balance: {formatZMW(wallet?.balance ?? 0)}</p>
+                  {quote &&
+                    (balanceCents === null ||
+                      balanceCents < quote.totalAmountCents) && (
+                      <p>
+                        Insufficient or unavailable wallet balance for this
+                        canonical quote.
                       </p>
                     )}
-                  </div>
-                </div>
-              </RadioGroup>
-
-              {/* Escrow Notice */}
-              <div className="mt-4 rounded-lg bg-green-50 dark:bg-green-950/20 p-4">
-                <div className="flex gap-3">
-                  <Shield className="h-5 w-5 shrink-0 text-green-600" />
-                  <div>
-                    <p className="font-medium text-green-800 dark:text-green-400">
-                      Secure Escrow Protection
-                    </p>
-                    <p className="text-sm text-green-700 dark:text-green-500 mt-1">
-                      Your payment will be held securely in escrow until you confirm
-                      receipt of your order. The seller only receives payment after
-                      you&apos;re satisfied.
-                    </p>
-                  </div>
-                </div>
-              </div>
-            </CardContent>
-          </Card>
-        </div>
-
-        {/* Order Summary */}
-        <div className="lg:col-span-1">
-          <Card className="sticky top-4">
-            <CardHeader>
-              <CardTitle>Order Summary</CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-4">
-              <div className="space-y-2">
+                  <p>
+                    Payment is held in escrow. Approved refunds credit your
+                    marketplace wallet.
+                  </p>
+                </CardContent>
+              </Card>
+            </div>
+            <Card className="h-fit">
+              <CardHeader>
+                <CardTitle>Order Summary</CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-4">
                 <Label htmlFor="promoCode">Promo Code</Label>
                 <div className="flex gap-2">
                   <Input
                     id="promoCode"
                     value={promoCodeInput}
+                    placeholder="Enter code"
                     onChange={(event) => {
                       setPromoCodeInput(event.target.value);
                       setPromoError(null);
                     }}
-                    placeholder="Enter code"
-                    disabled={Boolean(appliedPromo) || isApplyingPromo}
+                    disabled={Boolean(appliedPromo)}
                   />
                   {appliedPromo ? (
-                    <Button variant="outline" onClick={removePromo}>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setAppliedPromo(null);
+                        setPromoError(null);
+                      }}
+                    >
                       Remove
                     </Button>
                   ) : (
                     <Button
                       variant="outline"
-                      onClick={handleApplyPromo}
+                      onClick={() => void handleApplyPromo()}
                       disabled={isApplyingPromo || subtotal <= 0}
                     >
-                      {isApplyingPromo ? (
-                        <Loader2 className="h-4 w-4 animate-spin" />
-                      ) : (
-                        "Apply"
-                      )}
+                      {isApplyingPromo ? "Applying..." : "Apply"}
                     </Button>
                   )}
                 </div>
                 {appliedPromo && (
-                  <p className="flex items-center gap-1 text-sm text-green-700 dark:text-green-400">
-                    <Tag className="h-4 w-4" />
-                    {appliedPromo.title} applied
+                  <p>
+                    {appliedPromo.title} selected; eligibility and discount come
+                    from the quote. Remove or correct an invalid code.
                   </p>
                 )}
-                {promoError && (
-                  <p className="text-sm text-destructive">{promoError}</p>
-                )}
-              </div>
-              <Separator />
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">
-                  Subtotal ({cart.itemCount} items)
-                </span>
-                <span>{formatZMW(subtotal)}</span>
-              </div>
-              {discountAmount > 0 && (
-                <div className="flex justify-between text-green-700 dark:text-green-400">
-                  <span>Promo Discount</span>
-                  <span>-{formatZMW(discountAmount)}</span>
-                </div>
-              )}
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">Shipping</span>
-                <span>
-                  {shippingTotal > 0 ? formatZMW(shippingTotal) : "Free"}
-                </span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-muted-foreground">
-                  Platform Fee (5%)
-                </span>
-                <span>{formatZMW(platformFee)}</span>
-              </div>
-              <Separator />
-              <div className="flex justify-between font-semibold text-lg">
-                <span>Total</span>
-                <span className="text-primary">{formatZMW(totalAmount)}</span>
-              </div>
-            </CardContent>
-            <CardFooter className="flex-col gap-3">
-              <Button
-                className="w-full"
-                size="lg"
-                onClick={handlePlaceOrder}
-                disabled={
-                  isProcessing ||
-                  (validation !== undefined && validation !== null && !validation.isValid) ||
-                  (wallet !== null && wallet !== undefined && wallet.balance < totalAmount)
-                }
-              >
-                {isProcessing ? (
+                {promoError && <p role="alert">{promoError}</p>}
+                {quote && (
                   <>
-                    <Loader2 className="mr-2 h-4 w-4 animate-spin" />
-                    Processing...
-                  </>
-                ) : (
-                  <>
-                    <CheckCircle className="mr-2 h-4 w-4" />
-                    Place Order
+                    <p>Subtotal: {formatZMW(quote.subtotalCents / 100)}</p>
+                    <p>Promo Discount: {formatZMW(quote.promoCents / 100)}</p>
+                    <p>Shipping: {formatZMW(quote.shippingCents / 100)}</p>
+                    <p>
+                      Platform Fee: {formatZMW(quote.platformFeeCents / 100)}
+                    </p>
+                    <p className="font-semibold">
+                      Total: {formatZMW(quote.totalAmountCents / 100)}
+                    </p>
                   </>
                 )}
-              </Button>
-              <p className="text-xs text-center text-muted-foreground">
-                By placing your order, you agree to our Terms of Service and
-                Privacy Policy
-              </p>
-            </CardFooter>
-          </Card>
-        </div>
-      </div>
+              </CardContent>
+              <CardFooter className="flex-col gap-3">
+                {!paymentsAvailable && (
+                  <p>
+                    Payments are temporarily unavailable while we move them to a
+                    new backend.
+                  </p>
+                )}
+                <Button
+                  onClick={checkout.approve}
+                  disabled={!checkout.canApprove || checkout.approved}
+                >
+                  Approve{" "}
+                  {quote ? formatZMW(quote.totalAmountCents / 100) : "quote"}
+                </Button>
+                <Button
+                  className="w-full"
+                  onClick={() => void checkout.submit()}
+                  disabled={!checkout.canSubmit}
+                >
+                  {checkout.busy
+                    ? "Processing..."
+                    : checkout.approved && quote
+                      ? `Pay ${formatZMW(quote.totalAmountCents / 100, { minimumFractionDigits: 2 })}`
+                      : "Place Order"}
+                </Button>
+                <p className="text-xs">
+                  Review the canonical items, address, delivery and total, then
+                  explicitly approve before paying.
+                </p>
+              </CardFooter>
+            </Card>
+          </div>
+        </>
+      )}
     </div>
   );
 }
 
-function CheckoutSkeleton() {
+function CheckoutSkeleton(): JSX.Element {
   return (
-    <div className="container py-6">
-      <Skeleton className="mb-6 h-4 w-48" />
-      <Skeleton className="mb-6 h-8 w-32" />
-      <div className="grid gap-6 lg:grid-cols-3">
-        <div className="lg:col-span-2 space-y-6">
-          <Skeleton className="h-80 w-full rounded-lg" />
-          <Skeleton className="h-64 w-full rounded-lg" />
-          <Skeleton className="h-48 w-full rounded-lg" />
-        </div>
-        <div className="lg:col-span-1">
-          <Skeleton className="h-72 w-full rounded-lg" />
-        </div>
-      </div>
+    <div className="space-y-4">
+      <Skeleton className="h-64 w-full" />
+      <Skeleton className="h-32 w-full" />
     </div>
   );
 }

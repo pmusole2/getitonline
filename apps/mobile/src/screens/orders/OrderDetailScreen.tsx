@@ -1,29 +1,28 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { useMutation, useQuery } from 'convex/react';
+import { useConvexAuth, useMutation, useQuery } from 'convex/react';
+import type { FunctionReturnType } from 'convex/server';
 import { LinearGradient } from 'expo-linear-gradient';
-import React, { useState } from 'react';
+import React, { useLayoutEffect, useRef, useState } from 'react';
 import { ActivityIndicator, Alert, Image, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Divider, Modal, Portal, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import { useImageUpload } from '../../hooks/useImageUpload';
-import { detectProvider, formatZambianPhoneNumber, getProviderColor, usePayment } from '../../hooks/usePayment';
+import { detectProvider, getProviderColor, usePayment } from '../../hooks/usePayment';
+import { usePaymentAvailability } from '../../hooks/usePaymentAvailability';
+import type { CheckoutSelectors } from '../../services/checkoutOperationState';
 import { MobileMoneyProvider } from '../../services/payments';
 import { formatPrice } from '../../theme';
 import type { Id, OrderStatus, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OrderDetail'>;
-type ReturnReason =
-  | 'wrong_item'
-  | 'defective'
-  | 'not_as_described'
-  | 'damaged_in_transit'
-  | 'changed_mind'
-  | 'other';
+type ReturnReason = 'wrong_item' | 'defective' | 'not_as_described' | 'damaged_in_transit' | 'changed_mind' | 'other';
 
 const returnReasons: Array<{ value: ReturnReason; label: string }> = [
   { value: 'wrong_item', label: 'Wrong item' },
@@ -47,6 +46,8 @@ const statusConfig: Record<OrderStatus, { label: string; icon: string; color: st
 
 const statusSteps: OrderStatus[] = ['pending_payment', 'paid', 'processing', 'shipped', 'delivered', 'completed'];
 
+const paymentsUnavailableMessage = 'Payments are temporarily unavailable';
+
 const getDisputeStatusColor = (status: string): string => {
   const colors: Record<string, string> = {
     open: '#F59E0B',
@@ -58,7 +59,33 @@ const getDisputeStatusColor = (status: string): string => {
   return colors[status] || '#6B7280';
 };
 
-export default function OrderDetailScreen({ route, navigation }: Props) {
+export default function OrderDetailScreen(props: Props) {
+  const access = useAccountAccess();
+  const auth = useAppAuth();
+  const convexAuth = useConvexAuth();
+  const verified =
+    convexAuth.isAuthenticated &&
+    !convexAuth.isLoading &&
+    typeof auth.clerkUser?.id === 'string' &&
+    auth.user?.clerkId === auth.clerkUser.id;
+  if (access.status !== 'ready' || !verified) {
+    return (
+      <AccountAccessNotice
+        access={
+          access.status === 'ready' && !verified
+            ? { ...access, status: convexAuth.isLoading ? 'loading' : 'recovery' }
+            : access
+        }
+        title="Order Details"
+      />
+    );
+  }
+  return (
+    <OrderDetailContent key={`${auth.clerkUser?.id}/${auth.user?._id}/${props.route.params.orderId}`} {...props} />
+  );
+}
+
+function OrderDetailContent({ route, navigation }: Props) {
   const theme = useTheme();
   const { orderId } = route.params;
   const { user } = useAppAuth();
@@ -78,35 +105,18 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
 
   // Payment state
   const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [paymentMethod, setPaymentMethod] = useState<'mobile_money' | 'card'>('mobile_money');
   const [mobileNumber, setMobileNumber] = useState(user?.phone || '');
-  const [mobileProvider, setMobileProvider] = useState<MobileMoneyProvider | null>(null);
+  const [mobileProvider, setMobileProvider] = useState<MobileMoneyProvider | null>(
+    user?.phone ? detectProvider(user.phone) : null,
+  );
 
-  const order = useQuery(api.orders.getOrder, { orderId: orderId as Id<'orders'> });
-  const escrow = useQuery(
-    api.escrow.getEscrowByOrder,
-    order ? { orderId: order._id } : 'skip'
-  );
-  const dispute = useQuery(
-    api.disputes.getDisputeByOrder,
-    order ? { orderId: order._id } : 'skip'
-  );
-  const trackingEvents = useQuery(
-    api.delivery.getOrderTrackingEvents,
-    user && order ? { orderId: order._id, viewerUserId: user._id } : 'skip',
-  );
-  const returnRequests = useQuery(
-    api.delivery.getOrderReturnRequests,
-    user && order ? { orderId: order._id, viewerUserId: user._id } : 'skip',
-  );
-  const canReviewOrder = useQuery(
-    api.reviews.canReviewOrder,
-    user && order ? { orderId: order._id, userId: user._id } : 'skip',
-  );
-  const existingReview = useQuery(
-    api.reviews.getReviewByOrder,
-    order ? { orderId: order._id } : 'skip',
-  );
+  const order = useQuery(api.orders.getOrder, user && !user.isBanned ? { orderId: orderId as Id<'orders'> } : 'skip');
+  const escrow = useQuery(api.escrow.getEscrowByOrder, order ? { orderId: order._id } : 'skip');
+  const dispute = useQuery(api.disputes.getDisputeByOrder, order ? { orderId: order._id } : 'skip');
+  const trackingEvents = useQuery(api.delivery.getOrderTrackingEvents, user && order ? { orderId: order._id } : 'skip');
+  const returnRequests = useQuery(api.delivery.getOrderReturnRequests, user && order ? { orderId: order._id } : 'skip');
+  const canReviewOrder = useQuery(api.reviews.canReviewOrder, user && order ? { orderId: order._id } : 'skip');
+  const existingReview = useQuery(api.reviews.getReviewByOrder, order ? { orderId: order._id } : 'skip');
 
   const updateOrderStatus = useMutation(api.orders.updateOrderStatus);
   const cancelOrder = useMutation(api.orders.cancelOrder);
@@ -115,24 +125,170 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
   const requestReturn = useMutation(api.delivery.requestReturn);
   const createReview = useMutation(api.reviews.createReview);
 
-  // Payment hook
-  const {
-    isLoading: paymentLoading,
-    isPending: paymentPending,
-    payWithMobileMoney,
-    payWithCard,
-  } = usePayment({
-    onSuccess: () => {
-      setShowPaymentModal(false);
-      Alert.alert(
-        'Payment Successful!',
-        'Your payment has been processed. The seller will now process your order.',
-      );
-    },
-    onError: (error) => {
-      Alert.alert('Payment Failed', error.message);
-    },
+  const [promoOverride, setPromoOverride] = useState<string | null>(null);
+  const [promoInput, setPromoInput] = useState('');
+  const [methodOverride, setMethodOverride] = useState<
+    FunctionReturnType<typeof api.delivery.listDeliveryMethods>[number]['_id'] | null | undefined
+  >(undefined);
+  const [pointOverride, setPointOverride] = useState<
+    FunctionReturnType<typeof api.delivery.listPickupPoints>[number]['_id'] | null | undefined
+  >(undefined);
+  const methods = useQuery(api.delivery.listDeliveryMethods, {});
+  const deliveryQuotes = useQuery(
+    api.delivery.calculateDeliveryQuote,
+    order
+      ? {
+          city: order.shippingAddress.city,
+          province: order.shippingAddress.province,
+          subtotal: order.subtotal,
+          weightKg: 0,
+        }
+      : 'skip',
+  );
+  const methodId = methodOverride === undefined ? order?.deliveryMethodId : methodOverride;
+  const method = methods?.find((entry) => entry._id === methodId && entry.isActive);
+  const points = useQuery(
+    api.delivery.listPickupPoints,
+    method?.type === 'pickup' ? (method.zoneId ? { zoneId: method.zoneId } : {}) : 'skip',
+  );
+  const pointId = pointOverride === undefined ? order?.pickupPointId : pointOverride;
+  const point = points?.find(
+    (entry) =>
+      entry._id === pointId && entry.isActive && (method?.zoneId === undefined || entry.zoneId === method.zoneId),
+  );
+  const promoCode = promoOverride ?? order?.promoCode?.trim() ?? '';
+  const deliveryValid =
+    methods !== undefined &&
+    deliveryQuotes !== undefined &&
+    (methodId
+      ? Boolean(
+          method &&
+          deliveryQuotes.some((entry) => entry.methodId === method._id) &&
+          (method.type !== 'pickup' || point),
+        )
+      : deliveryQuotes.length === 0) &&
+    (method?.type === 'pickup' || !pointId);
+  const savedAddressComplete = Boolean(
+    order &&
+    (['street', 'city', 'province', 'country', 'phone'] as const).every((field) => {
+      const value = order.shippingAddress[field];
+      return typeof value === 'string' && value.trim().length > 0;
+    }),
+  );
+  const selectors: CheckoutSelectors | null =
+    order && order.status === 'pending_payment' && deliveryValid && savedAddressComplete
+      ? {
+          source: 'pending_orders',
+          orderIds: [order._id],
+          shippingAddress: order.shippingAddress,
+          ...(method ? { deliveryMethodId: method._id } : {}),
+          ...(method?.type === 'pickup' && point ? { pickupPointId: point._id } : {}),
+          ...(promoCode ? { promoCode } : {}),
+        }
+      : null;
+  const payment = usePayment({
+    selectors,
+    kind: 'checkout_collection',
+    phone: mobileNumber,
+    operator: mobileProvider,
+    enabled: Boolean(
+      order &&
+      user?._id === order.buyerId &&
+      order.status === 'pending_payment' &&
+      mobileNumber.trim() &&
+      mobileProvider,
+    ),
+    contextKey: JSON.stringify([order?._id, order?.status, order?.shippingAddress, methodId, pointId, promoCode]),
   });
+  const paymentLoading = payment.working;
+  const paymentPending = Boolean(payment.recovery);
+  const quote = payment.quote;
+  const controlEpoch = useRef(0);
+  const controlIdentity = JSON.stringify([
+    payment.sessionKey,
+    order?._id,
+    user?._id,
+    user?.role,
+    order?.buyerId,
+    order?.sellerId,
+  ]);
+  const controlFacts = JSON.stringify([controlIdentity, order?.status]);
+  const activeControl = useRef<{
+    identity: string;
+    work: number;
+    expectedStatus: string;
+    status: string | undefined;
+    retired: boolean;
+  } | null>(null);
+  const committedControl = useRef({ facts: controlFacts, generation: 0, mounted: false });
+  useLayoutEffect(() => {
+    const active = activeControl.current;
+    if (active) {
+      // Only this work's expected transition may advance its query status. Retirement is monotonic across ABA.
+      if (active.identity !== controlIdentity) {
+        active.retired = true;
+        activeControl.current = null;
+        setLoading(false);
+      } else {
+        if (active.status !== order?.status && active.expectedStatus !== order?.status) active.retired = true;
+        active.status = order?.status;
+      }
+    }
+    if (committedControl.current.facts !== controlFacts)
+      committedControl.current = {
+        facts: controlFacts,
+        generation: committedControl.current.generation + 1,
+        mounted: true,
+      };
+    committedControl.current.mounted = true;
+    return () => {
+      committedControl.current.mounted = false;
+    };
+  }, [controlFacts, controlIdentity, order?.status]);
+  const renderedControlEpoch = controlEpoch.current;
+  const controlGeneration =
+    committedControl.current.generation + (committedControl.current.facts === controlFacts ? 0 : 1);
+  const controlCurrent = (): boolean =>
+    payment.isCurrent() &&
+    committedControl.current.mounted &&
+    committedControl.current.facts === controlFacts &&
+    committedControl.current.generation === controlGeneration &&
+    renderedControlEpoch === controlEpoch.current;
+  const beginControl = (expectedStatus: string): { current(): boolean; finish(): void } | null => {
+    if (!controlCurrent()) return null;
+    const active = {
+      identity: controlIdentity,
+      work: ++controlEpoch.current,
+      expectedStatus,
+      status: order?.status,
+      retired: false,
+    };
+    activeControl.current = active;
+    const ownsLoading = (): boolean =>
+      payment.isCurrent() &&
+      committedControl.current.mounted &&
+      activeControl.current === active &&
+      controlEpoch.current === active.work;
+    return {
+      current: () => ownsLoading() && !active.retired,
+      finish: () => {
+        // An incompatible query may retire side effects, but only this work may release its loading.
+        if (ownsLoading()) {
+          activeControl.current = null;
+          setLoading(false);
+        }
+      },
+    };
+  };
+
+  // Fails closed: a loading, failed, or malformed availability result is unavailable. The ref mirrors the committed render
+  // so a handler captured earlier reads the current value when it runs. It is written in a layout effect, not during
+  // render, so a render that React abandons cannot open a payment.
+  const paymentsAvailable = usePaymentAvailability() === 'available';
+  const paymentsAvailableRef = useRef(paymentsAvailable);
+  useLayoutEffect(() => {
+    paymentsAvailableRef.current = paymentsAvailable;
+  }, [paymentsAvailable]);
 
   const isBuyer = user?._id === order?.buyerId;
   const isSeller = user?._id === order?.sellerId;
@@ -147,62 +303,65 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     }
   };
 
-  const handlePayNow = async () => {
-    if (!order || !user) return;
+  const openPaymentModal = () => {
+    if (
+      !paymentsAvailableRef.current ||
+      !controlCurrent() ||
+      !order ||
+      order.status !== 'pending_payment' ||
+      !payment.ready ||
+      payment.recovery
+    )
+      return;
+    setShowPaymentModal(true);
+  };
 
-    if (paymentMethod === 'mobile_money') {
-      if (!mobileNumber.trim()) {
-        Alert.alert('Missing Information', 'Please enter your mobile money number');
-        return;
-      }
-      if (!mobileProvider) {
-        Alert.alert('Missing Information', 'Please select your mobile money provider');
-        return;
-      }
+  const closePaymentModal = (): void => {
+    if (!controlCurrent()) return;
+    payment.cancelDraft();
+    setShowPaymentModal(false);
+  };
 
-      await payWithMobileMoney({
-        orderId: order._id,
-        userId: user._id,
-        amount: order.totalAmount,
-        provider: mobileProvider,
-        mobileNumber: formatZambianPhoneNumber(mobileNumber),
-        description: `Payment for order #${order.orderNumber}`,
-      });
-    } else {
-      await payWithCard({
-        orderId: order._id,
-        userId: user._id,
-        amount: order.totalAmount,
-        email: user.email,
-        description: `Payment for order #${order.orderNumber}`,
-      });
-    }
+  const handlePayNow = async (): Promise<void> => {
+    if (!order || order.status !== 'pending_payment' || !user || !paymentsAvailableRef.current || !controlCurrent())
+      return;
+    await payment.submit();
   };
 
   const handleStatusUpdate = async (newStatus: string) => {
     if (!order || !user) return;
+    const control = beginControl(newStatus);
+    if (!control) return;
 
     setLoading(true);
     try {
-      await updateOrderStatus({
+      const result = await updateOrderStatus({
         orderId: order._id,
         status: newStatus as 'paid' | 'processing' | 'shipped' | 'delivered' | 'completed' | 'cancelled' | 'disputed',
-        userId: user._id,
       });
+      if (!control.current()) return;
+      if (result && 'accountingOutcome' in result && result.accountingOutcome === 'review') {
+        Alert.alert(
+          'Accounting review pending',
+          'The order is awaiting accounting review. Completion or refund is not confirmed.',
+        );
+        return;
+      }
       if ((isSeller || isAdmin) && newStatus === 'processing') {
         await addTrackingEvent({
-          actorUserId: user._id,
           orderId: order._id,
           status: 'processing',
           message: `Order ${order.orderNumber} is being prepared by the seller.`,
         });
       }
+      if (!control.current()) return;
       Alert.alert('Success', 'Order status updated');
     } catch (error) {
+      if (!control.current()) return;
       const errorMessage = error instanceof Error ? error.message : 'Failed to update order status';
       Alert.alert('Error', errorMessage);
     } finally {
-      setLoading(false);
+      control.finish();
     }
   };
 
@@ -213,12 +372,10 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     try {
       await markAsShipped({
         orderId: order._id,
-        sellerId: user._id,
         trackingNumber: trackingNumber.trim() || undefined,
         shippingCarrier: trackingCarrier.trim() || undefined,
       });
       await addTrackingEvent({
-        actorUserId: user._id,
         orderId: order._id,
         status: 'in_transit',
         message: trackingCarrier.trim()
@@ -249,7 +406,6 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     setLoading(true);
     try {
       await requestReturn({
-        buyerId: user._id,
         orderId: order._id,
         reason: returnReason,
         requestedItems: order.items.map((item) => ({
@@ -260,7 +416,6 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
         evidenceUrls: returnImages.getImageUrls(),
       });
       await addTrackingEvent({
-        actorUserId: user._id,
         orderId: order._id,
         status: 'return_requested',
         message: `Return requested for order ${order.orderNumber}.`,
@@ -288,7 +443,6 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     try {
       await createReview({
         orderId: order._id,
-        reviewerId: user._id,
         rating: reviewRating,
         title: reviewTitle.trim() || undefined,
         comment: reviewComment.trim() || undefined,
@@ -314,7 +468,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
   };
 
   const handleAdminCancelOrder = () => {
-    if (!order || !user || user.role !== 'admin') {
+    if (!order || !user || user.role !== 'admin' || !controlCurrent()) {
       return;
     }
 
@@ -323,7 +477,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     Alert.alert(
       requiresRefund ? 'Cancel and Refund Order' : 'Cancel Order',
       requiresRefund
-        ? 'This will cancel the order, refund any escrowed funds, and mark linked transactions accordingly.'
+        ? 'This requests cancellation and a refund to the marketplace wallet. Accounting review may hold the request.'
         : 'This will cancel the order before payment is collected.',
       [
         { text: 'Keep Order', style: 'cancel' },
@@ -331,25 +485,72 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
           text: 'Cancel Order',
           style: 'destructive',
           onPress: async () => {
+            const control = beginControl('cancelled');
+            if (!control) return;
             setLoading(true);
             try {
-              await cancelOrder({
+              const result = await cancelOrder({
                 orderId: order._id,
-                userId: user._id,
                 reason: 'Cancelled by admin from the mobile order management flow.',
               });
+              if (!control.current()) return;
+              if (result && 'accountingOutcome' in result && result.accountingOutcome === 'review') {
+                Alert.alert('Accounting review pending', 'Cancellation and any wallet refund await accounting review.');
+                return;
+              }
               Alert.alert('Order cancelled', 'The order and related payment state were updated.');
             } catch (error: unknown) {
+              if (!control.current()) return;
               const message = error instanceof Error ? error.message : 'Failed to cancel order';
               Alert.alert('Error', message);
             } finally {
-              setLoading(false);
+              control.finish();
             }
           },
         },
-      ]
+      ],
     );
   };
+
+  if (payment.recovery) {
+    const current = payment.isCompleted;
+    return (
+      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
+        <StackHeader title="Payment recovery" onBackPress={() => navigation.goBack()} />
+        <Text>
+          {payment.outcome === 'completed'
+            ? 'Owned checkout payment confirmed'
+            : payment.outcome === 'failed'
+              ? 'Payment failed or cancelled'
+              : payment.outcome === 'review'
+                ? 'Payment needs review'
+                : 'Payment confirmation pending'}
+        </Text>
+        <Text>
+          Recovery may belong to another checkout. View its owned orders; this screen does not mark the selected order
+          paid.
+        </Text>
+        {payment.error ? <Text>{payment.error}</Text> : null}
+        <Button disabled={payment.working} onPress={() => void payment.checkStatus()}>
+          Check status
+        </Button>
+        {payment.outcome === 'completed' ? (
+          <Button
+            onPress={() => {
+              if (current()) navigation.replace('Main', { screen: 'Orders' } as never);
+            }}
+          >
+            View Orders
+          </Button>
+        ) : null}
+        {payment.outcome === 'completed' || payment.outcome === 'failed' ? (
+          <Button disabled={payment.working} onPress={() => void payment.newSubmission()}>
+            Start new payment
+          </Button>
+        ) : null}
+      </View>
+    );
+  }
 
   if (order === undefined) {
     return (
@@ -386,26 +587,15 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
     ? order.updatedAt + 7 * 24 * 60 * 60 * 1000
     : null;
   const canRequestReturn = Boolean(
-    isBuyer &&
-      returnWindowEndsAt &&
-      Date.now() <= returnWindowEndsAt &&
-      !activeReturnRequest,
+    isBuyer && returnWindowEndsAt && Date.now() <= returnWindowEndsAt && !activeReturnRequest,
   );
-  const canWriteReview = Boolean(
-    isBuyer && canReviewOrder?.canReview && !existingReview,
-  );
+  const canWriteReview = Boolean(isBuyer && canReviewOrder?.canReview && !existingReview);
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <StackHeader
-        title={`Order #${order.orderNumber.slice(-8)}`}
-        onBackPress={() => navigation.goBack()}
-      />
+      <StackHeader title={`Order #${order.orderNumber.slice(-8)}`} onBackPress={() => navigation.goBack()} />
 
-      <ScrollView
-        showsVerticalScrollIndicator={false}
-        contentContainerStyle={styles.scrollContent}
-      >
+      <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         {/* Status Header Card */}
         <Animated.View entering={FadeInDown.delay(100).duration(400)}>
           <LinearGradient
@@ -458,9 +648,8 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                           style={[
                             styles.timelineConnector,
                             {
-                              backgroundColor: index <= currentStepIndex
-                                ? theme.colors.primary
-                                : theme.colors.outlineVariant,
+                              backgroundColor:
+                                index <= currentStepIndex ? theme.colors.primary : theme.colors.outlineVariant,
                             },
                           ]}
                         />
@@ -477,9 +666,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                           },
                         ]}
                       >
-                        {isCompleted && (
-                          <Icon name="check" size={14} color="#FFFFFF" />
-                        )}
+                        {isCompleted && <Icon name="check" size={14} color="#FFFFFF" />}
                       </View>
 
                       {/* Step Label */}
@@ -543,12 +730,20 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                     </Text>
                   </View>
                   {item.selectedVariantOptions && item.selectedVariantOptions.length > 0 ? (
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }} numberOfLines={1}>
+                    <Text
+                      variant="bodySmall"
+                      style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
+                      numberOfLines={1}
+                    >
                       {item.selectedVariantOptions.map((option) => `${option.name}: ${option.value}`).join(' • ')}
                     </Text>
                   ) : null}
                   {item.selectedAddOns && item.selectedAddOns.length > 0 ? (
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }} numberOfLines={1}>
+                    <Text
+                      variant="bodySmall"
+                      style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}
+                      numberOfLines={1}
+                    >
                       Add-ons: {item.selectedAddOns.map((addOn) => addOn.name).join(', ')}
                     </Text>
                   ) : null}
@@ -575,7 +770,10 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                 <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
                   Shipping
                 </Text>
-                <Text variant="bodyMedium" style={{ color: order.shippingCost === 0 ? theme.colors.secondary : theme.colors.onSurface }}>
+                <Text
+                  variant="bodyMedium"
+                  style={{ color: order.shippingCost === 0 ? theme.colors.secondary : theme.colors.onSurface }}
+                >
                   {order.shippingCost === 0 ? 'Free' : formatPrice(order.shippingCost)}
                 </Text>
               </View>
@@ -607,14 +805,17 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                 <Text variant="titleSmall" style={{ color: theme.colors.onSecondaryContainer, fontWeight: '700' }}>
                   Escrow Protection
                 </Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, marginTop: 4, opacity: 0.9 }}>
+                <Text
+                  variant="bodySmall"
+                  style={{ color: theme.colors.onSecondaryContainer, marginTop: 4, opacity: 0.9 }}
+                >
                   {escrow.status === 'held'
                     ? 'Payment is securely held until delivery is confirmed.'
                     : escrow.status === 'released'
-                    ? 'Payment has been released to the seller.'
-                    : escrow.status === 'refunded'
-                    ? 'Payment has been refunded to the buyer.'
-                    : 'Payment is under dispute.'}
+                      ? 'Payment has been released to the seller.'
+                      : escrow.status === 'refunded'
+                        ? 'Payment has been refunded to the buyer.'
+                        : 'Payment is under dispute.'}
                 </Text>
               </View>
             </LinearGradient>
@@ -777,8 +978,16 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                     <Text variant="titleSmall" style={{ color: theme.colors.onErrorContainer, fontWeight: '700' }}>
                       Dispute Opened
                     </Text>
-                    <View style={[styles.disputeStatusBadge, { backgroundColor: getDisputeStatusColor(dispute.status) + '20' }]}>
-                      <Text variant="labelSmall" style={{ color: getDisputeStatusColor(dispute.status), fontWeight: '600' }}>
+                    <View
+                      style={[
+                        styles.disputeStatusBadge,
+                        { backgroundColor: getDisputeStatusColor(dispute.status) + '20' },
+                      ]}
+                    >
+                      <Text
+                        variant="labelSmall"
+                        style={{ color: getDisputeStatusColor(dispute.status), fontWeight: '600' }}
+                      >
                         {dispute.status.replace('_', ' ').toUpperCase()}
                       </Text>
                     </View>
@@ -789,7 +998,11 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                 <Text variant="titleSmall" style={{ color: theme.colors.onErrorContainer, marginTop: 12 }}>
                   {dispute.title}
                 </Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onErrorContainer, marginTop: 4, opacity: 0.8 }} numberOfLines={2}>
+                <Text
+                  variant="bodySmall"
+                  style={{ color: theme.colors.onErrorContainer, marginTop: 4, opacity: 0.8 }}
+                  numberOfLines={2}
+                >
                   {dispute.description}
                 </Text>
 
@@ -835,12 +1048,15 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
               <View style={styles.adminMetaRow}>
                 <Icon name="store-outline" size={16} color={theme.colors.onSurfaceVariant} />
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, flex: 1 }}>
-                  Seller: {order.seller?.displayName ?? `${order.seller?.firstName ?? ''} ${order.seller?.lastName ?? ''}`.trim()}
+                  Seller:{' '}
+                  {order.seller?.displayName ??
+                    `${order.seller?.firstName ?? ''} ${order.seller?.lastName ?? ''}`.trim()}
                 </Text>
               </View>
 
               <Text variant="bodySmall" style={[styles.adminNote, { color: theme.colors.onSurfaceVariant }]}>
-                Marketplace actions here are administrative overrides. Use disputes for refund resolutions after delivery issues.
+                Marketplace actions here are administrative overrides. Use disputes for refund resolutions after
+                delivery issues.
               </Text>
 
               <View style={styles.adminActionRow}>
@@ -850,9 +1066,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                     style={[styles.outlineButton, { borderColor: theme.colors.primary }]}
                   >
                     <Icon name="gavel" size={20} color={theme.colors.primary} />
-                    <Text style={[styles.outlineButtonText, { color: theme.colors.primary }]}>
-                      Open Dispute Case
-                    </Text>
+                    <Text style={[styles.outlineButtonText, { color: theme.colors.primary }]}>Open Dispute Case</Text>
                   </Pressable>
                 ) : null}
 
@@ -862,9 +1076,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                     style={[styles.outlineButton, { borderColor: theme.colors.error }]}
                   >
                     <Icon name="cancel" size={20} color={theme.colors.error} />
-                    <Text style={[styles.outlineButtonText, { color: theme.colors.error }]}>
-                      Cancel Order
-                    </Text>
+                    <Text style={[styles.outlineButtonText, { color: theme.colors.error }]}>Cancel Order</Text>
                   </Pressable>
                 ) : null}
               </View>
@@ -908,22 +1120,32 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
         <Animated.View entering={FadeInUp.delay(350).duration(400)} style={styles.actions}>
           {/* Buyer Pay Now - for pending payment orders */}
           {isBuyer && order.status === 'pending_payment' && (
-            <Pressable onPress={() => setShowPaymentModal(true)}>
-              <LinearGradient
-                colors={['#F59E0B', '#D97706']}
-                start={{ x: 0, y: 0 }}
-                end={{ x: 1, y: 1 }}
-                style={styles.primaryButton}
-              >
-                <Icon name="credit-card-check-outline" size={22} color="#FFFFFF" />
-                <Text style={styles.primaryButtonText}>Pay Now - {formatPrice(order.totalAmount)}</Text>
-              </LinearGradient>
-            </Pressable>
+            <>
+              <Pressable onPress={openPaymentModal} disabled={!paymentsAvailable || !payment.ready || payment.working}>
+                <LinearGradient
+                  colors={['#F59E0B', '#D97706']}
+                  start={{ x: 0, y: 0 }}
+                  end={{ x: 1, y: 1 }}
+                  style={[styles.primaryButton, !paymentsAvailable && { opacity: 0.6 }]}
+                >
+                  <Icon name="credit-card-check-outline" size={22} color="#FFFFFF" />
+                  <Text style={styles.primaryButtonText}>Pay Now - {formatPrice(order.totalAmount)}</Text>
+                </LinearGradient>
+              </Pressable>
+              {paymentsAvailable ? null : (
+                <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
+                  {paymentsUnavailableMessage}
+                </Text>
+              )}
+            </>
           )}
 
           {/* Payment Pending Status */}
           {paymentPending && (
-            <Surface style={[styles.paymentStatusCard, { backgroundColor: theme.colors.primaryContainer }]} elevation={0}>
+            <Surface
+              style={[styles.paymentStatusCard, { backgroundColor: theme.colors.primaryContainer }]}
+              elevation={0}
+            >
               <ActivityIndicator size="small" color={theme.colors.primary} />
               <Text variant="bodyMedium" style={{ color: theme.colors.onPrimaryContainer, marginLeft: 12 }}>
                 Waiting for payment confirmation...
@@ -1015,14 +1237,9 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
 
           {/* Open Dispute */}
           {isBuyer && ['paid', 'processing', 'shipped', 'delivered'].includes(order.status) && (
-            <Pressable
-              onPress={handleOpenDispute}
-              style={[styles.outlineButton, { borderColor: theme.colors.error }]}
-            >
+            <Pressable onPress={handleOpenDispute} style={[styles.outlineButton, { borderColor: theme.colors.error }]}>
               <Icon name="alert-circle-outline" size={20} color={theme.colors.error} />
-              <Text style={[styles.outlineButtonText, { color: theme.colors.error }]}>
-                Open Dispute
-              </Text>
+              <Text style={[styles.outlineButtonText, { color: theme.colors.error }]}>Open Dispute</Text>
             </Pressable>
           )}
         </Animated.View>
@@ -1079,12 +1296,16 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
                   style={[
                     styles.reasonChip,
                     {
-                      backgroundColor: returnReason === reason.value ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
+                      backgroundColor:
+                        returnReason === reason.value ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
                       borderColor: returnReason === reason.value ? theme.colors.primary : 'transparent',
                     },
                   ]}
                 >
-                  <Text variant="labelMedium" style={{ color: returnReason === reason.value ? theme.colors.primary : theme.colors.onSurface }}>
+                  <Text
+                    variant="labelMedium"
+                    style={{ color: returnReason === reason.value ? theme.colors.primary : theme.colors.onSurface }}
+                  >
                     {reason.label}
                   </Text>
                 </Pressable>
@@ -1138,20 +1359,11 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
             <View style={styles.starRow}>
               {[1, 2, 3, 4, 5].map((star) => (
                 <Pressable key={star} onPress={() => setReviewRating(star)} hitSlop={8}>
-                  <Icon
-                    name={star <= reviewRating ? 'star' : 'star-outline'}
-                    size={34}
-                    color="#F59E0B"
-                  />
+                  <Icon name={star <= reviewRating ? 'star' : 'star-outline'} size={34} color="#F59E0B" />
                 </Pressable>
               ))}
             </View>
-            <TextInput
-              mode="outlined"
-              label="Review title"
-              value={reviewTitle}
-              onChangeText={setReviewTitle}
-            />
+            <TextInput mode="outlined" label="Review title" value={reviewTitle} onChangeText={setReviewTitle} />
             <TextInput
               mode="outlined"
               label="Comment"
@@ -1190,7 +1402,7 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
 
         <Modal
           visible={showPaymentModal}
-          onDismiss={() => setShowPaymentModal(false)}
+          onDismiss={closePaymentModal}
           contentContainerStyle={[styles.paymentModal, { backgroundColor: theme.colors.surface }]}
         >
           <ScrollView
@@ -1198,174 +1410,204 @@ export default function OrderDetailScreen({ route, navigation }: Props) {
             keyboardShouldPersistTaps="handled"
             contentContainerStyle={styles.paymentModalContent}
           >
-              <View style={styles.paymentModalHeader}>
-                <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
-                  Complete Payment
-                </Text>
-                <Pressable onPress={() => setShowPaymentModal(false)}>
-                  <Icon name="close" size={24} color={theme.colors.onSurfaceVariant} />
-                </Pressable>
-              </View>
-
-              <View style={styles.paymentAmountBox}>
-                <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
-                  Amount to pay
-                </Text>
-                <Text variant="headlineMedium" style={{ color: theme.colors.primary, fontWeight: '800' }}>
-                  {order ? formatPrice(order.totalAmount) : ''}
-                </Text>
-              </View>
-
-              {/* Payment Method Selection */}
-              <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginBottom: 12, fontWeight: '600' }}>
-                Select Payment Method
+            <View style={styles.paymentModalHeader}>
+              <Text variant="headlineSmall" style={{ color: theme.colors.onSurface, fontWeight: '700' }}>
+                Complete Payment
               </Text>
+              <Pressable onPress={closePaymentModal}>
+                <Icon name="close" size={24} color={theme.colors.onSurfaceVariant} />
+              </Pressable>
+            </View>
 
-              <View style={styles.paymentMethodsRow}>
-                <Pressable
-                  onPress={() => setPaymentMethod('mobile_money')}
-                  style={[
-                    styles.paymentMethodCard,
-                    {
-                      backgroundColor: paymentMethod === 'mobile_money' ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
-                      borderColor: paymentMethod === 'mobile_money' ? theme.colors.primary : 'transparent',
-                    },
-                  ]}
-                >
-                  <Icon
-                    name="cellphone"
-                    size={28}
-                    color={paymentMethod === 'mobile_money' ? theme.colors.primary : theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelMedium"
-                    style={{
-                      color: paymentMethod === 'mobile_money' ? theme.colors.primary : theme.colors.onSurface,
-                      marginTop: 6,
-                      fontWeight: paymentMethod === 'mobile_money' ? '700' : '400',
-                    }}
-                  >
-                    Mobile Money
-                  </Text>
-                </Pressable>
+            <View style={styles.paymentAmountBox}>
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant }}>
+                Amount to pay
+              </Text>
+              <Text variant="headlineMedium" style={{ color: theme.colors.primary, fontWeight: '800' }}>
+                {!savedAddressComplete
+                  ? 'Payment blocked'
+                  : quote
+                    ? formatPrice(quote.totalAmountCents / 100)
+                    : 'Awaiting quote'}
+              </Text>
+            </View>
 
-                <Pressable
-                  onPress={() => setPaymentMethod('card')}
-                  style={[
-                    styles.paymentMethodCard,
-                    {
-                      backgroundColor: paymentMethod === 'card' ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
-                      borderColor: paymentMethod === 'card' ? theme.colors.primary : 'transparent',
-                    },
-                  ]}
-                >
-                  <Icon
-                    name="credit-card"
-                    size={28}
-                    color={paymentMethod === 'card' ? theme.colors.primary : theme.colors.onSurfaceVariant}
-                  />
-                  <Text
-                    variant="labelMedium"
-                    style={{
-                      color: paymentMethod === 'card' ? theme.colors.primary : theme.colors.onSurface,
-                      marginTop: 6,
-                      fontWeight: paymentMethod === 'card' ? '700' : '400',
-                    }}
-                  >
-                    Card
-                  </Text>
-                </Pressable>
+            {!savedAddressComplete ? (
+              <View>
+                <Text>
+                  The saved delivery address is incomplete. Payment cannot continue. Return to the order details and
+                  contact support to correct the saved address before paying.
+                </Text>
+                <Button onPress={closePaymentModal}>Back to order</Button>
               </View>
+            ) : null}
+            <Text>Mobile Money</Text>
+            <Text>
+              Current quote: subtotal {formatPrice((quote?.subtotalCents ?? 0) / 100)}, delivery{' '}
+              {formatPrice((quote?.shippingCents ?? 0) / 100)}, discount{' '}
+              {formatPrice((quote?.discountCents ?? 0) / 100)}, fee {formatPrice((quote?.platformFeeCents ?? 0) / 100)}
+            </Text>
+            {quote &&
+            (quote.totalAmountCents !== Math.round(order.totalAmount * 100) ||
+              quote.discountCents !== Math.round((order.discountAmount ?? 0) * 100)) ? (
+              <Text>Updated total or discount. Review the current quote before paying.</Text>
+            ) : null}
+            {quote?.lines.map((line, index) => (
+              <View key={`${line.productId}-${index}`}>
+                <Text>
+                  {line.title} ×{line.quantity} {line.variant?.sku}{' '}
+                  {line.optionPairs.map((option) => `${option.name}: ${option.value}`).join(' • ')}{' '}
+                  {line.addOns.map((addon) => addon.name).join(', ')}
+                </Text>
+                <Text>{formatPrice(line.lineTotalCents / 100)}</Text>
+              </View>
+            ))}
+            <Text>Delivery: {quote?.delivery.name ?? 'Choose a current method'}</Text>
+            {methods
+              ?.filter((entry) => deliveryQuotes?.some((quote) => quote.methodId === entry._id))
+              .map((entry) => (
+                <Button
+                  key={entry._id}
+                  onPress={() => {
+                    setMethodOverride(entry._id);
+                    setPointOverride(null);
+                  }}
+                >
+                  {entry.name}
+                </Button>
+              ))}
+            {deliveryQuotes?.length === 0 ? (
+              <Button
+                onPress={() => {
+                  setMethodOverride(null);
+                  setPointOverride(null);
+                }}
+              >
+                Use current seller delivery
+              </Button>
+            ) : null}
+            {method?.type === 'pickup'
+              ? points
+                  ?.filter((entry) => entry.isActive && (method.zoneId === undefined || entry.zoneId === method.zoneId))
+                  .map((entry) => (
+                    <Button key={entry._id} onPress={() => setPointOverride(entry._id)}>
+                      {entry.name}
+                    </Button>
+                  ))
+              : null}
+            {!deliveryValid ? <Text>Correct the saved delivery method or pickup point before paying.</Text> : null}
+            <Text>Selected promo: {promoCode || 'None'}</Text>
+            <TextInput label="Promo code" value={promoInput} onChangeText={setPromoInput} />
+            <Button onPress={() => setPromoOverride(promoInput.trim())}>Apply promo</Button>
+            <Button
+              onPress={() => {
+                setPromoOverride('');
+                setPromoInput('');
+              }}
+            >
+              Remove promo
+            </Button>
+            {payment.quoteResult instanceof Error ? (
+              <Text>Quote unavailable. Check your selections.</Text>
+            ) : payment.quoteResult && !payment.quoteResult.ok ? (
+              <Text>
+                Correct current quote: {payment.quoteResult.code}. Remove or correct invalid saved promo/delivery.
+              </Text>
+            ) : null}
+            {payment.error ? <Text>{payment.error}</Text> : null}
+            {/* Mobile Money Details */}
+            {
+              <View style={styles.mobileMoneySection}>
+                <TextInput
+                  mode="outlined"
+                  label="Mobile Money Number"
+                  value={mobileNumber}
+                  onChangeText={handlePhoneChange}
+                  keyboardType="phone-pad"
+                  placeholder="097XXXXXXX"
+                  style={styles.phoneInput}
+                  outlineStyle={{ borderRadius: 12 }}
+                  left={<TextInput.Icon icon="phone" />}
+                />
 
-              {/* Mobile Money Details */}
-              {paymentMethod === 'mobile_money' && (
-                <View style={styles.mobileMoneySection}>
-                  <TextInput
-                    mode="outlined"
-                    label="Mobile Money Number"
-                    value={mobileNumber}
-                    onChangeText={handlePhoneChange}
-                    keyboardType="phone-pad"
-                    placeholder="097XXXXXXX"
-                    style={styles.phoneInput}
-                    outlineStyle={{ borderRadius: 12 }}
-                    left={<TextInput.Icon icon="phone" />}
-                  />
-
-                  <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8, marginTop: 12 }}>
-                    Select Provider
-                  </Text>
-                  <View style={styles.providerRow}>
-                    {(['mtn', 'airtel', 'zamtel'] as MobileMoneyProvider[]).map((provider) => (
-                      <Pressable
-                        key={provider}
-                        onPress={() => setMobileProvider(provider)}
+                <Text
+                  variant="labelMedium"
+                  style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8, marginTop: 12 }}
+                >
+                  Select Provider
+                </Text>
+                <View style={styles.providerRow}>
+                  {(['mtn', 'airtel', 'zamtel'] as MobileMoneyProvider[]).map((provider) => (
+                    <Pressable
+                      key={provider}
+                      onPress={() => setMobileProvider(provider)}
+                      style={[
+                        styles.providerButton,
+                        {
+                          backgroundColor:
+                            mobileProvider === provider ? getProviderColor(provider) : theme.colors.surfaceVariant,
+                          borderColor: mobileProvider === provider ? getProviderColor(provider) : theme.colors.outline,
+                        },
+                      ]}
+                    >
+                      <Text
                         style={[
-                          styles.providerButton,
-                          {
-                            backgroundColor: mobileProvider === provider ? getProviderColor(provider) : theme.colors.surfaceVariant,
-                            borderColor: mobileProvider === provider ? getProviderColor(provider) : theme.colors.outline,
-                          },
+                          styles.providerText,
+                          { color: mobileProvider === provider ? '#FFFFFF' : theme.colors.onSurface },
                         ]}
                       >
-                        <Text
-                          style={[
-                            styles.providerText,
-                            { color: mobileProvider === provider ? '#FFFFFF' : theme.colors.onSurface },
-                          ]}
-                        >
-                          {provider.toUpperCase()}
-                        </Text>
-                      </Pressable>
-                    ))}
-                  </View>
-                </View>
-              )}
-
-              {/* Card Info */}
-              {paymentMethod === 'card' && (
-                <View style={styles.cardSection}>
-                  <View style={[styles.cardInfoBox, { backgroundColor: theme.colors.surfaceVariant }]}>
-                    <Icon name="information-outline" size={20} color={theme.colors.primary} />
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 10, flex: 1 }}>
-                      You'll be redirected to a secure payment page to complete your card payment.
-                    </Text>
-                  </View>
-                </View>
-              )}
-
-              {/* Pay Button */}
-              <Pressable
-                onPress={handlePayNow}
-                disabled={paymentLoading || paymentPending}
-                style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, marginTop: 8 }]}
-              >
-                <LinearGradient
-                  colors={[theme.colors.primary, theme.colors.tertiary]}
-                  start={{ x: 0, y: 0 }}
-                  end={{ x: 1, y: 1 }}
-                  style={[styles.payNowButton, (paymentLoading || paymentPending) && { opacity: 0.6 }]}
-                >
-                  {paymentLoading || paymentPending ? (
-                    <ActivityIndicator color="#FFFFFF" size="small" />
-                  ) : (
-                    <>
-                      <Icon name="lock" size={20} color="#FFFFFF" />
-                      <Text style={styles.payNowButtonText}>
-                        Pay {order ? formatPrice(order.totalAmount) : ''}
+                        {provider.toUpperCase()}
                       </Text>
-                    </>
-                  )}
-                </LinearGradient>
-              </Pressable>
-
-              {/* Security Note */}
-              <View style={styles.securityNote}>
-                <Icon name="shield-check" size={16} color={theme.colors.secondary} />
-                <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 6 }}>
-                  Secured by Escrow Protection
-                </Text>
+                    </Pressable>
+                  ))}
+                </View>
               </View>
+            }
+
+            {/* Payments can be switched off while this modal is open, so the unavailable state replaces the submit */}
+            {paymentsAvailable ? null : (
+              <Text variant="bodyMedium" style={{ color: theme.colors.error, marginTop: 8, textAlign: 'center' }}>
+                {paymentsUnavailableMessage}
+              </Text>
+            )}
+
+            {/* Pay Button */}
+            <Pressable
+              onPress={handlePayNow}
+              disabled={paymentLoading || paymentPending || !paymentsAvailable || !payment.ready || !quote}
+              style={({ pressed }) => [{ opacity: pressed ? 0.9 : 1, marginTop: 8 }]}
+            >
+              <LinearGradient
+                colors={[theme.colors.primary, theme.colors.tertiary]}
+                start={{ x: 0, y: 0 }}
+                end={{ x: 1, y: 1 }}
+                style={[
+                  styles.payNowButton,
+                  (paymentLoading || paymentPending || !paymentsAvailable) && { opacity: 0.6 },
+                ]}
+              >
+                {paymentLoading || paymentPending ? (
+                  <ActivityIndicator color="#FFFFFF" size="small" />
+                ) : (
+                  <>
+                    <Icon name="lock" size={20} color="#FFFFFF" />
+                    <Text style={styles.payNowButtonText}>
+                      {!savedAddressComplete
+                        ? 'Payment blocked'
+                        : `Pay ${quote ? formatPrice(quote.totalAmountCents / 100) : 'Awaiting quote'}`}
+                    </Text>
+                  </>
+                )}
+              </LinearGradient>
+            </Pressable>
+
+            {/* Security Note */}
+            <View style={styles.securityNote}>
+              <Icon name="shield-check" size={16} color={theme.colors.secondary} />
+              <Text variant="labelSmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 6 }}>
+                Secured by Escrow Protection
+              </Text>
+            </View>
           </ScrollView>
         </Modal>
       </Portal>

@@ -1,3 +1,12 @@
 {
-    "jira-plugin.workingProject": ""
+    "jira-plugin.workingProject": "",
+    "eslint.workingDirectories": [{ "mode": "auto" }],
+    "prettier.requireConfig": true,
+    "editor.formatOnSave": false,
+    "[typescript]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+    },
+    "[typescriptreact]": {
+        "editor.defaultFormatter": "esbenp.prettier-vscode"
+    }
 }

@@ -1,9 +1,9 @@
 "use client";
 
-import { useState } from "react";
+import { useLayoutEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery, useMutation } from "convex/react";
+import { useQuery, useMutation, useConvex } from "convex/react";
 import { api } from "../../../../../../../convex/_generated/api";
 import { Id } from "../../../../../../../convex/_generated/dataModel";
 import { Button } from "@/components/ui/button";
@@ -12,7 +12,6 @@ import {
   Card,
   CardContent,
   CardDescription,
-  CardFooter,
   CardHeader,
   CardTitle,
 } from "@/components/ui/card";
@@ -49,12 +48,12 @@ import {
   MessageSquare,
   Shield,
   Copy,
-  ExternalLink,
   Loader2,
 } from "lucide-react";
 import { ROUTES } from "@/lib/constants";
 import { formatZMW } from "@gettitonline/shared";
-import { useAuth } from "@/hooks/useAuth";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
 import { toast } from "sonner";
 import { format } from "date-fns";
 
@@ -70,84 +69,410 @@ type OrderStatus =
 
 const STATUS_CONFIG: Record<
   OrderStatus,
-  { label: string; variant: "default" | "secondary" | "destructive" | "outline"; icon: React.ElementType; color: string }
+  {
+    label: string;
+    variant: "default" | "secondary" | "destructive" | "outline";
+    icon: React.ElementType;
+    color: string;
+  }
 > = {
-  pending_payment: { label: "Pending Payment", variant: "outline", icon: Clock, color: "text-yellow-600" },
-  paid: { label: "Paid", variant: "secondary", icon: CheckCircle, color: "text-blue-600" },
-  processing: { label: "Processing", variant: "secondary", icon: Package, color: "text-blue-600" },
-  shipped: { label: "Shipped", variant: "default", icon: Truck, color: "text-purple-600" },
-  delivered: { label: "Delivered", variant: "default", icon: CheckCircle, color: "text-green-600" },
-  completed: { label: "Completed", variant: "default", icon: CheckCircle, color: "text-green-600" },
-  cancelled: { label: "Cancelled", variant: "destructive", icon: XCircle, color: "text-red-600" },
-  disputed: { label: "Disputed", variant: "destructive", icon: AlertTriangle, color: "text-red-600" },
+  pending_payment: {
+    label: "Pending Payment",
+    variant: "outline",
+    icon: Clock,
+    color: "text-yellow-600",
+  },
+  paid: {
+    label: "Paid",
+    variant: "secondary",
+    icon: CheckCircle,
+    color: "text-blue-600",
+  },
+  processing: {
+    label: "Processing",
+    variant: "secondary",
+    icon: Package,
+    color: "text-blue-600",
+  },
+  shipped: {
+    label: "Shipped",
+    variant: "default",
+    icon: Truck,
+    color: "text-purple-600",
+  },
+  delivered: {
+    label: "Delivered",
+    variant: "default",
+    icon: CheckCircle,
+    color: "text-green-600",
+  },
+  completed: {
+    label: "Completed",
+    variant: "default",
+    icon: CheckCircle,
+    color: "text-green-600",
+  },
+  cancelled: {
+    label: "Cancelled",
+    variant: "destructive",
+    icon: XCircle,
+    color: "text-red-600",
+  },
+  disputed: {
+    label: "Disputed",
+    variant: "destructive",
+    icon: AlertTriangle,
+    color: "text-red-600",
+  },
 };
 
 const ORDER_STEPS = [
-  { status: ["paid", "processing", "shipped", "delivered", "completed"], label: "Order Placed", icon: CheckCircle },
-  { status: ["processing", "shipped", "delivered", "completed"], label: "Processing", icon: Package },
-  { status: ["shipped", "delivered", "completed"], label: "Shipped", icon: Truck },
+  {
+    status: ["paid", "processing", "shipped", "delivered", "completed"],
+    label: "Order Placed",
+    icon: CheckCircle,
+  },
+  {
+    status: ["processing", "shipped", "delivered", "completed"],
+    label: "Processing",
+    icon: Package,
+  },
+  {
+    status: ["shipped", "delivered", "completed"],
+    label: "Shipped",
+    icon: Truck,
+  },
   { status: ["delivered", "completed"], label: "Delivered", icon: CheckCircle },
   { status: ["completed"], label: "Completed", icon: CheckCircle },
 ];
 
 export default function OrderDetailPage() {
+  const access = useAccountAccess();
+  if (access.status !== "ready" || access.user === null) {
+    return (
+      <AccountAccessNotice
+        access={access}
+        heading="Order Details"
+        signInMessage="Please sign in to view this order"
+      />
+    );
+  }
+  return (
+    <OrderDetailContent
+      key={`${access.user.clerkId}:${access.user._id}`}
+      user={access.user}
+    />
+  );
+}
+
+function OrderDetailContent({ user }: { user: AccountUser }) {
   const params = useParams();
   const router = useRouter();
   const orderId = params.id as Id<"orders">;
-  const { user, isSignedIn, isLoading: authLoading } = useAuth();
 
+  const convex = useConvex();
   const [isProcessing, setIsProcessing] = useState(false);
+  const [completeOpen, setCompleteOpen] = useState(false);
+  const [cancelOpen, setCancelOpen] = useState(false);
+  const [outcomeMessage, setOutcomeMessage] = useState<string | null>(null);
 
   // Get order details
-  const order = useQuery(api.orders.getOrder, { orderId });
+  const order = useQuery(
+    api.orders.getOrder,
+    user?._id && !user.isBanned ? { orderId } : "skip",
+  );
 
   // Mutations
   const confirmDelivery = useMutation(api.orders.confirmDelivery);
   const completeOrder = useMutation(api.orders.completeOrder);
   const cancelOrder = useMutation(api.orders.cancelOrder);
 
-  const handleConfirmDelivery = async () => {
-    if (!user || !order) return;
+  const identity = JSON.stringify([
+    user.clerkId,
+    user._id,
+    user.role,
+    orderId,
+    order?._id,
+    order?.buyerId,
+    order?.sellerId,
+  ]);
+  const facts = JSON.stringify([
+    identity,
+    order?.status,
+    completeOpen,
+    cancelOpen,
+  ]);
+  const committed = useRef({
+    identity,
+    facts,
+    convex,
+    generation: 0,
+    mounted: false,
+  });
+  const workEpoch = useRef(0);
+  const active = useRef<{
+    status: string;
+    expectedStatus: string;
+    identity: string;
+    convex: typeof convex;
+  } | null>(null);
+
+  useLayoutEffect(() => {
+    committed.current.mounted = true;
+
+    return () => {
+      committed.current.mounted = false;
+      committed.current.generation += 1;
+      workEpoch.current += 1;
+      active.current = null;
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    const previous = committed.current;
+    const identityChanged =
+      previous.identity !== identity || previous.convex !== convex;
+    const work = active.current;
+    const status = order?.status;
+    const incompatible =
+      work &&
+      (identityChanged ||
+        !status ||
+        (work.status !== status && work.expectedStatus !== status));
+
+    if (identityChanged || incompatible) {
+      active.current = null;
+      workEpoch.current += 1;
+      setIsProcessing(false);
+      setCompleteOpen(false);
+      setCancelOpen(false);
+      setOutcomeMessage(null);
+    } else if (work && status) {
+      // Accept only this work's target. Returning to the original status then retires it permanently.
+      work.status = status;
+    }
+
+    committed.current = {
+      identity,
+      facts,
+      convex,
+      mounted: true,
+      generation:
+        previous.generation +
+        (previous.facts !== facts || previous.convex !== convex ? 1 : 0),
+    };
+  }, [identity, facts, convex, order?.status]);
+
+  useLayoutEffect(() => {
+    if (order && order.buyerId !== user._id && user.role !== "admin") {
+      router.push(ROUTES.ORDERS);
+    }
+  }, [order, user._id, user.role, router]);
+
+  // Render reads the prospective generation; only layout publishes it. Suspended renders cannot revoke current work.
+  const generation =
+    committed.current.generation +
+    (committed.current.facts !== facts || committed.current.convex !== convex
+      ? 1
+      : 0);
+  const epoch = workEpoch.current;
+  const isCapturedCurrent = (): boolean =>
+    committed.current.mounted &&
+    committed.current.generation === generation &&
+    workEpoch.current === epoch;
+  const start = (
+    expectedStatus: string,
+  ): NonNullable<typeof active.current> | null => {
+    if (
+      !isCapturedCurrent() ||
+      active.current ||
+      !order ||
+      order._id !== orderId
+    ) {
+      return null;
+    }
+
+    const work = { status: order.status, expectedStatus, identity, convex };
+    active.current = work;
+    workEpoch.current += 1;
     setIsProcessing(true);
+    setOutcomeMessage(null);
+
+    return work;
+  };
+  const isOwned = (work: NonNullable<typeof active.current>): boolean =>
+    committed.current.mounted && active.current === work;
+  const finish = (work: NonNullable<typeof active.current>): void => {
+    if (isOwned(work)) {
+      active.current = null;
+      setIsProcessing(false);
+    }
+  };
+  const reportReview = (message: string): void => {
+    setOutcomeMessage(message);
+    toast.error(message);
+  };
+
+  const handleConfirmDelivery = async (): Promise<void> => {
+    if (!order || order.status !== "shipped" || order.buyerId !== user._id) {
+      return;
+    }
+
+    const work = start("delivered");
+    if (!work) {
+      return;
+    }
 
     try {
-      await confirmDelivery({ orderId: order._id, buyerId: user._id });
+      await confirmDelivery({ orderId: order._id });
+      if (!isOwned(work)) {
+        return;
+      }
       toast.success("Delivery confirmed!");
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to confirm delivery";
-      toast.error(errorMessage);
+      if (isOwned(work)) {
+        toast.error(
+          error instanceof Error ? error.message : "Failed to confirm delivery",
+        );
+      }
     } finally {
-      setIsProcessing(false);
+      finish(work);
     }
   };
 
-  const handleCompleteOrder = async () => {
-    if (!user || !order) return;
-    setIsProcessing(true);
+  const handleCompleteOrder = async (): Promise<void> => {
+    if (
+      !order ||
+      order.status !== "delivered" ||
+      order.buyerId !== user._id ||
+      !completeOpen
+    ) {
+      return;
+    }
+
+    const work = start("completed");
+    if (!work) {
+      return;
+    }
 
     try {
-      await completeOrder({ orderId: order._id, buyerId: user._id });
-      toast.success("Order completed! Payment released to the store.");
+      const result = await completeOrder({ orderId: order._id });
+      if (!isOwned(work)) {
+        return;
+      }
+      if (result?.accountingOutcome === "review") {
+        reportReview(
+          "Accounting review pending. Completion and payment release are not confirmed.",
+        );
+      } else if (
+        result?.accountingOutcome === "applied" &&
+        result.status === "completed" &&
+        result._id === order._id &&
+        result.buyerId === order.buyerId &&
+        result.sellerId === order.sellerId
+      ) {
+        setCompleteOpen(false);
+        toast.success("Order completed! Payment released to the store.");
+      } else {
+        reportReview(
+          "Completion and payment release were not confirmed. Please check the order or contact support.",
+        );
+      }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to complete order";
-      toast.error(errorMessage);
+      if (isOwned(work)) {
+        reportReview(
+          error instanceof Error ? error.message : "Failed to complete order",
+        );
+      }
     } finally {
-      setIsProcessing(false);
+      finish(work);
     }
   };
 
-  const handleCancelOrder = async () => {
-    if (!user || !order) return;
-    setIsProcessing(true);
+  const handleCancelOrder = async (): Promise<void> => {
+    if (
+      !order ||
+      !["pending_payment", "paid", "processing"].includes(order.status) ||
+      (order.buyerId !== user._id && user.role !== "admin") ||
+      !cancelOpen
+    ) {
+      return;
+    }
+
+    const work = start("cancelled");
+    if (!work) {
+      return;
+    }
 
     try {
-      await cancelOrder({ orderId: order._id, userId: user._id });
-      toast.success("Order cancelled");
+      const result = await cancelOrder({ orderId: order._id });
+      if (!isOwned(work)) {
+        return;
+      }
+      if (
+        result &&
+        "accountingOutcome" in result &&
+        result.accountingOutcome === "review"
+      ) {
+        reportReview(
+          "Accounting review pending. Cancellation and refund are not confirmed.",
+        );
+      } else if (
+        result?.status === "cancelled" &&
+        result._id === order._id &&
+        result.buyerId === order.buyerId &&
+        result.sellerId === order.sellerId
+      ) {
+        if (
+          "accountingOutcome" in result &&
+          result.accountingOutcome === "applied"
+        ) {
+          setCancelOpen(false);
+          toast.success(
+            "Order cancelled. Refund credited to the buyer's marketplace wallet.",
+          );
+        } else if (!("accountingOutcome" in result)) {
+          // This producer's genuine stock-only branch returns a cancelled document without an accounting outcome.
+          setCancelOpen(false);
+          toast.success("Order cancelled. No payment was moved.");
+        } else {
+          reportReview(
+            "Cancellation and refund were not confirmed. Please check the order or contact support.",
+          );
+        }
+      } else {
+        reportReview(
+          "Cancellation and refund were not confirmed. Please check the order or contact support.",
+        );
+      }
     } catch (error: unknown) {
-      const errorMessage = error instanceof Error ? error.message : "Failed to cancel order";
-      toast.error(errorMessage);
+      if (isOwned(work)) {
+        reportReview(
+          error instanceof Error ? error.message : "Failed to cancel order",
+        );
+      }
     } finally {
+      finish(work);
+    }
+  };
+
+  const changeDialog = (kind: "complete" | "cancel", open: boolean): void => {
+    if (!isCapturedCurrent()) {
+      return;
+    }
+    if (open && active.current) {
+      return;
+    }
+    if (!open) {
+      active.current = null;
+      workEpoch.current += 1;
       setIsProcessing(false);
+      setOutcomeMessage(null);
+    }
+    if (kind === "complete") {
+      setCompleteOpen(open);
+    } else {
+      setCancelOpen(open);
     }
   };
 
@@ -157,24 +482,8 @@ export default function OrderDetailPage() {
   };
 
   // Loading state
-  if (authLoading || order === undefined) {
+  if (order === undefined) {
     return <OrderDetailSkeleton />;
-  }
-
-  // Not signed in
-  if (!isSignedIn) {
-    return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <Package className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Order Details</h1>
-        <p className="mt-2 text-muted-foreground">
-          Please sign in to view this order
-        </p>
-        <Button asChild className="mt-6">
-          <Link href={ROUTES.SIGN_IN}>Sign In</Link>
-        </Button>
-      </div>
-    );
   }
 
   // Order not found
@@ -196,7 +505,6 @@ export default function OrderDetailPage() {
   // Check if user is the buyer
   const isBuyer = order.buyerId === user?._id;
   if (!isBuyer && user?.role !== "admin") {
-    router.push(ROUTES.ORDERS);
     return null;
   }
 
@@ -204,7 +512,9 @@ export default function OrderDetailPage() {
   const StatusIcon = statusConfig?.icon || Package;
 
   // Determine available actions
-  const canCancel = ["pending_payment", "paid", "processing"].includes(order.status);
+  const canCancel = ["pending_payment", "paid", "processing"].includes(
+    order.status,
+  );
   const canConfirmDelivery = order.status === "shipped";
   const canComplete = order.status === "delivered";
   const canDispute = order.status === "delivered";
@@ -268,7 +578,10 @@ export default function OrderDetailPage() {
                     const StepIcon = step.icon;
 
                     return (
-                      <div key={step.label} className="flex flex-1 items-center">
+                      <div
+                        key={step.label}
+                        className="flex flex-1 items-center"
+                      >
                         <div className="flex flex-col items-center">
                           <div
                             className={`flex h-10 w-10 items-center justify-center rounded-full border-2 ${
@@ -281,7 +594,9 @@ export default function OrderDetailPage() {
                           </div>
                           <p
                             className={`mt-2 text-xs font-medium ${
-                              isCompleted ? "text-primary" : "text-muted-foreground"
+                              isCompleted
+                                ? "text-primary"
+                                : "text-muted-foreground"
                             }`}
                           >
                             {step.label}
@@ -309,7 +624,8 @@ export default function OrderDetailPage() {
             <CardHeader>
               <CardTitle>Order Items</CardTitle>
               <CardDescription>
-                {order.items.length} {order.items.length === 1 ? "item" : "items"} from store{" "}
+                {order.items.length}{" "}
+                {order.items.length === 1 ? "item" : "items"} from store{" "}
                 {order.seller?.firstName} {order.seller?.lastName}
               </CardDescription>
             </CardHeader>
@@ -336,7 +652,9 @@ export default function OrderDetailPage() {
                       Qty: {item.quantity} x {formatZMW(item.price)}
                     </p>
                   </div>
-                  <p className="font-medium">{formatZMW(item.price * item.quantity)}</p>
+                  <p className="font-medium">
+                    {formatZMW(item.price * item.quantity)}
+                  </p>
                 </div>
               ))}
             </CardContent>
@@ -355,7 +673,8 @@ export default function OrderDetailPage() {
                   <p className="text-muted-foreground">
                     {order.shippingAddress.street}
                     <br />
-                    {order.shippingAddress.city}, {order.shippingAddress.province}
+                    {order.shippingAddress.city},{" "}
+                    {order.shippingAddress.province}
                     <br />
                     {order.shippingAddress.country}
                   </p>
@@ -365,7 +684,9 @@ export default function OrderDetailPage() {
                 <Phone className="h-5 w-5 text-muted-foreground shrink-0" />
                 <div>
                   <p className="font-medium">Phone</p>
-                  <p className="text-muted-foreground">{order.shippingAddress.phone}</p>
+                  <p className="text-muted-foreground">
+                    {order.shippingAddress.phone}
+                  </p>
                 </div>
               </div>
               {order.trackingNumber && (
@@ -374,12 +695,19 @@ export default function OrderDetailPage() {
                   <div>
                     <p className="font-medium">Tracking Number</p>
                     <div className="flex items-center gap-2">
-                      <p className="text-muted-foreground">{order.trackingNumber}</p>
+                      <p className="text-muted-foreground">
+                        {order.trackingNumber}
+                      </p>
                       <Button
                         variant="ghost"
                         size="icon"
                         className="h-6 w-6"
-                        onClick={() => copyToClipboard(order.trackingNumber!, "Tracking number")}
+                        onClick={() =>
+                          copyToClipboard(
+                            order.trackingNumber!,
+                            "Tracking number",
+                          )
+                        }
                       >
                         <Copy className="h-3 w-3" />
                       </Button>
@@ -411,7 +739,9 @@ export default function OrderDetailPage() {
               <div className="flex justify-between">
                 <span className="text-muted-foreground">Shipping</span>
                 <span>
-                  {order.shippingCost > 0 ? formatZMW(order.shippingCost) : "Free"}
+                  {order.shippingCost > 0
+                    ? formatZMW(order.shippingCost)
+                    : "Free"}
                 </span>
               </div>
               <div className="flex justify-between">
@@ -421,7 +751,9 @@ export default function OrderDetailPage() {
               <Separator />
               <div className="flex justify-between font-semibold text-lg">
                 <span>Total</span>
-                <span className="text-primary">{formatZMW(order.totalAmount)}</span>
+                <span className="text-primary">
+                  {formatZMW(order.totalAmount)}
+                </span>
               </div>
             </CardContent>
           </Card>
@@ -449,8 +781,11 @@ export default function OrderDetailPage() {
               )}
 
               {/* Complete Order */}
-              {canComplete && (
-                <AlertDialog>
+              {(canComplete || completeOpen) && (
+                <AlertDialog
+                  open={completeOpen}
+                  onOpenChange={(open) => changeDialog("complete", open)}
+                >
                   <AlertDialogTrigger asChild>
                     <Button className="w-full" disabled={isProcessing}>
                       <Shield className="mr-2 h-4 w-4" />
@@ -461,14 +796,22 @@ export default function OrderDetailPage() {
                     <AlertDialogHeader>
                       <AlertDialogTitle>Complete this order?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        This will release the payment ({formatZMW(order.sellerPayout)}) to the store.
-                        Only complete the order if you&apos;re satisfied with your purchase.
-                        This action cannot be undone.
+                        This requests release of the payment (
+                        {formatZMW(order.sellerPayout)}) to the store. Only
+                        complete the order if you&apos;re satisfied with your
+                        purchase. This action cannot be undone.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
+                    {outcomeMessage && <p role="status">{outcomeMessage}</p>}
                     <AlertDialogFooter>
                       <AlertDialogCancel>Cancel</AlertDialogCancel>
-                      <AlertDialogAction onClick={handleCompleteOrder}>
+                      <AlertDialogAction
+                        disabled={isProcessing}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          void handleCompleteOrder();
+                        }}
+                      >
                         Complete Order
                       </AlertDialogAction>
                     </AlertDialogFooter>
@@ -495,10 +838,17 @@ export default function OrderDetailPage() {
               </Button>
 
               {/* Cancel Order */}
-              {canCancel && (
-                <AlertDialog>
+              {(canCancel || cancelOpen) && (
+                <AlertDialog
+                  open={cancelOpen}
+                  onOpenChange={(open) => changeDialog("cancel", open)}
+                >
                   <AlertDialogTrigger asChild>
-                    <Button variant="destructive" className="w-full" disabled={isProcessing}>
+                    <Button
+                      variant="destructive"
+                      className="w-full"
+                      disabled={isProcessing}
+                    >
                       <XCircle className="mr-2 h-4 w-4" />
                       Cancel Order
                     </Button>
@@ -507,13 +857,22 @@ export default function OrderDetailPage() {
                     <AlertDialogHeader>
                       <AlertDialogTitle>Cancel this order?</AlertDialogTitle>
                       <AlertDialogDescription>
-                        This will cancel your order and refund your payment.
-                        This action cannot be undone.
+                        Cancellation may require accounting review. If a refund
+                        is applied, it is credited to the buyer&apos;s
+                        marketplace wallet. An unpaid stock-only cancellation
+                        moves no payment. This action cannot be undone.
                       </AlertDialogDescription>
                     </AlertDialogHeader>
+                    {outcomeMessage && <p role="status">{outcomeMessage}</p>}
                     <AlertDialogFooter>
                       <AlertDialogCancel>Keep Order</AlertDialogCancel>
-                      <AlertDialogAction onClick={handleCancelOrder}>
+                      <AlertDialogAction
+                        disabled={isProcessing}
+                        onClick={(event) => {
+                          event.preventDefault();
+                          void handleCancelOrder();
+                        }}
+                      >
                         Cancel Order
                       </AlertDialogAction>
                     </AlertDialogFooter>
@@ -524,7 +883,9 @@ export default function OrderDetailPage() {
           </Card>
 
           {/* Escrow Info */}
-          {["paid", "processing", "shipped", "delivered"].includes(order.status) && (
+          {["paid", "processing", "shipped", "delivered"].includes(
+            order.status,
+          ) && (
             <Card className="bg-green-50 dark:bg-green-950/20">
               <CardContent className="flex items-start gap-3 p-4">
                 <Shield className="h-5 w-5 shrink-0 text-green-600" />

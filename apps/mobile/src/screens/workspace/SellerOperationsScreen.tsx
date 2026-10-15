@@ -5,6 +5,8 @@ import { ActivityIndicator, Alert, Pressable, ScrollView, Share, StyleSheet, Vie
 import { Button, Chip, Modal, Portal, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
@@ -13,7 +15,10 @@ import { canManageCatalog, canManageListings } from '../../utils/roles';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'SellerOperations'>;
 type ReturnRequest = Doc<'returnRequests'>;
-type ReturnActionStatus = Extract<ReturnRequest['status'], 'approved' | 'rejected' | 'received' | 'refunded' | 'closed'>;
+type ReturnActionStatus = Extract<
+  ReturnRequest['status'],
+  'approved' | 'rejected' | 'received' | 'refunded' | 'closed'
+>;
 type CsvProductDraft = {
   title: string;
   brand: string;
@@ -171,10 +176,7 @@ function parseCondition(value: string): ProductCondition {
 
 function parseWarranty(value: string): CsvProductDraft['warranty'] {
   const [typeInput, durationInput, providerInput, termsInput] = value.split(':').map((part) => part.trim());
-  const type =
-    typeInput === 'manufacturer' || typeInput === 'seller' || typeInput === 'none'
-      ? typeInput
-      : 'seller';
+  const type = typeInput === 'manufacturer' || typeInput === 'seller' || typeInput === 'none' ? typeInput : 'seller';
   const durationDays = Number.parseInt(durationInput ?? '', 10);
   return {
     type,
@@ -205,15 +207,10 @@ function matchesCategory(category: { _id: string; name: string; slug: string }, 
   );
 }
 
-function resolveCsvCategory(
-  categories: CategoryTreeItem[],
-  row: Record<string, string>,
-) {
+function resolveCsvCategory(categories: CategoryTreeItem[], row: Record<string, string>) {
   const category = categories.find((item) => matchesCategory(item, row.category ?? ''));
   const subcategory = category?.subcategories.find((item) => matchesCategory(item, row.subcategory ?? ''));
-  const classification = subcategory?.classifications?.find((item) =>
-    matchesCategory(item, row.classification ?? ''),
-  );
+  const classification = subcategory?.classifications?.find((item) => matchesCategory(item, row.classification ?? ''));
 
   return { category, subcategory, classification };
 }
@@ -320,16 +317,21 @@ function buildCsvDrafts(csvText: string, categories: CategoryTreeItem[]) {
   return { drafts, errors };
 }
 
-export default function SellerOperationsScreen({ navigation }: Props) {
+export default function SellerOperationsScreen(props: Props) {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Seller Operations" />;
+  }
+  return <SellerOperationsContent {...props} />;
+}
+
+function SellerOperationsContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const [showCsvImport, setShowCsvImport] = useState(false);
   const [csvText, setCsvText] = useState(csvTemplate);
   const [importingCsv, setImportingCsv] = useState(false);
-  const vendorProfile = useQuery(
-    api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : 'skip',
-  );
+  const vendorProfile = useQuery(api.vendors.getMyVendorProfile, user?._id && !user.isBanned ? {} : 'skip');
   const storefront = useQuery(api.platform.getStorefront);
   const categories = useQuery(api.categories.getCategoriesTree);
   const isCatalogManager = canManageCatalog(user?.role);
@@ -338,34 +340,17 @@ export default function SellerOperationsScreen({ navigation }: Props) {
 
   const vendorListings = useQuery(
     api.products.getMyListings,
-    user?._id && !isCatalogManager && hasListingAccess
-      ? { actorUserId: user._id }
-      : 'skip',
+    user?._id && !isCatalogManager && hasListingAccess ? {} : 'skip',
   );
-  const managedListings = useQuery(
-    api.products.getManagedCatalogProducts,
-    user?._id && isCatalogManager ? { actorUserId: user._id } : 'skip',
-  );
+  const managedListings = useQuery(api.products.getManagedCatalogProducts, user?._id && isCatalogManager ? {} : 'skip');
   const sellerOrders = useQuery(
     api.orders.getSellerOrders,
-    sellerId && !isCatalogManager ? { sellerId } : 'skip',
+    sellerId && !isCatalogManager && !user?.isBanned ? { sellerId } : 'skip',
   );
-  const managedOrders = useQuery(
-    api.orders.getManagedCatalogOrders,
-    user?._id && isCatalogManager ? { actorUserId: user._id } : 'skip',
-  );
-  const pendingEscrow = useQuery(
-    api.escrow.getSellerPendingEscrow,
-    sellerId ? { sellerId } : 'skip',
-  );
-  const reviews = useQuery(
-    api.reviews.getSellerReviews,
-    sellerId ? { sellerId, limit: 5 } : 'skip',
-  );
-  const returnRequests = useQuery(
-    api.delivery.getReturnRequests,
-    user?._id ? { viewerUserId: user._id } : 'skip',
-  );
+  const managedOrders = useQuery(api.orders.getManagedCatalogOrders, user?._id && isCatalogManager ? {} : 'skip');
+  const pendingEscrow = useQuery(api.escrow.getSellerPendingEscrow, sellerId ? { sellerId } : 'skip');
+  const reviews = useQuery(api.reviews.getSellerReviews, sellerId ? { sellerId, limit: 5 } : 'skip');
+  const returnRequests = useQuery(api.delivery.getReturnRequests, user?._id ? {} : 'skip');
   const createProduct = useMutation(api.products.createProduct);
   const reviewReturnRequest = useMutation(api.delivery.reviewReturnRequest);
 
@@ -390,9 +375,7 @@ export default function SellerOperationsScreen({ navigation }: Props) {
         .reduce((sum, order) => sum + order.sellerPayout, 0),
     [orders],
   );
-  const fulfillmentOrders = (orders ?? []).filter((order) =>
-    ['paid', 'processing', 'shipped'].includes(order.status),
-  );
+  const fulfillmentOrders = (orders ?? []).filter((order) => ['paid', 'processing', 'shipped'].includes(order.status));
   const activeReturnRequests = (returnRequests ?? []).filter((request) => {
     const isActive = ['requested', 'approved', 'in_transit', 'received'].includes(request.status);
     const belongsToSeller = request.sellerId === sellerId;
@@ -424,7 +407,6 @@ export default function SellerOperationsScreen({ navigation }: Props) {
     try {
       for (const draft of drafts) {
         await createProduct({
-          actorUserId: user._id,
           ...draft,
           imageMetadata: draft.images.map((url, index) => ({
             url,
@@ -444,15 +426,11 @@ export default function SellerOperationsScreen({ navigation }: Props) {
     }
   };
 
-  const handleReturnAction = async (
-    returnRequestId: Id<'returnRequests'>,
-    status: ReturnActionStatus,
-  ) => {
+  const handleReturnAction = async (returnRequestId: Id<'returnRequests'>, status: ReturnActionStatus) => {
     if (!user) return;
 
     try {
       await reviewReturnRequest({
-        actorUserId: user._id,
         returnRequestId,
         status,
         resolution:
@@ -464,10 +442,7 @@ export default function SellerOperationsScreen({ navigation }: Props) {
       });
       Alert.alert('Return updated', `Return request marked ${status.replace(/_/g, ' ')}.`);
     } catch (error) {
-      Alert.alert(
-        'Unable to update return',
-        error instanceof Error ? error.message : 'Please try again.',
-      );
+      Alert.alert('Unable to update return', error instanceof Error ? error.message : 'Please try again.');
     }
   };
 
@@ -498,11 +473,20 @@ export default function SellerOperationsScreen({ navigation }: Props) {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <StackHeader title="Seller Operations" subtitle="Listings, orders, payouts" onBackPress={() => navigation.goBack()} variant="gradient" />
+      <StackHeader
+        title="Seller Operations"
+        subtitle="Listings, orders, payouts"
+        onBackPress={() => navigation.goBack()}
+        variant="gradient"
+      />
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <View style={styles.statsGrid}>
           <MetricCard label="Active listings" value={String(listingCounts.active ?? 0)} icon="storefront-outline" />
-          <MetricCard label="Needs review" value={String((listingCounts.pending_review ?? 0) + (listingCounts.changes_requested ?? 0))} icon="clipboard-alert-outline" />
+          <MetricCard
+            label="Needs review"
+            value={String((listingCounts.pending_review ?? 0) + (listingCounts.changes_requested ?? 0))}
+            icon="clipboard-alert-outline"
+          />
           <MetricCard label="Fulfillment" value={String(fulfillmentOrders.length)} icon="truck-fast-outline" />
           <MetricCard label="Pending payout" value={formatPrice(pendingEscrow.totalPending)} icon="wallet-outline" />
         </View>
@@ -549,7 +533,12 @@ export default function SellerOperationsScreen({ navigation }: Props) {
                       {order.items.length} item(s) • {order.shippingAddress.city}, {order.shippingAddress.province}
                     </Text>
                   </View>
-                  <Button compact mode="contained-tonal" icon="file-document-outline" onPress={() => Share.share({ title: order.orderNumber, message: buildPackingSlip(order) })}>
+                  <Button
+                    compact
+                    mode="contained-tonal"
+                    icon="file-document-outline"
+                    onPress={() => Share.share({ title: order.orderNumber, message: buildPackingSlip(order) })}
+                  >
                     Slip
                   </Button>
                 </View>
@@ -612,20 +601,12 @@ export default function SellerOperationsScreen({ navigation }: Props) {
                     </>
                   ) : null}
                   {request.status === 'approved' || request.status === 'in_transit' ? (
-                    <Button
-                      compact
-                      mode="contained-tonal"
-                      onPress={() => handleReturnAction(request._id, 'received')}
-                    >
+                    <Button compact mode="contained-tonal" onPress={() => handleReturnAction(request._id, 'received')}>
                       Received
                     </Button>
                   ) : null}
                   {request.status === 'received' ? (
-                    <Button
-                      compact
-                      mode="contained"
-                      onPress={() => handleReturnAction(request._id, 'refunded')}
-                    >
+                    <Button compact mode="contained" onPress={() => handleReturnAction(request._id, 'refunded')}>
                       Refunded
                     </Button>
                   ) : null}
@@ -679,7 +660,8 @@ export default function SellerOperationsScreen({ navigation }: Props) {
             </Text>
           </View>
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}>
-            Paste the template with category names or slugs to create draft listings. Review each draft before submitting to moderation.
+            Paste the template with category names or slugs to create draft listings. Review each draft before
+            submitting to moderation.
           </Text>
           <View style={styles.importActions}>
             <Button mode="contained" icon="file-upload-outline" onPress={() => setShowCsvImport(true)}>
@@ -706,7 +688,8 @@ export default function SellerOperationsScreen({ navigation }: Props) {
             </Text>
           </View>
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 19 }}>
-            Required columns: SKU, title, brand, L1/L2/L3 category, price, stock, descriptions, 5-10 features, and 3-8 image URLs.
+            Required columns: SKU, title, brand, L1/L2/L3 category, price, stock, descriptions, 5-10 features, and 3-8
+            image URLs.
           </Text>
           <TextInput
             mode="outlined"

@@ -1,11 +1,27 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import type { Doc, Id } from "./_generated/dataModel";
+import { mutation, query, internalMutation } from "./_generated/server";
+import type { QueryCtx } from "./_generated/server";
+import { requireUser } from "./lib/auth";
+import { canReadDispute, speakerSideOf, speakerSideOfMessage } from "./lib/disputeAccess";
+
+// The dispute whose conversation the actor may read. A missing dispute holds no private data, so it reads as null;
+// an existing dispute the actor may not read is refused.
+async function readableDispute(ctx: QueryCtx, actor: Doc<"users">, disputeId: Id<"disputes">) {
+  const dispute = await ctx.db.get(disputeId);
+  if (!dispute) {
+    return null;
+  }
+  if (!(await canReadDispute(ctx, actor, dispute))) {
+    throw new Error("Unauthorized");
+  }
+  return dispute;
+}
 
 // Send message in dispute conversation
 export const sendMessage = mutation({
   args: {
     disputeId: v.id("disputes"),
-    senderId: v.id("users"),
     content: v.string(),
     originalContent: v.optional(v.string()), // if AI suggested rephrasing
     attachments: v.optional(
@@ -19,22 +35,19 @@ export const sendMessage = mutation({
     aiRephraseAccepted: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) {
+      throw new Error("Dispute not found");
+    }
 
-    // Verify sender is participant or moderator
-    const sender = await ctx.db.get(args.senderId);
-    if (!sender) throw new Error("Sender not found");
-
-    const isParticipant =
-      dispute.buyerId === args.senderId || dispute.sellerId === args.senderId;
-    const isModerator =
-      sender.role === "moderator" || sender.role === "admin";
-    const isAssignedModerator = dispute.moderatorId === args.senderId;
-
-    if (!isParticipant && !isModerator) {
+    // Reviewers, the buyer, and the seller side may reply. The seller side includes catalog staff delegated for the
+    // company seller account, and nobody else.
+    if (!(await canReadDispute(ctx, actor, dispute))) {
       throw new Error("Unauthorized: You are not a participant in this dispute");
     }
+    const speakerSide = await speakerSideOf(ctx, actor, dispute);
+    const isParticipant = speakerSide !== "moderator";
 
     // Don't allow messages in resolved/closed disputes
     if (dispute.status === "resolved" || dispute.status === "closed") {
@@ -51,12 +64,13 @@ export const sendMessage = mutation({
 
     const messageId = await ctx.db.insert("messages", {
       disputeId: args.disputeId,
-      senderId: args.senderId,
+      senderId: actor._id,
       content: args.content,
       originalContent: args.originalContent,
       attachments: args.attachments,
       isSystemMessage: false,
       aiRephraseAccepted: args.aiRephraseAccepted,
+      speakerSide,
       createdAt: Date.now(),
     });
 
@@ -66,10 +80,8 @@ export const sendMessage = mutation({
     });
 
     // Notify the other party about the new message
-    const senderName = `${sender.firstName} ${sender.lastName}`;
-    const recipientId = args.senderId === dispute.buyerId
-      ? dispute.sellerId
-      : dispute.buyerId;
+    const senderName = `${actor.firstName} ${actor.lastName}`;
+    const recipientId = actor._id === dispute.buyerId ? dispute.sellerId : dispute.buyerId;
 
     // Don't notify if sender is moderator messaging (they'll see it)
     if (isParticipant) {
@@ -92,6 +104,11 @@ export const sendMessage = mutation({
 export const getMessages = query({
   args: { disputeId: v.id("disputes") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    if (!(await readableDispute(ctx, actor, args.disputeId))) {
+      return [];
+    }
+
     const messages = await ctx.db
       .query("messages")
       .withIndex("by_dispute_created", (q) => q.eq("disputeId", args.disputeId))
@@ -127,6 +144,11 @@ export const getMessagesPaginated = query({
     cursor: v.optional(v.id("messages")),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    if (!(await readableDispute(ctx, actor, args.disputeId))) {
+      return { messages: [], hasMore: false, nextCursor: null };
+    }
+
     const limit = args.limit ?? 50;
 
     const messages = await ctx.db
@@ -173,6 +195,11 @@ export const getMessagesPaginated = query({
 export const getMessageCount = query({
   args: { disputeId: v.id("disputes") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    if (!(await readableDispute(ctx, actor, args.disputeId))) {
+      return 0;
+    }
+
     const messages = await ctx.db
       .query("messages")
       .withIndex("by_dispute", (q) => q.eq("disputeId", args.disputeId))
@@ -186,6 +213,11 @@ export const getMessageCount = query({
 export const getLastMessage = query({
   args: { disputeId: v.id("disputes") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    if (!(await readableDispute(ctx, actor, args.disputeId))) {
+      return null;
+    }
+
     const messages = await ctx.db
       .query("messages")
       .withIndex("by_dispute_created", (q) => q.eq("disputeId", args.disputeId))
@@ -193,7 +225,9 @@ export const getLastMessage = query({
       .take(1);
 
     const message = messages[0];
-    if (!message) return null;
+    if (!message) {
+      return null;
+    }
 
     const sender = await ctx.db.get(message.senderId);
 
@@ -211,7 +245,7 @@ export const getLastMessage = query({
 });
 
 // Add system message
-export const addSystemMessage = mutation({
+export const addSystemMessage = internalMutation({
   args: {
     disputeId: v.id("disputes"),
     content: v.string(),
@@ -232,8 +266,11 @@ export const addSystemMessage = mutation({
 export const getMessagesForAnalysis = query({
   args: { disputeId: v.id("disputes") },
   handler: async (ctx, args) => {
-    const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) return null;
+    const actor = await requireUser(ctx);
+    const dispute = await readableDispute(ctx, actor, args.disputeId);
+    if (!dispute) {
+      return null;
+    }
 
     const messages = await ctx.db
       .query("messages")
@@ -252,21 +289,12 @@ export const getMessagesForAnalysis = query({
         status: dispute.status,
       },
       participants: {
-        buyer: buyer
-          ? { _id: buyer._id, name: `${buyer.firstName} ${buyer.lastName}` }
-          : null,
-        seller: seller
-          ? { _id: seller._id, name: `${seller.firstName} ${seller.lastName}` }
-          : null,
+        buyer: buyer ? { _id: buyer._id, name: `${buyer.firstName} ${buyer.lastName}` } : null,
+        seller: seller ? { _id: seller._id, name: `${seller.firstName} ${seller.lastName}` } : null,
       },
       messages: messages.map((msg) => ({
         senderId: msg.senderId,
-        senderRole:
-          msg.senderId === dispute.buyerId
-            ? "buyer"
-            : msg.senderId === dispute.sellerId
-            ? "seller"
-            : "moderator",
+        senderRole: speakerSideOfMessage(msg, dispute),
         content: msg.content,
         isSystemMessage: msg.isSystemMessage,
         timestamp: msg.createdAt,
@@ -276,7 +304,8 @@ export const getMessagesForAnalysis = query({
   },
 });
 
-// Mark messages as sent with AI rephrase
+// Mark messages as sent with AI rephrase. Only the author changes their own message, and only while they can read
+// its dispute.
 export const updateMessageWithRephrase = mutation({
   args: {
     messageId: v.id("messages"),
@@ -284,6 +313,20 @@ export const updateMessageWithRephrase = mutation({
     originalContent: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+    const message = await ctx.db.get(args.messageId);
+    if (!message) {
+      throw new Error("Message not found");
+    }
+    if (message.senderId !== actor._id) {
+      throw new Error("Unauthorized: Only the sender can change this message");
+    }
+
+    const dispute = await ctx.db.get(message.disputeId);
+    if (!dispute || !(await canReadDispute(ctx, actor, dispute))) {
+      throw new Error("Unauthorized");
+    }
+
     await ctx.db.patch(args.messageId, {
       aiRephraseAccepted: args.aiRephraseAccepted,
       originalContent: args.originalContent,

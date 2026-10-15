@@ -1,30 +1,19 @@
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { requireUser } from "./lib/auth";
+import { ensureAdminActor } from "./lib/platform";
+import { countActiveRedemptions, countActiveRedemptionsForUser } from "./lib/checkoutReservations";
 
-async function ensureAdmin(ctx: QueryCtx | MutationCtx, userId: Id<"users">) {
-  const user = await ctx.db.get(userId);
-  if (!user || user.role !== "admin") {
-    throw new Error("Unauthorized: Only admins can manage promotions");
-  }
-  return user;
-}
-
-function isWithinWindow(
-  startsAt: number,
-  endsAt: number | undefined,
-  now: number
-) {
+function isWithinWindow(startsAt: number, endsAt: number | undefined, now: number) {
   return startsAt <= now && (endsAt === undefined || endsAt >= now);
 }
 
 function normalizeExternalUrl(value: string) {
   const trimmed = value.trim();
-  if (!trimmed) throw new Error("URL is required");
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
+  if (!trimmed) {
+    throw new Error("URL is required");
+  }
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   const parsed = new URL(withProtocol);
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new Error("URL must start with http:// or https://");
@@ -46,12 +35,8 @@ function calculateDiscount(
   subtotal: number,
   maxDiscount?: number
 ) {
-  const rawDiscount =
-    discountType === "percent"
-      ? subtotal * (discountValue / 100)
-      : discountValue;
-  const cappedDiscount =
-    maxDiscount === undefined ? rawDiscount : Math.min(rawDiscount, maxDiscount);
+  const rawDiscount = discountType === "percent" ? subtotal * (discountValue / 100) : discountValue;
+  const cappedDiscount = maxDiscount === undefined ? rawDiscount : Math.min(rawDiscount, maxDiscount);
   return Math.max(0, Math.min(subtotal, cappedDiscount));
 }
 
@@ -77,9 +62,15 @@ export const listActiveBanners = query({
 
     return banners
       .filter((banner) => {
-        if (!isWithinWindow(banner.startsAt, banner.endsAt, now)) return false;
-        if (args.placement && banner.placement !== args.placement) return false;
-        if (args.categoryId && banner.categoryId !== args.categoryId) return false;
+        if (!isWithinWindow(banner.startsAt, banner.endsAt, now)) {
+          return false;
+        }
+        if (args.placement && banner.placement !== args.placement) {
+          return false;
+        }
+        if (args.categoryId && banner.categoryId !== args.categoryId) {
+          return false;
+        }
         return true;
       })
       .map((banner) => ({
@@ -92,8 +83,8 @@ export const listActiveBanners = query({
 
 export const listPromotionBannersForAdmin = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+  handler: async (ctx, _args) => {
+    await ensureAdminActor(ctx);
     return (await ctx.db.query("promotionBanners").collect())
       .map((banner) => ({
         ...banner,
@@ -128,10 +119,18 @@ export const listActivePromotions = query({
 
     return promotions
       .filter((promotion) => {
-        if (!isWithinWindow(promotion.startsAt, promotion.endsAt, now)) return false;
-        if (args.type && promotion.type !== args.type) return false;
-        if (args.sellerId && promotion.sellerId !== args.sellerId) return false;
-        if (args.categoryId && promotion.categoryId !== args.categoryId) return false;
+        if (!isWithinWindow(promotion.startsAt, promotion.endsAt, now)) {
+          return false;
+        }
+        if (args.type && promotion.type !== args.type) {
+          return false;
+        }
+        if (args.sellerId && promotion.sellerId !== args.sellerId) {
+          return false;
+        }
+        if (args.categoryId && promotion.categoryId !== args.categoryId) {
+          return false;
+        }
         return true;
       })
       .sort((left, right) => right.priority - left.priority)
@@ -141,34 +140,30 @@ export const listActivePromotions = query({
 
 export const listPromotionsForAdmin = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
-    return (await ctx.db.query("promotions").collect()).sort(
-      (left, right) => right.createdAt - left.createdAt
-    );
+  handler: async (ctx, _args) => {
+    await ensureAdminActor(ctx);
+    return (await ctx.db.query("promotions").collect()).sort((left, right) => right.createdAt - left.createdAt);
   },
 });
 
 export const listPromoCodesForAdmin = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
-    return (await ctx.db.query("promoCodes").collect()).sort(
-      (left, right) => right.createdAt - left.createdAt
-    );
+  handler: async (ctx, _args) => {
+    await ensureAdminActor(ctx);
+    return (await ctx.db.query("promoCodes").collect()).sort((left, right) => right.createdAt - left.createdAt);
   },
 });
 
 export const validatePromoCode = query({
   args: {
     code: v.string(),
-    userId: v.optional(v.id("users")),
     subtotal: v.number(),
     sellerId: v.optional(v.id("users")),
     categoryIds: v.optional(v.array(v.id("categories"))),
     productIds: v.optional(v.array(v.id("products"))),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const normalizedCode = args.code.trim().toUpperCase();
     const promoCode = await ctx.db
       .query("promoCodes")
@@ -184,10 +179,7 @@ export const validatePromoCode = query({
       return { valid: false, reason: "Promo code is not active" };
     }
 
-    if (
-      promoCode.minimumSubtotal !== undefined &&
-      args.subtotal < promoCode.minimumSubtotal
-    ) {
+    if (promoCode.minimumSubtotal !== undefined && args.subtotal < promoCode.minimumSubtotal) {
       return { valid: false, reason: "Order subtotal is below the promo minimum" };
     }
 
@@ -197,8 +189,7 @@ export const validatePromoCode = query({
 
     if (
       promoCode.scope === "category" &&
-      (!promoCode.categoryId ||
-        !(args.categoryIds ?? []).includes(promoCode.categoryId))
+      (!promoCode.categoryId || !(args.categoryIds ?? []).includes(promoCode.categoryId))
     ) {
       return { valid: false, reason: "Promo code does not apply to these categories" };
     }
@@ -215,18 +206,12 @@ export const validatePromoCode = query({
       .withIndex("by_promo_code", (q) => q.eq("promoCodeId", promoCode._id))
       .collect();
 
-    if (
-      promoCode.usageLimit !== undefined &&
-      redemptions.length >= promoCode.usageLimit
-    ) {
+    if (promoCode.usageLimit !== undefined && countActiveRedemptions(redemptions) >= promoCode.usageLimit) {
       return { valid: false, reason: "Promo code usage limit reached" };
     }
 
-    if (args.userId && promoCode.perUserLimit !== undefined) {
-      const userRedemptions = redemptions.filter(
-        (redemption) => redemption.userId === args.userId
-      );
-      if (userRedemptions.length >= promoCode.perUserLimit) {
+    if (promoCode.perUserLimit !== undefined) {
+      if (countActiveRedemptionsForUser(redemptions, actor._id) >= promoCode.perUserLimit) {
         return { valid: false, reason: "Promo code already used" };
       }
     }
@@ -271,9 +256,9 @@ export const upsertPromotionBanner = mutation({
     sortOrder: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, bannerId, ...bannerInput } = args;
+    const { adminId: _adminId, bannerId, ...bannerInput } = args;
     const normalizedBannerInput = {
       ...bannerInput,
       imageUrl: normalizeExternalUrl(bannerInput.imageUrl),
@@ -312,11 +297,7 @@ export const upsertPromotion = mutation({
     sellerId: v.optional(v.id("users")),
     categoryId: v.optional(v.id("categories")),
     productIds: v.array(v.id("products")),
-    discountType: v.union(
-      v.literal("percent"),
-      v.literal("fixed_amount"),
-      v.literal("compare_at")
-    ),
+    discountType: v.union(v.literal("percent"), v.literal("fixed_amount"), v.literal("compare_at")),
     discountValue: v.optional(v.number()),
     startsAt: v.number(),
     endsAt: v.optional(v.number()),
@@ -324,9 +305,9 @@ export const upsertPromotion = mutation({
     priority: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, promotionId, ...promotionInput } = args;
+    const { adminId: _adminId, promotionId, ...promotionInput } = args;
 
     if (promotionId) {
       await ctx.db.patch(promotionId, {
@@ -353,12 +334,7 @@ export const upsertPromoCode = mutation({
     code: v.string(),
     title: v.string(),
     description: v.optional(v.string()),
-    scope: v.union(
-      v.literal("platform"),
-      v.literal("seller"),
-      v.literal("category"),
-      v.literal("product")
-    ),
+    scope: v.union(v.literal("platform"), v.literal("seller"), v.literal("category"), v.literal("product")),
     sellerId: v.optional(v.id("users")),
     categoryId: v.optional(v.id("categories")),
     productId: v.optional(v.id("products")),
@@ -373,9 +349,9 @@ export const upsertPromoCode = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, promoCodeId, code, ...promoInput } = args;
+    const { adminId: _adminId, promoCodeId, code, ...promoInput } = args;
     const normalizedCode = code.trim().toUpperCase();
 
     if (promoCodeId) {
@@ -396,17 +372,27 @@ export const upsertPromoCode = mutation({
   },
 });
 
-export const recordPromoCodeRedemption = mutation({
+// Checkout reservations own public redemption; retain this legacy helper for internal callers only.
+export const recordPromoCodeRedemption = internalMutation({
   args: {
     promoCodeId: v.id("promoCodes"),
-    userId: v.id("users"),
     orderId: v.optional(v.id("orders")),
     discountAmount: v.number(),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
+
+    if (args.orderId) {
+      const order = await ctx.db.get(args.orderId);
+
+      if (!order || order.buyerId !== actor._id) {
+        throw new Error("Unauthorized: Order must belong to the signed-in buyer");
+      }
+    }
+
     return await ctx.db.insert("promoCodeRedemptions", {
       promoCodeId: args.promoCodeId,
-      userId: args.userId,
+      userId: actor._id,
       orderId: args.orderId,
       discountAmount: args.discountAmount,
       redeemedAt: Date.now(),

@@ -2,12 +2,12 @@ import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
+import { optionalUser, requireUser } from "./lib/auth";
 import {
   DEFAULT_COMPANY_DISPLAY_NAME,
   ensureAdminActor,
   getCompanySellerUserId,
   getPlatformSettings,
-  getUserOrThrow,
   getVendorProfileByOwnerId,
   isStaffViewer,
   normalizeOptionalExternalUrl,
@@ -15,12 +15,14 @@ import {
 } from "./lib/platform";
 
 function slugifyStoreName(value: string) {
-  return value
-    .trim()
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 64) || "store";
+  return (
+    value
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "-")
+      .replace(/^-+|-+$/g, "")
+      .slice(0, 64) || "store"
+  );
 }
 
 async function ensureUniqueSlug(
@@ -31,7 +33,7 @@ async function ensureUniqueSlug(
   let slug = baseSlug;
   let suffix = 1;
 
-  while (true) {
+  for (;;) {
     const existing = await ctx.db
       .query("vendorProfiles")
       .withIndex("by_slug", (q) => q.eq("slug", slug))
@@ -47,7 +49,6 @@ async function ensureUniqueSlug(
 }
 
 const vendorApplicationArgs = {
-  ownerUserId: v.id("users"),
   storeName: v.string(),
   description: v.string(),
   logoUrl: v.optional(v.string()),
@@ -72,21 +73,12 @@ const vendorApplicationArgs = {
 export const submitApplication = mutation({
   args: vendorApplicationArgs,
   handler: async (ctx, args) => {
-    const user = await getUserOrThrow(ctx, args.ownerUserId);
-    if (user.isBanned) {
-      throw new Error("Banned users cannot submit vendor applications");
-    }
-
-    const existingProfile = await getVendorProfileByOwnerId(ctx, args.ownerUserId);
+    const applicant = await requireUser(ctx);
+    const existingProfile = await getVendorProfileByOwnerId(ctx, applicant._id);
     const now = Date.now();
-    const slug = await ensureUniqueSlug(
-      ctx,
-      slugifyStoreName(args.storeName),
-      existingProfile?._id
-    );
+    const slug = await ensureUniqueSlug(ctx, slugifyStoreName(args.storeName), existingProfile?._id);
 
-    const nextStatus =
-      existingProfile?.status === "approved" ? "approved" : "pending";
+    const nextStatus = existingProfile?.status === "approved" ? "approved" : "pending";
     const normalizedArgs = {
       ...args,
       logoUrl: normalizeOptionalExternalUrl(args.logoUrl),
@@ -103,6 +95,7 @@ export const submitApplication = mutation({
     if (existingProfile) {
       await ctx.db.patch(existingProfile._id, {
         ...normalizedArgs,
+        ownerUserId: applicant._id,
         slug,
         status: nextStatus,
         updatedAt: now,
@@ -113,6 +106,7 @@ export const submitApplication = mutation({
 
     const vendorProfileId = await ctx.db.insert("vendorProfiles", {
       ...normalizedArgs,
+      ownerUserId: applicant._id,
       slug,
       status: "pending",
       createdAt: now,
@@ -124,18 +118,16 @@ export const submitApplication = mutation({
 });
 
 export const getMyVendorProfile = query({
-  args: {
-    ownerUserId: v.id("users"),
-  },
-  handler: async (ctx, args) => {
-    return await getVendorProfileByOwnerId(ctx, args.ownerUserId);
+  args: {},
+  handler: async (ctx) => {
+    const vendor = await requireUser(ctx);
+    return await getVendorProfileByOwnerId(ctx, vendor._id);
   },
 });
 
 export const getVendorStorefront = query({
   args: {
     sellerId: v.id("users"),
-    viewerUserId: v.optional(v.id("users")),
   },
   handler: async (ctx, args) => {
     const settings = await getPlatformSettings(ctx);
@@ -167,9 +159,8 @@ export const getVendorStorefront = query({
       return null;
     }
 
-    const canView = vendorProfile.status === "approved" ||
-      args.viewerUserId === args.sellerId ||
-      (await isStaffViewer(ctx, args.viewerUserId));
+    const viewer = await optionalUser(ctx);
+    const canView = vendorProfile.status === "approved" || viewer?._id === args.sellerId || isStaffViewer(viewer);
 
     if (!canView) {
       return null;
@@ -203,16 +194,11 @@ export const listPublicStorefronts = query({
       .withIndex("by_status", (q) => q.eq("status", "approved"))
       .collect();
 
-    const companyStore = settings?.companySellerUserId
-      ? await ctx.db.get(settings.companySellerUserId)
-      : null;
+    const companyStore = settings?.companySellerUserId ? await ctx.db.get(settings.companySellerUserId) : null;
 
     const vendorStores = await Promise.all(
       approvedVendorProfiles
-        .filter(
-          (vendorProfile) =>
-            vendorProfile.ownerUserId !== settings?.companySellerUserId
-        )
+        .filter((vendorProfile) => vendorProfile.ownerUserId !== settings?.companySellerUserId)
         .map(async (vendorProfile) => {
           const owner = await ctx.db.get(vendorProfile.ownerUserId);
           if (!owner) {
@@ -235,9 +221,7 @@ export const listPublicStorefronts = query({
 
     const publicStores = vendorStores
       .filter((storefront) => storefront !== null)
-      .sort((left, right) =>
-        left.displayName.localeCompare(right.displayName)
-      );
+      .sort((left, right) => left.displayName.localeCompare(right.displayName));
 
     if (!settings?.companySellerUserId || !companyStore) {
       return publicStores;
@@ -266,7 +250,7 @@ export const getPendingApplications = query({
     status: v.optional(vendorStatusValidator),
   },
   handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+    await ensureAdminActor(ctx);
 
     const status = args.status ?? "pending";
     const applications = await ctx.db
@@ -288,8 +272,8 @@ export const listVendorStoresForAdmin = query({
   args: {
     adminId: v.id("users"),
   },
-  handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+  handler: async (ctx) => {
+    await ensureAdminActor(ctx);
 
     const vendorProfiles = await ctx.db.query("vendorProfiles").collect();
     const counts = {
@@ -305,9 +289,7 @@ export const listVendorStoresForAdmin = query({
         counts[vendorProfile.status] += 1;
 
         const owner = await ctx.db.get(vendorProfile.ownerUserId);
-        const ownerName = owner
-          ? `${owner.firstName} ${owner.lastName}`.trim() || "Unknown user"
-          : "Unknown user";
+        const ownerName = owner ? `${owner.firstName} ${owner.lastName}`.trim() || "Unknown user" : "Unknown user";
 
         return {
           vendorProfileId: vendorProfile._id,
@@ -341,15 +323,11 @@ export const reviewApplication = mutation({
   args: {
     adminId: v.id("users"),
     vendorProfileId: v.id("vendorProfiles"),
-    decision: v.union(
-      v.literal("approved"),
-      v.literal("changes_requested"),
-      v.literal("suspended")
-    ),
+    decision: v.union(v.literal("approved"), v.literal("changes_requested"), v.literal("suspended")),
     reviewNotes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+    const admin = await ensureAdminActor(ctx);
 
     const vendorProfile = await ctx.db.get(args.vendorProfileId);
     if (!vendorProfile) {
@@ -359,7 +337,7 @@ export const reviewApplication = mutation({
     await ctx.db.patch(args.vendorProfileId, {
       status: args.decision,
       reviewNotes: args.reviewNotes,
-      reviewedByUserId: args.adminId,
+      reviewedByUserId: admin._id,
       reviewedAt: Date.now(),
       updatedAt: Date.now(),
     });
@@ -372,8 +350,8 @@ export const migrateLegacyVendorListings = mutation({
   args: {
     adminId: v.id("users"),
   },
-  handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+  handler: async (ctx) => {
+    const admin = await ensureAdminActor(ctx);
 
     const companySellerUserId = await getCompanySellerUserId(ctx);
     if (!companySellerUserId) {
@@ -390,28 +368,23 @@ export const migrateLegacyVendorListings = mutation({
       )
     );
 
-    const legacyProducts = products
-      .flat()
-      .filter((product) => product.sellerId !== companySellerUserId);
+    const legacyProducts = products.flat().filter((product) => product.sellerId !== companySellerUserId);
 
     const now = Date.now();
 
     for (const product of legacyProducts) {
       await ctx.db.patch(product._id, {
         status: "changes_requested",
-        reviewNotes:
-          "This listing was moved to the new vendor workflow. Apply as a vendor and resubmit it for review.",
+        reviewNotes: "This listing was moved to the new vendor workflow. Apply as a vendor and resubmit it for review.",
         reviewedAt: now,
-        reviewedByUserId: args.adminId,
+        reviewedByUserId: admin._id,
         updatedAt: now,
       });
     }
 
     return {
       migratedCount: legacyProducts.length,
-      companyDisplayName:
-        (await getPlatformSettings(ctx))?.companyDisplayName ??
-        DEFAULT_COMPANY_DISPLAY_NAME,
+      companyDisplayName: (await getPlatformSettings(ctx))?.companyDisplayName ?? DEFAULT_COMPANY_DISPLAY_NAME,
     };
   },
 });
