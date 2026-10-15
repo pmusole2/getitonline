@@ -18,6 +18,8 @@ import Animated, { FadeInDown, FadeInUp } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
 import type { Id, RootStackParamList } from '../../types';
@@ -132,7 +134,16 @@ function MessageBubble({
   );
 }
 
-export default function ConversationChatScreen({ route, navigation }: Props) {
+export default function ConversationChatScreen(props: Props) {
+  // Messages are read only for a ready account, so no conversation query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Conversation" />;
+  }
+  return <ConversationChatContent {...props} />;
+}
+
+function ConversationChatContent({ route, navigation }: Props) {
   const theme = useTheme() as MD3Theme;
   const { conversationId, productId } = route.params;
   const { user, isLoading: authLoading } = useAppAuth();

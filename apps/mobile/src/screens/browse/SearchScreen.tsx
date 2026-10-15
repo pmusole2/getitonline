@@ -7,8 +7,9 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList, Product, ProductCondition, Id } from '../../types';
 import { AnimatedProductCard } from '../../components/ui/AnimatedProductCard';
 import { useAppAuth } from '../../context/AuthProvider';
+import { useAiActions } from '../../hooks/useAiActions';
+import { aiErrorMessage } from '../../services/aiAdapters';
 import { requestAIConsent } from '../../services/aiConsent';
-import { apiService } from '../../services/api';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Search'>;
 
@@ -25,6 +26,7 @@ export default function SearchScreen({ route, navigation }: Props) {
   const { query: initialQuery, categoryId, brand: initialBrand, imageUri, imageDataUrl } = route.params || {};
   const { user } = useAppAuth();
   const visualSearchRequestedRef = useRef(false);
+  const ai = useAiActions();
 
   const [searchQuery, setSearchQuery] = useState(initialQuery || '');
   const [visualSearchLoading, setVisualSearchLoading] = useState(false);
@@ -76,27 +78,32 @@ export default function SearchScreen({ route, navigation }: Props) {
 
     requestAIConsent()
       .then((hasConsent) => {
+        // A result for a previous account is dropped, so it shows nothing.
+        if (!ai.isCurrent()) return null;
         if (!hasConsent) {
           setVisualSearchError('AI image search is off until you allow AI features.');
           return null;
         }
-        return apiService.visualSearch({ imageDataUrl });
+        return ai.visualSearch({ imageDataUrl });
       })
       .then((result) => {
-        if (!result) return;
+        if (!result || !ai.isCurrent()) return;
         if (result.query.trim()) {
           setSearchQuery(result.query.trim());
           return;
         }
         setVisualSearchError('Add a few words to search from this photo.');
       })
-      .catch(() => {
-        setVisualSearchError('Image search is unavailable. Add a few words to search from this photo.');
+      .catch((error: unknown) => {
+        const message = aiErrorMessage(error);
+        if (message === null || !ai.isCurrent()) return;
+        setVisualSearchError(`${message} Add a few words to search from this photo.`);
       })
       .finally(() => {
+        // Busy is cleared even for a stale result, so the screen never keeps spinning for a request it no longer shows.
         setVisualSearchLoading(false);
       });
-  }, [imageDataUrl, initialBrand, initialQuery]);
+  }, [ai, imageDataUrl, initialBrand, initialQuery]);
 
   const filteredResults = useMemo(() => {
     const normalizedBrand = brandFilter.trim().toLowerCase();

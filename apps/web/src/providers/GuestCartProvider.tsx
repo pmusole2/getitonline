@@ -21,6 +21,10 @@ import {
 import { useMutation } from "convex/react";
 import { toast } from "sonner";
 import { useAuth } from "@/hooks/useAuth";
+import {
+  MAX_GUEST_CART_QUANTITY,
+  normalizeGuestCartQuantity,
+} from "./guestCartQuantity";
 
 interface GuestCartContextValue {
   items: GuestCartItem[];
@@ -130,11 +134,18 @@ export function GuestCartProvider({ children }: { children: ReactNode }) {
         }
 
         const result = await mergeGuestCart({
-          userId,
-          items: items.map((item) => ({
-            ...item,
-            productId: item.productId as Id<"products">,
-          })),
+          items: items.flatMap((item) => {
+            const quantity = normalizeGuestCartQuantity(item.quantity);
+            return quantity === null
+              ? []
+              : [
+                  {
+                    ...item,
+                    quantity,
+                    productId: item.productId as Id<"products">,
+                  },
+                ];
+          }),
         });
 
         if (isCancelled) {
@@ -190,6 +201,11 @@ export function GuestCartProvider({ children }: { children: ReactNode }) {
   const hasPendingMerge = Boolean(mergeKey) && !mergeFailed;
 
   const addItem = (item: GuestCartItem) => {
+    const quantity = normalizeGuestCartQuantity(item.quantity);
+    if (quantity === null) {
+      return;
+    }
+
     setItems((currentItems) => {
       const itemKey = item.customizationKey ?? item.productId;
       const existingItem = currentItems.find(
@@ -197,7 +213,7 @@ export function GuestCartProvider({ children }: { children: ReactNode }) {
       );
 
       if (!existingItem) {
-        return [...currentItems, item];
+        return [...currentItems, { ...item, quantity }];
       }
 
       return currentItems.map((currentItem) => {
@@ -208,8 +224,9 @@ export function GuestCartProvider({ children }: { children: ReactNode }) {
         return {
           ...currentItem,
           quantity: Math.min(
-            currentItem.quantity + item.quantity,
-            Math.max(item.product.quantity, 1)
+            currentItem.quantity + quantity,
+            Math.max(item.product.quantity, 1),
+            MAX_GUEST_CART_QUANTITY,
           ),
           selectedShipping: item.selectedShipping,
           selectedVariant: item.selectedVariant,
@@ -223,8 +240,10 @@ export function GuestCartProvider({ children }: { children: ReactNode }) {
   };
 
   const updateQuantity = (productId: string, quantity: number) => {
+    const nextQuantity = normalizeGuestCartQuantity(quantity);
+
     setItems((currentItems) => {
-      if (quantity <= 0) {
+      if (nextQuantity === null) {
         return currentItems.filter(
           (item) => (item.customizationKey ?? item.productId) !== productId
         );
@@ -237,7 +256,7 @@ export function GuestCartProvider({ children }: { children: ReactNode }) {
 
         return {
           ...item,
-          quantity: Math.min(quantity, Math.max(item.product.quantity, 1)),
+          quantity: Math.min(nextQuantity, Math.max(item.product.quantity, 1)),
         };
       });
     });

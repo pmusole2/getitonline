@@ -18,6 +18,8 @@ import {
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
 import type {
@@ -64,7 +66,16 @@ function getEscrowStatusColor(status: EscrowStatus) {
   }
 }
 
-export default function AdminEscrowScreen({ navigation }: Props) {
+export default function AdminEscrowScreen(props: Props) {
+  // Admin data is read only for a ready account, so no admin query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Escrow Oversight" />;
+  }
+  return <AdminEscrowContent {...props} />;
+}
+
+function AdminEscrowContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isAdmin = user?.role === 'admin';

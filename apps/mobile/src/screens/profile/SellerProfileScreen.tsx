@@ -18,7 +18,6 @@ export default function SellerProfileScreen({ route }: Props) {
 
   const storefront = useQuery(api.vendors.getVendorStorefront, {
     sellerId: sellerId as Id<'users'>,
-    viewerUserId: user?._id,
   });
   const reviews = useQuery(api.reviews.getSellerReviews, {
     sellerId: sellerId as Id<'users'>,
@@ -31,32 +30,27 @@ export default function SellerProfileScreen({ route }: Props) {
       return;
     }
 
-    Alert.alert(
-      'Delete review',
-      'Remove this review from the storefront?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Delete',
-          style: 'destructive',
-          onPress: async () => {
-            setDeletingReviewId(reviewId);
+    Alert.alert('Delete review', 'Remove this review from the storefront?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Delete',
+        style: 'destructive',
+        onPress: async () => {
+          setDeletingReviewId(reviewId);
 
-            try {
-              await deleteReview({
-                adminId: user._id,
-                reviewId: reviewId as Id<'reviews'>,
-              });
-            } catch (error: unknown) {
-              const message = error instanceof Error ? error.message : 'Failed to delete review';
-              Alert.alert('Error', message);
-            } finally {
-              setDeletingReviewId(null);
-            }
-          },
+          try {
+            await deleteReview({
+              reviewId: reviewId as Id<'reviews'>,
+            });
+          } catch (error: unknown) {
+            const message = error instanceof Error ? error.message : 'Failed to delete review';
+            Alert.alert('Error', message);
+          } finally {
+            setDeletingReviewId(null);
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   if (storefront === undefined || reviews === undefined) {
@@ -94,12 +88,7 @@ export default function SellerProfileScreen({ route }: Props) {
               </Text>
               <View style={styles.ratingRow}>
                 {[1, 2, 3, 4, 5].map((star) => (
-                  <Icon
-                    key={star}
-                    name={star <= item.rating ? 'star' : 'star-outline'}
-                    size={14}
-                    color="#F59E0B"
-                  />
+                  <Icon key={star} name={star <= item.rating ? 'star' : 'star-outline'} size={14} color="#F59E0B" />
                 ))}
               </View>
             </View>
@@ -173,7 +162,6 @@ export default function SellerProfileScreen({ route }: Props) {
         >
           {storefront.description}
         </Text>
-
       </View>
 
       <Card style={[styles.statsCard, { backgroundColor: theme.colors.surface }]}>

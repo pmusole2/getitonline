@@ -6,6 +6,8 @@ import { Button, Chip, Modal, Portal, Surface, Text, TextInput, useTheme } from 
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
 import type { Id, RootStackParamList } from '../../types';
@@ -96,7 +98,16 @@ function requiredNumber(value: string, fallback: number) {
   return Number.isFinite(parsed) ? parsed : fallback;
 }
 
-export default function AdminDeliveryScreen({ navigation }: Props) {
+export default function AdminDeliveryScreen(props: Props) {
+  // Admin data is read only for a ready account, so no admin query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Delivery Admin" />;
+  }
+  return <AdminDeliveryContent {...props} />;
+}
+
+function AdminDeliveryContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isAdmin = isAdminRole(user?.role);

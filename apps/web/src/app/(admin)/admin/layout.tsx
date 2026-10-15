@@ -1,11 +1,11 @@
 "use client";
 
 import { useState } from "react";
-import { useAuth } from "@/hooks/useAuth";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
 import { AdminSidebar } from "@/components/admin/layout/AdminSidebar";
 import { AdminHeader } from "@/components/admin/layout/AdminHeader";
 import { Sheet, SheetContent } from "@/components/ui/sheet";
-import { Skeleton } from "@/components/ui/skeleton";
 import { redirect } from "next/navigation";
 import { ROUTES } from "@/lib/constants";
 
@@ -14,53 +14,41 @@ export default function AdminLayout({
 }: {
   children: React.ReactNode;
 }) {
-  const { isLoading, isSignedIn, user } = useAuth();
-  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const access = useAccountAccess();
+  const user = access.user;
 
-  // Show loading state
-  if (isLoading) {
+  if (access.status !== "ready" || !user) {
     return (
-      <div className="flex h-screen">
-        <div className="hidden w-64 border-r lg:block">
-          <div className="flex h-16 items-center border-b px-4">
-            <Skeleton className="h-8 w-8 rounded-lg" />
-            <Skeleton className="ml-2 h-4 w-32" />
-          </div>
-          <div className="space-y-2 p-4">
-            {Array.from({ length: 8 }).map((_, i) => (
-              <Skeleton key={i} className="h-10 w-full" />
-            ))}
-          </div>
-        </div>
-        <div className="flex flex-1 flex-col">
-          <div className="flex h-16 items-center justify-between border-b px-4">
-            <Skeleton className="h-6 w-48" />
-            <Skeleton className="h-8 w-8 rounded-full" />
-          </div>
-          <div className="flex-1 p-6">
-            <Skeleton className="h-8 w-64 mb-6" />
-            <div className="grid gap-4 md:grid-cols-4">
-              {Array.from({ length: 4 }).map((_, i) => (
-                <Skeleton key={i} className="h-32" />
-              ))}
-            </div>
-          </div>
-        </div>
-      </div>
+      <AccountAccessNotice
+        access={access}
+        heading="Staff workspace"
+        signInMessage="Please sign in to use this area."
+      />
     );
   }
 
-  // Redirect if not signed in
-  if (!isSignedIn) {
-    redirect(ROUTES.SIGN_IN);
-  }
-
-  // Check for admin or moderator role
-  const isAuthorized = user?.role === "admin" || user?.role === "moderator";
-
-  if (!isAuthorized) {
+  if (user.role !== "admin" && user.role !== "moderator") {
     redirect(ROUTES.HOME);
+    return null;
   }
+
+  return (
+    <AdminShell key={user._id} user={user} signOut={access.signOut}>
+      {children}
+    </AdminShell>
+  );
+}
+
+function AdminShell({
+  children,
+  user,
+  signOut,
+}: {
+  children: React.ReactNode;
+  user: AccountUser;
+  signOut: () => Promise<void>;
+}) {
+  const [sidebarOpen, setSidebarOpen] = useState(false);
 
   return (
     <div className="flex h-screen overflow-hidden">
@@ -76,7 +64,11 @@ export default function AdminLayout({
 
       {/* Main Content */}
       <div className="flex flex-1 flex-col overflow-hidden">
-        <AdminHeader onMenuClick={() => setSidebarOpen(true)} />
+        <AdminHeader
+          user={user}
+          signOut={signOut}
+          onMenuClick={() => setSidebarOpen(true)}
+        />
         <main className="flex-1 overflow-y-auto bg-muted/30 p-6">
           {children}
         </main>

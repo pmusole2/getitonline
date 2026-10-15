@@ -7,6 +7,8 @@ import { Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Animated, { FadeInDown } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
@@ -41,7 +43,15 @@ const CATEGORIES: { value: DisputeCategory; label: string; description: string; 
   },
 ];
 
-export default function CreateDisputeScreen({ route, navigation }: Props) {
+export default function CreateDisputeScreen(props: Props) {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Report Issue" />;
+  }
+  return <CreateDisputeContent {...props} />;
+}
+
+function CreateDisputeContent({ route, navigation }: Props) {
   const theme = useTheme();
   const { orderId } = route.params;
   const { user } = useAppAuth();
@@ -51,7 +61,7 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
   const [category, setCategory] = useState<DisputeCategory>('not_received');
   const [loading, setLoading] = useState(false);
 
-  const order = useQuery(api.orders.getOrder, { orderId: orderId as Id<'orders'> });
+  const order = useQuery(api.orders.getOrder, user && !user.isBanned ? { orderId: orderId as Id<'orders'> } : 'skip');
   const createDispute = useMutation(api.disputes.createDispute);
 
   const handleSubmit = async () => {
@@ -67,7 +77,6 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
     try {
       const disputeId = await createDispute({
         orderId: order._id,
-        buyerId: user._id,
         title: title.trim(),
         description: description.trim(),
         category,
@@ -142,7 +151,7 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
             What's the issue?
           </Text>
           <View style={styles.categoryGrid}>
-            {CATEGORIES.map((cat, index) => {
+            {CATEGORIES.map((cat) => {
               const isSelected = category === cat.value;
               return (
                 <Pressable
@@ -151,12 +160,8 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
                   style={({ pressed }) => [
                     styles.categoryCard,
                     {
-                      backgroundColor: isSelected
-                        ? theme.colors.primaryContainer
-                        : theme.colors.surface,
-                      borderColor: isSelected
-                        ? theme.colors.primary
-                        : theme.colors.surfaceVariant,
+                      backgroundColor: isSelected ? theme.colors.primaryContainer : theme.colors.surface,
+                      borderColor: isSelected ? theme.colors.primary : theme.colors.surfaceVariant,
                       opacity: pressed ? 0.8 : 1,
                     },
                   ]}
@@ -165,10 +170,8 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
                     style={[
                       styles.categoryIconContainer,
                       {
-                        backgroundColor: isSelected
-                          ? theme.colors.primary
-                          : theme.colors.surfaceVariant
-                      }
+                        backgroundColor: isSelected ? theme.colors.primary : theme.colors.surfaceVariant,
+                      },
                     ]}
                   >
                     <Icon
@@ -254,7 +257,8 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
                 What happens next?
               </Text>
               <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, marginTop: 4 }}>
-                After submitting, you'll be able to chat with the seller and upload evidence. A Reviewer-Approver may be assigned to help resolve the dispute.
+                After submitting, you'll be able to chat with the seller and upload evidence. A Reviewer-Approver may be
+                assigned to help resolve the dispute.
               </Text>
             </View>
           </Surface>
@@ -267,7 +271,7 @@ export default function CreateDisputeScreen({ route, navigation }: Props) {
             disabled={loading || !title.trim() || !description.trim()}
             style={({ pressed }) => [
               styles.submitButton,
-              { opacity: (loading || !title.trim() || !description.trim()) ? 0.5 : pressed ? 0.9 : 1 }
+              { opacity: loading || !title.trim() || !description.trim() ? 0.5 : pressed ? 0.9 : 1 },
             ]}
           >
             <LinearGradient

@@ -7,18 +7,29 @@ import { Surface, Text, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { TabHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
 import type { RootStackParamList } from '../../types';
 
 export default function FavoritesScreen() {
+  // Favorites are read only for a ready account, so no favorites query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Favorites" />;
+  }
+  return <FavoritesContent />;
+}
+
+function FavoritesContent() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
   const favorites = useQuery(
     api.favorites.getUserFavorites,
-    user ? { userId: user._id } : 'skip',
+    user ? {} : 'skip',
   );
 
   const products = (favorites ?? []).flatMap((favorite) => (favorite.product ? [favorite.product] : []));

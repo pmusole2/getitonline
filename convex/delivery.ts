@@ -1,16 +1,9 @@
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import type { MutationCtx, QueryCtx } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { mutation, query } from "./_generated/server";
-import { canActAsCompanySeller } from "./lib/platform";
-
-async function ensureAdmin(ctx: QueryCtx | MutationCtx, userId: Id<"users">) {
-  const user = await ctx.db.get(userId);
-  if (!user || user.role !== "admin") {
-    throw new Error("Unauthorized: Only admins can manage delivery settings");
-  }
-  return user;
-}
+import { requireUser } from "./lib/auth";
+import { canActAsCompanySeller, ensureAdminActor } from "./lib/platform";
 
 async function notifyUser(
   ctx: MutationCtx,
@@ -31,9 +24,14 @@ async function notifyUser(
   });
 }
 
+// Active zones, methods, and pickup points are public. Inactive ones are staff-only: asking for them runs the same
+// admin check as the delivery mutations, before any table is read.
 export const listDeliveryZones = query({
   args: { includeInactive: v.optional(v.boolean()) },
   handler: async (ctx, args) => {
+    if (args.includeInactive) {
+      await ensureAdminActor(ctx);
+    }
     const zones = await ctx.db.query("deliveryZones").collect();
     return zones
       .filter((zone) => args.includeInactive || zone.isActive)
@@ -47,6 +45,9 @@ export const listDeliveryMethods = query({
     includeInactive: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    if (args.includeInactive) {
+      await ensureAdminActor(ctx);
+    }
     const methods = args.zoneId
       ? await ctx.db
           .query("deliveryMethods")
@@ -64,6 +65,9 @@ export const listPickupPoints = query({
     includeInactive: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
+    if (args.includeInactive) {
+      await ensureAdminActor(ctx);
+    }
     const pickupPoints = args.zoneId
       ? await ctx.db
           .query("pickupPoints")
@@ -89,16 +93,15 @@ export const calculateDeliveryQuote = query({
     const matchingZoneIds = new Set(
       zones
         .filter((zone) => {
-          if (!zone.isActive) return false;
-          if (args.zoneId) return zone._id === args.zoneId;
+          if (!zone.isActive) {
+            return false;
+          }
+          if (args.zoneId) {
+            return zone._id === args.zoneId;
+          }
           const provinceMatches =
-            !zone.province ||
-            !args.province ||
-            zone.province.toLowerCase() === args.province.toLowerCase();
-          const cityMatches =
-            !zone.city ||
-            !args.city ||
-            zone.city.toLowerCase() === args.city.toLowerCase();
+            !zone.province || !args.province || zone.province.toLowerCase() === args.province.toLowerCase();
+          const cityMatches = !zone.city || !args.city || zone.city.toLowerCase() === args.city.toLowerCase();
           return provinceMatches && cityMatches;
         })
         .map((zone) => zone._id)
@@ -108,15 +111,18 @@ export const calculateDeliveryQuote = query({
 
     return methods
       .filter((method) => {
-        if (!method.isActive) return false;
-        if (!method.zoneId) return true;
+        if (!method.isActive) {
+          return false;
+        }
+        if (!method.zoneId) {
+          return true;
+        }
         return matchingZoneIds.has(method.zoneId);
       })
       .map((method) => {
         const weightedFee = (method.perKgFee ?? 0) * weightKg;
         const fee =
-          method.freeAboveSubtotal !== undefined &&
-          args.subtotal >= method.freeAboveSubtotal
+          method.freeAboveSubtotal !== undefined && args.subtotal >= method.freeAboveSubtotal
             ? 0
             : method.baseFee + weightedFee;
 
@@ -147,9 +153,9 @@ export const upsertDeliveryZone = mutation({
     sortOrder: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, zoneId, ...zoneInput } = args;
+    const { adminId: _adminId, zoneId, ...zoneInput } = args;
 
     if (zoneId) {
       await ctx.db.patch(zoneId, {
@@ -176,12 +182,7 @@ export const upsertDeliveryMethod = mutation({
     zoneId: v.optional(v.id("deliveryZones")),
     name: v.string(),
     code: v.string(),
-    type: v.union(
-      v.literal("standard"),
-      v.literal("express"),
-      v.literal("same_day"),
-      v.literal("pickup")
-    ),
+    type: v.union(v.literal("standard"), v.literal("express"), v.literal("same_day"), v.literal("pickup")),
     baseFee: v.number(),
     perKgFee: v.optional(v.number()),
     freeAboveSubtotal: v.optional(v.number()),
@@ -191,9 +192,9 @@ export const upsertDeliveryMethod = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, methodId, ...methodInput } = args;
+    const { adminId: _adminId, methodId, ...methodInput } = args;
 
     if (methodId) {
       await ctx.db.patch(methodId, {
@@ -229,9 +230,9 @@ export const upsertPickupPoint = mutation({
     isActive: v.boolean(),
   },
   handler: async (ctx, args) => {
-    await ensureAdmin(ctx, args.adminId);
+    await ensureAdminActor(ctx);
     const now = Date.now();
-    const { adminId, pickupPointId, ...pickupPointInput } = args;
+    const { adminId: _adminId, pickupPointId, ...pickupPointInput } = args;
 
     if (pickupPointId) {
       await ctx.db.patch(pickupPointId, {
@@ -251,7 +252,6 @@ export const upsertPickupPoint = mutation({
 
 export const addOrderTrackingEvent = mutation({
   args: {
-    actorUserId: v.id("users"),
     orderId: v.id("orders"),
     status: v.union(
       v.literal("order_placed"),
@@ -274,18 +274,18 @@ export const addOrderTrackingEvent = mutation({
     occurredAt: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const actor = await ctx.db.get(args.actorUserId);
+    const actor = await requireUser(ctx);
     const order = await ctx.db.get(args.orderId);
-    if (!actor || !order) {
+    if (!order) {
       throw new Error("Order not found");
     }
 
     const canUpdate =
       actor.role === "admin" ||
       actor.role === "moderator" ||
-      order.sellerId === args.actorUserId ||
-      (await canActAsCompanySeller(ctx, args.actorUserId, order.sellerId)) ||
-      (order.buyerId === args.actorUserId && args.status === "return_requested");
+      order.sellerId === actor._id ||
+      (await canActAsCompanySeller(ctx, actor, order.sellerId)) ||
+      (order.buyerId === actor._id && args.status === "return_requested");
     if (!canUpdate) {
       throw new Error("Unauthorized");
     }
@@ -298,23 +298,16 @@ export const addOrderTrackingEvent = mutation({
       location: args.location,
       carrier: args.carrier,
       trackingNumber: args.trackingNumber,
-      createdByUserId: args.actorUserId,
+      createdByUserId: actor._id,
       occurredAt: args.occurredAt ?? now,
       createdAt: now,
     });
 
-    await notifyUser(
-      ctx,
-      order.buyerId,
-      "delivery_update",
-      "Delivery update",
-      args.message,
-      {
-        orderId: order._id,
-        trackingEventId: eventId,
-        status: args.status,
-      }
-    );
+    await notifyUser(ctx, order.buyerId, "delivery_update", "Delivery update", args.message, {
+      orderId: order._id,
+      trackingEventId: eventId,
+      status: args.status,
+    });
 
     return eventId;
   },
@@ -323,21 +316,20 @@ export const addOrderTrackingEvent = mutation({
 export const getOrderTrackingEvents = query({
   args: {
     orderId: v.id("orders"),
-    viewerUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const viewer = await ctx.db.get(args.viewerUserId);
+    const viewer = await requireUser(ctx);
     const order = await ctx.db.get(args.orderId);
-    if (!viewer || !order) {
+    if (!order) {
       throw new Error("Order not found");
     }
 
     const canView =
       viewer.role === "admin" ||
       viewer.role === "moderator" ||
-      order.buyerId === args.viewerUserId ||
-      order.sellerId === args.viewerUserId ||
-      (await canActAsCompanySeller(ctx, args.viewerUserId, order.sellerId));
+      order.buyerId === viewer._id ||
+      order.sellerId === viewer._id ||
+      (await canActAsCompanySeller(ctx, viewer, order.sellerId));
     if (!canView) {
       throw new Error("Unauthorized");
     }
@@ -352,7 +344,6 @@ export const getOrderTrackingEvents = query({
 
 export const requestReturn = mutation({
   args: {
-    buyerId: v.id("users"),
     orderId: v.id("orders"),
     reason: v.union(
       v.literal("wrong_item"),
@@ -372,15 +363,16 @@ export const requestReturn = mutation({
     evidenceUrls: v.optional(v.array(v.string())),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const order = await ctx.db.get(args.orderId);
-    if (!order || order.buyerId !== args.buyerId) {
+    if (!order || order.buyerId !== actor._id) {
       throw new Error("Order not found");
     }
 
     const now = Date.now();
     const returnRequestId = await ctx.db.insert("returnRequests", {
       orderId: args.orderId,
-      buyerId: args.buyerId,
+      buyerId: actor._id,
       sellerId: order.sellerId,
       status: "requested",
       reason: args.reason,
@@ -406,7 +398,6 @@ export const requestReturn = mutation({
 
 export const reviewReturnRequest = mutation({
   args: {
-    actorUserId: v.id("users"),
     returnRequestId: v.id("returnRequests"),
     status: v.union(
       v.literal("approved"),
@@ -417,29 +408,24 @@ export const reviewReturnRequest = mutation({
     ),
     resolution: v.optional(
       v.object({
-        type: v.union(
-          v.literal("refund"),
-          v.literal("replacement"),
-          v.literal("store_credit"),
-          v.literal("rejected")
-        ),
+        type: v.union(v.literal("refund"), v.literal("replacement"), v.literal("store_credit"), v.literal("rejected")),
         amount: v.optional(v.number()),
         notes: v.optional(v.string()),
       })
     ),
   },
   handler: async (ctx, args) => {
-    const actor = await ctx.db.get(args.actorUserId);
+    const actor = await requireUser(ctx);
     const returnRequest = await ctx.db.get(args.returnRequestId);
-    if (!actor || !returnRequest) {
+    if (!returnRequest) {
       throw new Error("Return request not found");
     }
 
     const canReview =
       actor.role === "admin" ||
       actor.role === "moderator" ||
-      returnRequest.sellerId === args.actorUserId ||
-      (await canActAsCompanySeller(ctx, args.actorUserId, returnRequest.sellerId));
+      returnRequest.sellerId === actor._id ||
+      (await canActAsCompanySeller(ctx, actor, returnRequest.sellerId));
     if (!canReview) {
       throw new Error("Unauthorized");
     }
@@ -449,7 +435,7 @@ export const reviewReturnRequest = mutation({
       resolution: args.resolution
         ? {
             ...args.resolution,
-            resolvedByUserId: args.actorUserId,
+            resolvedByUserId: actor._id,
             resolvedAt: Date.now(),
           }
         : returnRequest.resolution,
@@ -471,7 +457,6 @@ export const reviewReturnRequest = mutation({
 
 export const getReturnRequests = query({
   args: {
-    viewerUserId: v.id("users"),
     status: v.optional(
       v.union(
         v.literal("requested"),
@@ -485,25 +470,24 @@ export const getReturnRequests = query({
     ),
   },
   handler: async (ctx, args) => {
-    const viewer = await ctx.db.get(args.viewerUserId);
-    if (!viewer) {
-      throw new Error("Unauthorized");
-    }
+    const viewer = await requireUser(ctx);
 
     const allRequests = await ctx.db.query("returnRequests").collect();
     const visibleRequests = [];
 
     for (const request of allRequests) {
-      if (args.status && request.status !== args.status) continue;
+      if (args.status && request.status !== args.status) {
+        continue;
+      }
       if (viewer.role === "admin" || viewer.role === "moderator") {
         visibleRequests.push(request);
         continue;
       }
 
       if (
-        request.buyerId === args.viewerUserId ||
-        request.sellerId === args.viewerUserId ||
-        (await canActAsCompanySeller(ctx, args.viewerUserId, request.sellerId))
+        request.buyerId === viewer._id ||
+        request.sellerId === viewer._id ||
+        (await canActAsCompanySeller(ctx, viewer, request.sellerId))
       ) {
         visibleRequests.push(request);
       }
@@ -516,21 +500,20 @@ export const getReturnRequests = query({
 export const getOrderReturnRequests = query({
   args: {
     orderId: v.id("orders"),
-    viewerUserId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const viewer = await ctx.db.get(args.viewerUserId);
+    const viewer = await requireUser(ctx);
     const order = await ctx.db.get(args.orderId);
-    if (!viewer || !order) {
+    if (!order) {
       throw new Error("Order not found");
     }
 
     const canView =
       viewer.role === "admin" ||
       viewer.role === "moderator" ||
-      order.buyerId === args.viewerUserId ||
-      order.sellerId === args.viewerUserId ||
-      (await canActAsCompanySeller(ctx, args.viewerUserId, order.sellerId));
+      order.buyerId === viewer._id ||
+      order.sellerId === viewer._id ||
+      (await canActAsCompanySeller(ctx, viewer, order.sellerId));
     if (!canView) {
       throw new Error("Unauthorized");
     }

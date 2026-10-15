@@ -48,12 +48,12 @@ export default function ProfilePage() {
   // Get user's stats
   const products = useQuery(
     api.products.getManagedCatalogProducts,
-    user?._id && hasCatalogAccess ? { actorUserId: user._id, status: "active" } : "skip"
+    user?._id && hasCatalogAccess ? { status: "active" } : "skip"
   );
 
   const orders = useQuery(
     api.orders.getBuyerOrders,
-    user?._id ? { buyerId: user._id } : "skip"
+    user?._id ? {} : "skip"
   );
 
   // Loading state

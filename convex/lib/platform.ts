@@ -1,6 +1,7 @@
 import { v } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
+import { requireRole, requireUser } from "./auth";
 
 export const DEFAULT_COMPANY_DISPLAY_NAME = "Gettitonline";
 
@@ -11,11 +12,7 @@ export const userRoleValidator = v.union(
   v.literal("admin")
 );
 
-export type AppUserRole =
-  | "user"
-  | "catalog_manager"
-  | "moderator"
-  | "admin";
+export type AppUserRole = "user" | "catalog_manager" | "moderator" | "admin";
 
 export const vendorStatusValidator = v.union(
   v.literal("pending"),
@@ -24,11 +21,7 @@ export const vendorStatusValidator = v.union(
   v.literal("suspended")
 );
 
-export type VendorStatus =
-  | "pending"
-  | "approved"
-  | "changes_requested"
-  | "suspended";
+export type VendorStatus = "pending" | "approved" | "changes_requested" | "suspended";
 
 export const productStatusValidator = v.union(
   v.literal("draft"),
@@ -49,11 +42,7 @@ export type AppProductStatus =
   | "sold"
   | "suspended";
 
-export const aiModerationStatusValidator = v.union(
-  v.literal("clear"),
-  v.literal("flagged"),
-  v.literal("error")
-);
+export const aiModerationStatusValidator = v.union(v.literal("clear"), v.literal("flagged"), v.literal("error"));
 
 export type AiModerationStatus = "clear" | "flagged" | "error";
 
@@ -106,10 +95,10 @@ type ProductDoc = {
 
 export function normalizeOptionalExternalUrl(value?: string) {
   const trimmed = value?.trim();
-  if (!trimmed) return undefined;
-  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)
-    ? trimmed
-    : `https://${trimmed}`;
+  if (!trimmed) {
+    return undefined;
+  }
+  const withProtocol = /^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) ? trimmed : `https://${trimmed}`;
   try {
     const parsed = new URL(withProtocol);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
@@ -172,19 +161,13 @@ export async function getPlatformSettingsOrThrow(ctx: ReaderLike) {
   const settings = await getPlatformSettings(ctx);
 
   if (!settings) {
-    throw new Error(
-      "Company seller account is not configured. Set it in the admin users page first."
-    );
+    throw new Error("Company seller account is not configured. Set it in the admin users page first.");
   }
 
   return settings;
 }
 
-export async function getUserOrThrow(
-  ctx: ReaderLike,
-  userId: Id<"users">,
-  errorMessage = "User not found"
-) {
+export async function getUserOrThrow(ctx: ReaderLike, userId: Id<"users">, errorMessage = "User not found") {
   const user = await ctx.db.get(userId);
   if (!user) {
     throw new Error(errorMessage);
@@ -192,25 +175,15 @@ export async function getUserOrThrow(
   return user as UserDoc;
 }
 
-export async function ensureAdminActor(ctx: ReaderLike, userId: Id<"users">) {
-  const user = await getUserOrThrow(ctx, userId);
+// Staff guards take the actor from the verified Clerk token only. A caller-supplied ID
+// never grants authority, so a caller cannot act as another staff member by passing their ID.
 
-  if (user.role !== "admin") {
-    throw new Error("Unauthorized");
-  }
-
-  return user;
+export async function ensureAdminActor(ctx: QueryCtx | MutationCtx) {
+  return await requireRole(ctx, ["admin"]);
 }
 
-export async function ensureCatalogActor(
-  ctx: ReaderLike,
-  userId: Id<"users">
-) {
-  const user = await getUserOrThrow(ctx, userId);
-
-  if (user.isBanned) {
-    throw new Error("User is banned from catalog management");
-  }
+export async function ensureCatalogActor(ctx: QueryCtx | MutationCtx) {
+  const user = await requireUser(ctx);
 
   if (!isCatalogManagerOrAdmin(user.role)) {
     throw new Error("Unauthorized: Only admins and catalog managers can manage the catalog");
@@ -219,12 +192,8 @@ export async function ensureCatalogActor(
   return user;
 }
 
-export async function ensureReviewerActor(ctx: ReaderLike, userId: Id<"users">) {
-  const user = await getUserOrThrow(ctx, userId);
-
-  if (user.isBanned) {
-    throw new Error("User is banned");
-  }
+export async function ensureReviewerActor(ctx: QueryCtx | MutationCtx) {
+  const user = await requireUser(ctx);
 
   if (!isReviewerRole(user.role)) {
     throw new Error("Unauthorized");
@@ -233,33 +202,23 @@ export async function ensureReviewerActor(ctx: ReaderLike, userId: Id<"users">) 
   return user;
 }
 
-export async function isStaffViewer(
-  ctx: ReaderLike,
-  userId?: Id<"users">
-) {
-  if (!userId) {
-    return false;
-  }
-
-  const user = await ctx.db.get(userId);
-  return Boolean(user && isStaffViewerRole(user.role as AppUserRole));
+// Pass the verified viewer from `optionalUser(ctx)`. Never pass a caller-supplied user ID here.
+export function isStaffViewer(viewer: Pick<UserDoc, "role"> | null) {
+  return viewer !== null && isStaffViewerRole(viewer.role);
 }
 
+// The actor must be the verified caller, e.g. from `requireUser(ctx)`. Never pass a
+// caller-supplied user ID here.
 export async function canActAsCompanySeller(
   ctx: ReaderLike,
-  actorUserId: Id<"users">,
+  actor: Pick<UserDoc, "_id" | "role">,
   sellerId: Id<"users">
 ) {
-  const actor = await ctx.db.get(actorUserId);
-  if (!actor) {
-    return false;
-  }
-
-  if (sellerId === actorUserId) {
+  if (sellerId === actor._id) {
     return true;
   }
 
-  if (!isCatalogManagerOrAdmin(actor.role as AppUserRole)) {
+  if (!isCatalogManagerOrAdmin(actor.role)) {
     return false;
   }
 
@@ -267,10 +226,7 @@ export async function canActAsCompanySeller(
   return companySellerUserId === sellerId;
 }
 
-export async function getVendorProfileByOwnerId(
-  ctx: ReaderLike,
-  ownerUserId: Id<"users">
-) {
+export async function getVendorProfileByOwnerId(ctx: ReaderLike, ownerUserId: Id<"users">) {
   const vendorProfile = await ctx.db
     .query("vendorProfiles")
     .withIndex("by_owner", (q) => q.eq("ownerUserId", ownerUserId))
@@ -279,10 +235,7 @@ export async function getVendorProfileByOwnerId(
   return (vendorProfile ?? null) as VendorProfileDoc | null;
 }
 
-export async function getApprovedVendorProfileByOwnerId(
-  ctx: ReaderLike,
-  ownerUserId: Id<"users">
-) {
+export async function getApprovedVendorProfileByOwnerId(ctx: ReaderLike, ownerUserId: Id<"users">) {
   const vendorProfile = await getVendorProfileByOwnerId(ctx, ownerUserId);
   if (!vendorProfile || vendorProfile.status !== "approved") {
     return null;
@@ -291,18 +244,12 @@ export async function getApprovedVendorProfileByOwnerId(
   return vendorProfile;
 }
 
-export async function isApprovedVendorStore(
-  ctx: ReaderLike,
-  ownerUserId: Id<"users">
-) {
+export async function isApprovedVendorStore(ctx: ReaderLike, ownerUserId: Id<"users">) {
   const vendorProfile = await getApprovedVendorProfileByOwnerId(ctx, ownerUserId);
   return Boolean(vendorProfile);
 }
 
-export async function isPublicStorefrontSeller(
-  ctx: ReaderLike,
-  sellerId: Id<"users">
-) {
+export async function isPublicStorefrontSeller(ctx: ReaderLike, sellerId: Id<"users">) {
   const companySellerUserId = await getCompanySellerUserId(ctx);
   if (companySellerUserId === sellerId) {
     return true;
@@ -311,12 +258,9 @@ export async function isPublicStorefrontSeller(
   return await isApprovedVendorStore(ctx, sellerId);
 }
 
-export async function resolveListingActor(
-  ctx: ReaderLike,
-  actorUserId: Id<"users">
-): Promise<ListingActorContext> {
-  const actor = await getUserOrThrow(ctx, actorUserId);
-
+// The actor must be the verified caller, e.g. from `requireUser(ctx)`. Never pass a
+// caller-supplied user ID here.
+export async function resolveListingActor(ctx: ReaderLike, actor: UserDoc): Promise<ListingActorContext> {
   if (actor.isBanned) {
     throw new Error("User is banned from listing management");
   }
@@ -335,7 +279,7 @@ export async function resolveListingActor(
     throw new Error("Moderators cannot manage listings");
   }
 
-  const vendorProfile = await getVendorProfileByOwnerId(ctx, actorUserId);
+  const vendorProfile = await getVendorProfileByOwnerId(ctx, actor._id);
   if (!vendorProfile || vendorProfile.status !== "approved") {
     throw new Error("Only approved vendors can manage listings");
   }
@@ -343,40 +287,29 @@ export async function resolveListingActor(
   return {
     actor,
     actorType: "vendor",
-    sellerId: actorUserId,
+    sellerId: actor._id,
     vendorProfile,
   };
 }
 
-export async function canActorManageProduct(
-  ctx: ReaderLike,
-  actorUserId: Id<"users">,
-  product: ProductDoc
-) {
-  const listingActor = await resolveListingActor(ctx, actorUserId);
+export async function canActorManageProduct(ctx: ReaderLike, actor: UserDoc, product: ProductDoc) {
+  const listingActor = await resolveListingActor(ctx, actor);
   return listingActor.sellerId === product.sellerId;
 }
 
-export async function canViewerInspectProduct(
-  ctx: ReaderLike,
-  product: ProductDoc,
-  viewerUserId?: Id<"users">
-) {
-  if (!viewerUserId) {
+export function canViewerInspectProduct(product: ProductDoc, viewer: Pick<UserDoc, "_id" | "role"> | null) {
+  if (!viewer) {
     return false;
   }
 
-  if (viewerUserId === product.sellerId) {
+  if (viewer._id === product.sellerId) {
     return true;
   }
 
-  return await isStaffViewer(ctx, viewerUserId);
+  return isStaffViewer(viewer);
 }
 
-export async function getSellerDisplayInfo(
-  ctx: ReaderLike,
-  sellerId: Id<"users">
-) {
+export async function getSellerDisplayInfo(ctx: ReaderLike, sellerId: Id<"users">) {
   const seller = await ctx.db.get(sellerId);
   const settings = await getPlatformSettings(ctx);
   const vendorProfile = seller ? await getVendorProfileByOwnerId(ctx, sellerId) : null;
@@ -431,19 +364,9 @@ export async function getSellerDisplayInfo(
   };
 }
 
-export async function buildSellerPublicProfile(
-  ctx: ReaderLike,
-  sellerId: Id<"users">
-) {
-  const {
-    seller,
-    displayName,
-    isCompanyStore,
-    isVendorStore,
-    bannerUrl,
-    slug,
-    vendorStatus,
-  } = await getSellerDisplayInfo(ctx, sellerId);
+export async function buildSellerPublicProfile(ctx: ReaderLike, sellerId: Id<"users">) {
+  const { seller, displayName, isCompanyStore, isVendorStore, bannerUrl, slug, vendorStatus } =
+    await getSellerDisplayInfo(ctx, sellerId);
 
   if (!seller) {
     return null;

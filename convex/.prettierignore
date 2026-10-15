@@ -1,0 +1,6 @@
+**/_generated/**
+**/node_modules/**
+**/dist/**
+**/build/**
+**/coverage/**
+**/.superpowers/**

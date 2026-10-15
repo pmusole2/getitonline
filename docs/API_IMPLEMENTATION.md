@@ -1,5 +1,7 @@
 # Gettitonline API - Implementation Documentation
 
+> **Status: legacy.** This NestJS service and its Railway deployment are being retired. The backend moves to native Convex in one cutover; see [the migration design](superpowers/specs/2026-10-07-convex-api-migration-design.md). The sections below describe the service as it runs today, until the cutover removes it. For new work, use `convex/` and the migration design, not this document.
+
 This is the detailed API reference. For the canonical startup path, deployment steps, and release checks, start with the root [README.md](/Users/macbookair/Desktop/Auto%20Marketplace/README.md).
 
 ## Overview

@@ -3,13 +3,22 @@
  * Fetches AI-powered product recommendations for the current user
  */
 
+import { AiRequestError } from '@gettitonline/shared';
 import { useQuery } from 'convex/react';
 import { useCallback, useEffect, useState } from 'react';
 import { api } from '../../../../convex/_generated/api';
 import { useAppAuth } from '../context/AuthProvider';
-import { hasAIConsent } from '../services/aiConsent';
-import { apiService } from '../services/api';
+import { aiErrorMessage } from '../services/aiAdapters';
 import type { Product } from '../types';
+import { useAiActions } from './useAiActions';
+
+// Consent that is off, and a discarded result for a previous account, are not errors on these panels.
+function failureMessage(err: unknown): string | null {
+  if (err instanceof AiRequestError && (err.code === 'consent_required' || err.code === 'account_changed')) {
+    return null;
+  }
+  return aiErrorMessage(err);
+}
 
 interface UseAIRecommendationsOptions {
   limit?: number;
@@ -29,6 +38,7 @@ export function useAIRecommendations(
 ): UseAIRecommendationsResult {
   const { limit = 6, enabled = true } = options;
   const { user } = useAppAuth();
+  const ai = useAiActions();
 
   const [recommendedIds, setRecommendedIds] = useState<string[]>([]);
   const [reasoning, setReasoning] = useState<string | null>(null);
@@ -45,42 +55,48 @@ export function useAIRecommendations(
   // Filter out user's own products and null values (safety net - backend should already do this)
   const products = productsData?.filter((p): p is Product => p !== null && p.sellerId !== user?._id) ?? [];
 
-  const fetchRecommendations = useCallback(async () => {
+  // Recommendations belong to the account that asked. A change of account clears them, so none stay on screen.
+  const { subject } = ai;
+  useEffect(() => {
+    setRecommendedIds([]);
+    setReasoning(null);
+    setError(null);
+  }, [subject]);
+
+  // A request whose account changed, or that a newer request replaced, is ignored when it finishes.
+  useEffect(() => {
     if (!user || !enabled) {
       setRecommendedIds([]);
       return;
     }
 
+    let isCurrent = true;
     setIsLoading(true);
     setError(null);
 
-    try {
-      if (!(await hasAIConsent())) {
+    // The effect cleanup marks a superseded request. `ai.isCurrent` also covers a switch whose cleanup has not run yet.
+    const stillCurrent = () => isCurrent && ai.isCurrent();
+
+    ai.getRecommendations({ limit })
+      .then((response) => {
+        if (!stillCurrent()) return;
+        setRecommendedIds(response.productIds);
+        setReasoning(response.reasoning);
+      })
+      .catch((err: unknown) => {
+        if (!stillCurrent()) return;
         setRecommendedIds([]);
         setReasoning(null);
-        return;
-      }
-
-      const response = await apiService.getRecommendations({
-        userId: user._id,
-        limit,
+        setError(failureMessage(err));
+      })
+      .finally(() => {
+        if (stillCurrent()) setIsLoading(false);
       });
 
-      setRecommendedIds(response.productIds);
-      setReasoning(response.reasoning);
-    } catch (err) {
-      console.error('Failed to fetch AI recommendations:', err);
-      setError(err instanceof Error ? err.message : 'Failed to load recommendations');
-      setRecommendedIds([]);
-    } finally {
-      setIsLoading(false);
-    }
-  }, [user, limit, enabled]);
-
-  // Fetch recommendations when user changes or trigger is updated
-  useEffect(() => {
-    fetchRecommendations();
-  }, [fetchRecommendations, fetchTrigger]);
+    return () => {
+      isCurrent = false;
+    };
+  }, [ai, user, limit, enabled, fetchTrigger]);
 
   const refetch = useCallback(() => {
     setFetchTrigger((prev) => prev + 1);
@@ -119,6 +135,7 @@ export function useSimilarProducts(
   const [similarIds, setSimilarIds] = useState<string[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const ai = useAiActions();
 
   // Fetch product details for similar IDs
   const products = useQuery(
@@ -126,38 +143,40 @@ export function useSimilarProducts(
     similarIds.length > 0 ? { productIds: similarIds } : 'skip'
   );
 
+  // Similar products belong to the account that asked, so a change of account clears them.
+  const { subject } = ai;
+  useEffect(() => {
+    setSimilarIds([]);
+    setError(null);
+  }, [subject]);
+
   useEffect(() => {
     if (!productId || !enabled) {
       setSimilarIds([]);
       return;
     }
 
-    const fetchSimilar = async () => {
-      setIsLoading(true);
-      setError(null);
+    let isCurrent = true;
+    setIsLoading(true);
+    setError(null);
 
-      try {
-        if (!(await hasAIConsent())) {
-          setSimilarIds([]);
-          return;
-        }
-
-        const ids = await apiService.getSimilarProducts({
-          productId,
-          limit,
-        });
-        setSimilarIds(ids);
-      } catch (err) {
-        console.error('Failed to fetch similar products:', err);
-        setError(err instanceof Error ? err.message : 'Failed to load similar products');
+    ai.getSimilarProducts({ productId, limit })
+      .then((ids) => {
+        if (isCurrent) setSimilarIds(ids);
+      })
+      .catch((err: unknown) => {
+        if (!isCurrent) return;
         setSimilarIds([]);
-      } finally {
-        setIsLoading(false);
-      }
-    };
+        setError(failureMessage(err));
+      })
+      .finally(() => {
+        if (isCurrent) setIsLoading(false);
+      });
 
-    fetchSimilar();
-  }, [productId, limit, enabled]);
+    return () => {
+      isCurrent = false;
+    };
+  }, [ai, productId, limit, enabled]);
 
   return {
     similarProducts: products?.filter((p): p is Product => p !== null) ?? [],

@@ -1,38 +1,62 @@
 import { v } from "convex/values";
-import type { Id } from "./_generated/dataModel";
-import { mutation, query } from "./_generated/server";
+import type { Doc } from "./_generated/dataModel";
+import { internalMutation, mutation, query } from "./_generated/server";
+import { actsAsDisputeSeller, canReadDispute, isDisputeBuyer, speakerSideOf } from "./lib/disputeAccess";
+import { ensureAdminActor, ensureReviewerActor, isReviewerRole } from "./lib/platform";
 import type { MutationCtx } from "./_generated/server";
+import { requireRole, requireUser } from "./lib/auth";
+import { applyEscrowAccounting } from "./lib/escrowAccounting";
 
-async function markSuccessfulOrderTransactionsRefunded(
-  ctx: MutationCtx,
-  orderId: Id<"orders">,
-  now: number
-) {
-  const transactions = await ctx.db
-    .query("transactions")
-    .withIndex("by_order", (q) => q.eq("orderId", orderId))
+// Escrow still holds the buyer's funds only while it is held or disputed, the same states the refund flows accept.
+// Released, refunded, and partially refunded escrow is final, and a dispute decision must not reopen it.
+function escrowHoldsFunds(status: Doc<"escrow">["status"]): boolean {
+  return status === "held" || status === "disputed";
+}
+
+// Public decisions also preflight nonmoney agreed_refund, which must not
+// bypass a sealed financial approval or erase a recorded legacy resolution.
+async function disputeDecisionRecords(ctx: MutationCtx, dispute: Doc<"disputes">): Promise<Doc<"escrow">> {
+  if (dispute.resolution !== undefined) {
+    throw new Error("Dispute already has a recorded resolution and needs review");
+  }
+  const escrow = await ctx.db.get(dispute.escrowId);
+  if (!escrow) {
+    throw new Error("Escrow not found");
+  }
+  if (!escrowHoldsFunds(escrow.status)) {
+    throw new Error("Escrow is no longer holding funds for this dispute");
+  }
+  const order = await ctx.db.get(dispute.orderId);
+  const escrows = await ctx.db
+    .query("escrow")
+    .withIndex("by_order", (q) => q.eq("orderId", dispute.orderId))
     .collect();
-
-  await Promise.all(
-    transactions.map(async (transaction) => {
-      if (transaction.status !== "successful") {
-        return;
-      }
-
-      await ctx.db.patch(transaction._id, {
-        status: "refunded",
-        completedAt: now,
-        updatedAt: now,
-      });
-    })
-  );
+  const disputes = await ctx.db
+    .query("disputes")
+    .withIndex("by_order", (q) => q.eq("orderId", dispute.orderId))
+    .collect();
+  if (
+    !order ||
+    order.status !== "disputed" ||
+    escrow.orderId !== order._id ||
+    order.buyerId !== dispute.buyerId ||
+    order.sellerId !== dispute.sellerId ||
+    escrow.buyerId !== dispute.buyerId ||
+    escrow.sellerId !== dispute.sellerId ||
+    escrows.length !== 1 ||
+    escrows[0]?._id !== escrow._id ||
+    disputes.length !== 1 ||
+    disputes[0]?._id !== dispute._id
+  ) {
+    throw new Error("Dispute records need review");
+  }
+  return escrow;
 }
 
 // Create a new dispute
 export const createDispute = mutation({
   args: {
     orderId: v.id("orders"),
-    buyerId: v.id("users"),
     title: v.string(),
     description: v.string(),
     category: v.union(
@@ -50,9 +74,14 @@ export const createDispute = mutation({
     ),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const order = await ctx.db.get(args.orderId);
-    if (!order) throw new Error("Order not found");
-    if (order.buyerId !== args.buyerId) throw new Error("Unauthorized");
+    if (!order) {
+      throw new Error("Order not found");
+    }
+    if (order.buyerId !== actor._id) {
+      throw new Error("Unauthorized");
+    }
     if (!["delivered", "shipped"].includes(order.status)) {
       throw new Error("Order must be delivered or shipped to open a dispute");
     }
@@ -76,6 +105,11 @@ export const createDispute = mutation({
     if (!escrow) {
       throw new Error("Escrow not found for this order");
     }
+    // Only held escrow can be disputed, the rule escrow.markAsDisputed applies. Refunded, released, partially refunded,
+    // and already disputed escrow are refused before anything is written.
+    if (escrow.status !== "held") {
+      throw new Error("Escrow cannot be disputed in current state");
+    }
 
     // Mark escrow as disputed
     await ctx.db.patch(escrow._id, {
@@ -93,7 +127,7 @@ export const createDispute = mutation({
     const disputeId = await ctx.db.insert("disputes", {
       orderId: args.orderId,
       escrowId: escrow._id,
-      buyerId: args.buyerId,
+      buyerId: actor._id,
       sellerId: order.sellerId,
       title: args.title,
       description: args.description,
@@ -107,15 +141,15 @@ export const createDispute = mutation({
     // Create system message
     await ctx.db.insert("messages", {
       disputeId,
-      senderId: args.buyerId,
+      senderId: actor._id,
       content: `Dispute opened: ${args.title}`,
       isSystemMessage: true,
+      speakerSide: "buyer",
       createdAt: Date.now(),
     });
 
-    // Get buyer name for notification
-    const buyer = await ctx.db.get(args.buyerId);
-    const buyerName = buyer ? `${buyer.firstName} ${buyer.lastName}` : "A buyer";
+    // Buyer name for the seller's notification
+    const buyerName = `${actor.firstName} ${actor.lastName}`;
 
     // Notify seller about the dispute
     await ctx.db.insert("notifications", {
@@ -136,16 +170,20 @@ export const createDispute = mutation({
 export const getDispute = query({
   args: { disputeId: v.id("disputes") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) return null;
+    if (!dispute) {
+      return null;
+    }
+    if (!(await canReadDispute(ctx, actor, dispute))) {
+      throw new Error("Unauthorized");
+    }
 
     const order = await ctx.db.get(dispute.orderId);
     const escrow = await ctx.db.get(dispute.escrowId);
     const buyer = await ctx.db.get(dispute.buyerId);
     const seller = await ctx.db.get(dispute.sellerId);
-    const moderator = dispute.moderatorId
-      ? await ctx.db.get(dispute.moderatorId)
-      : null;
+    const moderator = dispute.moderatorId ? await ctx.db.get(dispute.moderatorId) : null;
 
     return {
       ...dispute,
@@ -168,12 +206,18 @@ export const getDispute = query({
 export const getDisputeByOrder = query({
   args: { orderId: v.id("orders") },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const dispute = await ctx.db
       .query("disputes")
       .withIndex("by_order", (q) => q.eq("orderId", args.orderId))
       .first();
 
-    if (!dispute) return null;
+    if (!dispute) {
+      return null;
+    }
+    if (!(await canReadDispute(ctx, actor, dispute))) {
+      throw new Error("Unauthorized");
+    }
 
     const buyer = await ctx.db.get(dispute.buyerId);
     const seller = await ctx.db.get(dispute.sellerId);
@@ -186,12 +230,8 @@ export const getDisputeByOrder = query({
       description: dispute.description,
       resolution: dispute.resolution,
       createdAt: dispute.createdAt,
-      buyer: buyer
-        ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName }
-        : null,
-      seller: seller
-        ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName }
-        : null,
+      buyer: buyer ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName } : null,
+      seller: seller ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName } : null,
     };
   },
 });
@@ -199,7 +239,6 @@ export const getDisputeByOrder = query({
 // Get disputes by buyer
 export const getBuyerDisputes = query({
   args: {
-    buyerId: v.id("users"),
     status: v.optional(
       v.union(
         v.literal("open"),
@@ -211,9 +250,8 @@ export const getBuyerDisputes = query({
     ),
   },
   handler: async (ctx, args) => {
-    let disputesQuery = ctx.db
-      .query("disputes")
-      .withIndex("by_buyer", (q) => q.eq("buyerId", args.buyerId));
+    const actor = await requireUser(ctx);
+    let disputesQuery = ctx.db.query("disputes").withIndex("by_buyer", (q) => q.eq("buyerId", actor._id));
 
     if (args.status) {
       disputesQuery = disputesQuery.filter((q) => q.eq(q.field("status"), args.status));
@@ -228,9 +266,7 @@ export const getBuyerDisputes = query({
         return {
           ...dispute,
           order,
-          seller: seller
-            ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName }
-            : null,
+          seller: seller ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName } : null,
         };
       })
     );
@@ -252,9 +288,12 @@ export const getSellerDisputes = query({
     ),
   },
   handler: async (ctx, args) => {
-    let disputesQuery = ctx.db
-      .query("disputes")
-      .withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
+    const actor = await requireUser(ctx);
+    if (!(await actsAsDisputeSeller(ctx, actor, args.sellerId)) && !isReviewerRole(actor.role)) {
+      throw new Error("Unauthorized");
+    }
+
+    let disputesQuery = ctx.db.query("disputes").withIndex("by_seller", (q) => q.eq("sellerId", args.sellerId));
 
     if (args.status) {
       disputesQuery = disputesQuery.filter((q) => q.eq(q.field("status"), args.status));
@@ -269,9 +308,7 @@ export const getSellerDisputes = query({
         return {
           ...dispute,
           order,
-          buyer: buyer
-            ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName }
-            : null,
+          buyer: buyer ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName } : null,
         };
       })
     );
@@ -281,11 +318,8 @@ export const getSellerDisputes = query({
 // Get all open disputes (for moderators)
 export const getOpenDisputes = query({
   args: { moderatorId: v.id("users") },
-  handler: async (ctx, args) => {
-    const moderator = await ctx.db.get(args.moderatorId);
-    if (!moderator || (moderator.role !== "moderator" && moderator.role !== "admin")) {
-      throw new Error("Unauthorized");
-    }
+  handler: async (ctx) => {
+    await ensureReviewerActor(ctx);
 
     const disputes = await ctx.db
       .query("disputes")
@@ -307,12 +341,8 @@ export const getOpenDisputes = query({
         return {
           ...dispute,
           order,
-          buyer: buyer
-            ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName }
-            : null,
-          seller: seller
-            ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName }
-            : null,
+          buyer: buyer ? { _id: buyer._id, firstName: buyer.firstName, lastName: buyer.lastName } : null,
+          seller: seller ? { _id: seller._id, firstName: seller.firstName, lastName: seller.lastName } : null,
         };
       })
     );
@@ -322,21 +352,13 @@ export const getOpenDisputes = query({
 // Get disputes assigned to moderator
 export const getModeratorDisputes = query({
   args: { moderatorId: v.id("users") },
-  handler: async (ctx, args) => {
-    const moderator = await ctx.db.get(args.moderatorId);
-    if (!moderator || (moderator.role !== "moderator" && moderator.role !== "admin")) {
-      throw new Error("Unauthorized");
-    }
+  handler: async (ctx) => {
+    const moderator = await ensureReviewerActor(ctx);
 
     return await ctx.db
       .query("disputes")
-      .withIndex("by_moderator", (q) => q.eq("moderatorId", args.moderatorId))
-      .filter((q) =>
-        q.or(
-          q.eq(q.field("status"), "moderator_review"),
-          q.eq(q.field("status"), "in_discussion")
-        )
-      )
+      .withIndex("by_moderator", (q) => q.eq("moderatorId", moderator._id))
+      .filter((q) => q.or(q.eq(q.field("status"), "moderator_review"), q.eq(q.field("status"), "in_discussion")))
       .order("desc")
       .collect();
   },
@@ -346,7 +368,6 @@ export const getModeratorDisputes = query({
 export const updateDisputeStatus = mutation({
   args: {
     disputeId: v.id("disputes"),
-    userId: v.id("users"),
     status: v.union(
       v.literal("in_discussion"),
       v.literal("moderator_review"),
@@ -355,29 +376,41 @@ export const updateDisputeStatus = mutation({
     ),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) {
+      throw new Error("Dispute not found");
+    }
 
-    const user = await ctx.db.get(args.userId);
-    if (!user) throw new Error("User not found");
-
-    const isBuyer = dispute.buyerId === args.userId;
-    const isSeller = dispute.sellerId === args.userId;
-    const isModerator = user.role === "moderator" || user.role === "admin";
+    // The buyer and the seller side may move a dispute, and reviewers may too. Anyone else is refused before any
+    // transition is checked or written.
+    const isParty = isDisputeBuyer(actor, dispute) || (await actsAsDisputeSeller(ctx, actor, dispute.sellerId));
+    const isReviewer = isReviewerRole(actor.role);
+    if (!isParty && !isReviewer) {
+      throw new Error("Unauthorized");
+    }
 
     // Validate status transition
     if (args.status === "in_discussion" && dispute.status !== "open") {
       throw new Error("Can only move to in_discussion from open status");
     }
 
-    if (args.status === "moderator_review") {
-      if (!isBuyer && !isSeller) {
-        throw new Error("Only buyer or seller can request moderator review");
-      }
+    if (args.status === "moderator_review" && !isParty) {
+      throw new Error("Only buyer or seller can request moderator review");
     }
 
-    if ((args.status === "resolved" || args.status === "closed") && !isModerator) {
+    if ((args.status === "resolved" || args.status === "closed") && !isReviewer) {
       throw new Error("Only moderators can resolve or close disputes");
+    }
+
+    // A dispute is decided only through resolveDispute, which records the decision and settles the escrow.
+    if (args.status === "resolved") {
+      throw new Error("Resolve a dispute through resolveDispute, which records the decision and settles escrow");
+    }
+    // A resolved dispute holds a recorded decision, and a closed one is final. A reviewer may only archive a resolved
+    // dispute by closing it, so any other change is refused before anything is written.
+    if (dispute.status === "closed" || (dispute.status === "resolved" && args.status !== "closed")) {
+      throw new Error("Resolved or closed disputes cannot be reopened");
     }
 
     await ctx.db.patch(args.disputeId, {
@@ -388,9 +421,10 @@ export const updateDisputeStatus = mutation({
     // Add system message
     await ctx.db.insert("messages", {
       disputeId: args.disputeId,
-      senderId: args.userId,
+      senderId: actor._id,
       content: `Dispute status changed to: ${args.status}`,
       isSystemMessage: true,
+      speakerSide: await speakerSideOf(ctx, actor, dispute),
       createdAt: Date.now(),
     });
 
@@ -405,16 +439,20 @@ export const assignModerator = mutation({
     moderatorId: v.id("users"),
   },
   handler: async (ctx, args) => {
-    const moderator = await ctx.db.get(args.moderatorId);
-    if (!moderator || (moderator.role !== "moderator" && moderator.role !== "admin")) {
-      throw new Error("Unauthorized");
-    }
+    const moderator = await ensureReviewerActor(ctx);
 
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) {
+      throw new Error("Dispute not found");
+    }
+
+    // Assigning a moderator sends the dispute back into review, so a decided or closed dispute is refused first.
+    if (dispute.status === "resolved" || dispute.status === "closed") {
+      throw new Error("Resolved or closed disputes cannot be reopened");
+    }
 
     await ctx.db.patch(args.disputeId, {
-      moderatorId: args.moderatorId,
+      moderatorId: moderator._id,
       status: "moderator_review",
       updatedAt: Date.now(),
     });
@@ -422,9 +460,10 @@ export const assignModerator = mutation({
     // Add system message
     await ctx.db.insert("messages", {
       disputeId: args.disputeId,
-      senderId: args.moderatorId,
+      senderId: moderator._id,
       content: `Moderator ${moderator.firstName} ${moderator.lastName} has been assigned to this dispute`,
       isSystemMessage: true,
+      speakerSide: "moderator",
       createdAt: Date.now(),
     });
 
@@ -436,7 +475,6 @@ export const assignModerator = mutation({
 export const resolveDispute = mutation({
   args: {
     disputeId: v.id("disputes"),
-    moderatorId: v.id("users"),
     resolutionType: v.union(
       v.literal("full_refund"),
       v.literal("partial_refund"),
@@ -447,51 +485,47 @@ export const resolveDispute = mutation({
     notes: v.string(),
   },
   handler: async (ctx, args) => {
-    const moderator = await ctx.db.get(args.moderatorId);
-    if (!moderator || (moderator.role !== "moderator" && moderator.role !== "admin")) {
-      throw new Error("Unauthorized");
-    }
+    const moderator = await requireRole(ctx, ["moderator", "admin"]);
 
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) throw new Error("Dispute not found");
-
-    const escrow = await ctx.db.get(dispute.escrowId);
-    if (!escrow) throw new Error("Escrow not found");
-    const now = Date.now();
-
-    // Process escrow based on resolution type
-    if (args.resolutionType === "full_refund") {
-      await ctx.db.patch(dispute.escrowId, {
-        status: "refunded",
-        refundAmount: escrow.amount,
-        updatedAt: now,
-      });
-      await markSuccessfulOrderTransactionsRefunded(ctx, dispute.orderId, now);
-    } else if (args.resolutionType === "partial_refund") {
-      if (!args.refundAmount || args.refundAmount <= 0 || args.refundAmount > escrow.amount) {
-        throw new Error("Invalid refund amount");
-      }
-      await ctx.db.patch(dispute.escrowId, {
-        status: "partially_refunded",
-        refundAmount: args.refundAmount,
-        releasedAt: now,
-        updatedAt: now,
-      });
-    } else if (args.resolutionType === "no_refund") {
-      await ctx.db.patch(dispute.escrowId, {
-        status: "released",
-        releasedAt: now,
-        updatedAt: now,
-      });
+    if (!dispute) {
+      throw new Error("Dispute not found");
     }
+
+    // Check the dispute and its escrow are still open to a decision before anything is written.
+    if (dispute.status === "resolved" || dispute.status === "closed") {
+      throw new Error("Dispute is already resolved or closed");
+    }
+
+    if (!["open", "in_discussion", "moderator_review"].includes(dispute.status)) {
+      throw new Error("This dispute cannot be resolved at this stage");
+    }
+    if (args.resolutionType === "mutual_agreement") {
+      throw new Error("Unsupported dispute resolution");
+    }
+    const escrow = await disputeDecisionRecords(ctx, dispute);
+    const result = await applyEscrowAccounting(
+      ctx,
+      escrow,
+      moderator,
+      args.resolutionType === "no_refund" ? "release" : args.resolutionType,
+      args.resolutionType === "partial_refund" ? args.refundAmount : undefined,
+      { kind: "reviewer_dispute", dispute, resolutionType: args.resolutionType }
+    );
+    if (result.application === "review") {
+      return { ...dispute, accountingOutcome: "review" as const };
+    }
+    // Proof owns first approval/time; resolution records this verified processor
+    // and processing time, including a later authorized retry after a hold.
+    const now = result.escrow.updatedAt;
 
     // Update dispute
     await ctx.db.patch(args.disputeId, {
       status: "resolved",
       resolution: {
         type: args.resolutionType,
-        refundAmount: args.refundAmount,
-        resolvedBy: args.moderatorId,
+        ...(args.resolutionType === "no_refund" ? {} : { refundAmount: result.escrow.refundAmount }),
+        resolvedBy: moderator._id,
         notes: args.notes,
         resolvedAt: now,
       },
@@ -507,13 +541,14 @@ export const resolveDispute = mutation({
     // Add system message
     await ctx.db.insert("messages", {
       disputeId: args.disputeId,
-      senderId: args.moderatorId,
+      senderId: moderator._id,
       content: `Dispute resolved: ${args.resolutionType}. ${args.notes}`,
       isSystemMessage: true,
+      speakerSide: "moderator",
       createdAt: now,
     });
 
-    return await ctx.db.get(args.disputeId);
+    return { ...(await ctx.db.get(args.disputeId)), accountingOutcome: "applied" as const };
   },
 });
 
@@ -521,7 +556,6 @@ export const resolveDispute = mutation({
 export const buyerResolveDispute = mutation({
   args: {
     disputeId: v.id("disputes"),
-    buyerId: v.id("users"),
     resolutionType: v.union(
       v.literal("withdraw"), // Buyer withdraws complaint, funds released to seller
       v.literal("received_item"), // Item was eventually received
@@ -531,11 +565,14 @@ export const buyerResolveDispute = mutation({
     notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) {
+      throw new Error("Dispute not found");
+    }
 
     // Only the buyer can resolve via this method
-    if (dispute.buyerId !== args.buyerId) {
+    if (dispute.buyerId !== actor._id) {
       throw new Error("Only the buyer can resolve this dispute");
     }
 
@@ -544,28 +581,32 @@ export const buyerResolveDispute = mutation({
       throw new Error("This dispute cannot be resolved at this stage");
     }
 
-    const escrow = await ctx.db.get(dispute.escrowId);
-    if (!escrow) throw new Error("Escrow not found");
-
-    const buyer = await ctx.db.get(args.buyerId);
-    const buyerName = buyer ? `${buyer.firstName} ${buyer.lastName}` : "Buyer";
-
-    const now = Date.now();
-
-    // For withdraw, received_item, or issue_resolved - release funds to seller
-    if (["withdraw", "received_item", "issue_resolved"].includes(args.resolutionType)) {
-      await ctx.db.patch(dispute.escrowId, {
-        status: "released",
-        releasedAt: now,
-        updatedAt: now,
-      });
-
-      // Update order to completed
-      await ctx.db.patch(dispute.orderId, {
-        status: "completed",
-        updatedAt: now,
-      });
+    const escrow = await disputeDecisionRecords(ctx, dispute);
+    if (args.resolutionType === "agreed_refund" && escrow.lifecycleProof !== undefined) {
+      throw new Error("Escrow decision conflicts with the immutable approved decision");
     }
+    if (
+      args.resolutionType === "agreed_refund" &&
+      (escrow.refundAmount !== undefined ||
+        escrow.releasedAt !== undefined ||
+        escrow.sellerPayoutTransactionId !== undefined)
+    ) {
+      throw new Error("Dispute records need review");
+    }
+    let now = Date.now();
+    if (args.resolutionType !== "agreed_refund") {
+      const result = await applyEscrowAccounting(ctx, escrow, actor, "release", undefined, {
+        kind: "buyer_dispute",
+        dispute,
+        resolutionType: args.resolutionType,
+      });
+      if (result.application === "review") {
+        return { ...dispute, accountingOutcome: "review" as const };
+      }
+      now = result.escrow.updatedAt;
+      await ctx.db.patch(dispute.orderId, { status: "completed", updatedAt: now });
+    }
+    const buyerName = `${actor.firstName} ${actor.lastName}`;
 
     // Map resolution types to readable text
     const resolutionText: Record<string, string> = {
@@ -581,21 +622,25 @@ export const buyerResolveDispute = mutation({
     // Update dispute
     await ctx.db.patch(args.disputeId, {
       status: args.resolutionType === "agreed_refund" ? "in_discussion" : "resolved",
-      resolution: args.resolutionType !== "agreed_refund" ? {
-        type: "mutual_agreement" as const,
-        resolvedBy: args.buyerId,
-        notes: resolutionNotes,
-        resolvedAt: now,
-      } : undefined,
+      resolution:
+        args.resolutionType !== "agreed_refund"
+          ? {
+              type: "mutual_agreement" as const,
+              resolvedBy: actor._id,
+              notes: resolutionNotes,
+              resolvedAt: now,
+            }
+          : undefined,
       updatedAt: now,
     });
 
     // Add system message
     await ctx.db.insert("messages", {
       disputeId: args.disputeId,
-      senderId: args.buyerId,
-      content: `${resolutionText[args.resolutionType]}${args.notes ? `: ${args.notes}` : ''}`,
+      senderId: actor._id,
+      content: `${resolutionText[args.resolutionType]}${args.notes ? `: ${args.notes}` : ""}`,
       isSystemMessage: true,
+      speakerSide: "buyer",
       createdAt: now,
     });
 
@@ -604,15 +649,17 @@ export const buyerResolveDispute = mutation({
       userId: dispute.sellerId,
       type: "dispute_update",
       title: args.resolutionType === "agreed_refund" ? "Refund Agreement Pending" : "Dispute Resolved",
-      message: args.resolutionType === "agreed_refund"
-        ? `${buyerName} has agreed to a refund. Please coordinate with support.`
-        : `${buyerName} has resolved the dispute. Funds have been released to you.`,
+      message:
+        args.resolutionType === "agreed_refund"
+          ? `${buyerName} has agreed to a refund. Please coordinate with support.`
+          : `${buyerName} has resolved the dispute. Funds have been released to you.`,
       data: { disputeId: args.disputeId },
       isRead: false,
       createdAt: now,
     });
 
-    return await ctx.db.get(args.disputeId);
+    const fresh = await ctx.db.get(args.disputeId);
+    return args.resolutionType === "agreed_refund" ? fresh : { ...fresh, accountingOutcome: "applied" as const };
   },
 });
 
@@ -620,7 +667,6 @@ export const buyerResolveDispute = mutation({
 export const addEvidence = mutation({
   args: {
     disputeId: v.id("disputes"),
-    userId: v.id("users"),
     evidence: v.object({
       type: v.union(v.literal("image"), v.literal("video")),
       url: v.string(),
@@ -628,10 +674,14 @@ export const addEvidence = mutation({
     }),
   },
   handler: async (ctx, args) => {
+    const actor = await requireUser(ctx);
     const dispute = await ctx.db.get(args.disputeId);
-    if (!dispute) throw new Error("Dispute not found");
+    if (!dispute) {
+      throw new Error("Dispute not found");
+    }
 
-    if (dispute.buyerId !== args.userId && dispute.sellerId !== args.userId) {
+    // Only the parties write evidence. Reviewers can read and review a dispute without adding to it.
+    if (!isDisputeBuyer(actor, dispute) && !(await actsAsDisputeSeller(ctx, actor, dispute.sellerId))) {
       throw new Error("Unauthorized");
     }
 
@@ -648,8 +698,9 @@ export const addEvidence = mutation({
   },
 });
 
-// Update AI summary and suggestions
-export const updateAISummary = mutation({
+// Update AI summary and suggestions. Internal only: any client could otherwise overwrite any dispute's AI text. The
+// dispute actions store validated model output through aiDisputesData.persistAnalysis, which rechecks the caller.
+export const updateAISummary = internalMutation({
   args: {
     disputeId: v.id("disputes"),
     aiSummary: v.string(),
@@ -669,11 +720,8 @@ export const updateAISummary = mutation({
 // Get dispute statistics
 export const getDisputeStats = query({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized");
-    }
+  handler: async (ctx) => {
+    await ensureAdminActor(ctx);
 
     const allDisputes = await ctx.db.query("disputes").collect();
 
@@ -702,9 +750,15 @@ export const getDisputeStats = query({
           break;
         case "resolved":
           stats.resolved++;
-          if (dispute.resolution?.type === "full_refund") stats.fullRefunds++;
-          if (dispute.resolution?.type === "partial_refund") stats.partialRefunds++;
-          if (dispute.resolution?.type === "no_refund") stats.noRefunds++;
+          if (dispute.resolution?.type === "full_refund") {
+            stats.fullRefunds++;
+          }
+          if (dispute.resolution?.type === "partial_refund") {
+            stats.partialRefunds++;
+          }
+          if (dispute.resolution?.type === "no_refund") {
+            stats.noRefunds++;
+          }
           break;
         case "closed":
           stats.closed++;

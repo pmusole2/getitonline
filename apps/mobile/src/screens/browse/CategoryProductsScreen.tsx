@@ -1,10 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { View, StyleSheet, FlatList, Dimensions, Pressable } from 'react-native';
-import { Text, useTheme, Chip, Surface } from 'react-native-paper';
-import Animated, {
-  FadeIn,
-  FadeInDown,
-} from 'react-native-reanimated';
+import { Text, useTheme, Chip } from 'react-native-paper';
+import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
 import { useMutation, useQuery } from 'convex/react';
 import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
@@ -14,6 +11,7 @@ import { MotiView } from 'moti';
 import { AnimatedProductCard } from '../../components/ui/AnimatedProductCard';
 import { StackHeader } from '../../components/ui/Header';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { useBehaviorEventSubject } from '../../hooks/useBehaviorEventSubject';
 import { useAppAuth } from '../../context/AuthProvider';
 import { canManageCatalog } from '../../utils/roles';
 
@@ -25,12 +23,14 @@ type Props = NativeStackScreenProps<RootStackParamList, 'CategoryProducts'>;
 export default function CategoryProductsScreen({ route, navigation }: Props) {
   const theme = useTheme();
   const { categoryId, categoryName } = route.params;
-  const { user } = useAppAuth();
+  const auth = useAppAuth();
+  const { user } = auth;
+  const behaviorSubject = useBehaviorEventSubject(auth);
   const hasCatalogAccess = canManageCatalog(user?.role);
   const [selectedSubcategory, setSelectedSubcategory] = useState<string | null>(null);
 
   const category = useQuery(api.categories.getCategoryWithSubcategories, {
-    categoryId: categoryId as Id<'categories'>
+    categoryId: categoryId as Id<'categories'>,
   });
   const recordBehaviorEvent = useMutation(api.notifications.recordBehaviorEvent);
   const categoryProducts = useQuery(
@@ -58,24 +58,21 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
     : categoryProducts;
 
   useEffect(() => {
+    if (behaviorSubject === undefined) return;
+
     void recordBehaviorEvent({
-      userId: user?._id,
+      expectedClerkId: behaviorSubject,
       eventType: 'category_browse',
       categoryId: (selectedSubcategory ?? categoryId) as Id<'categories'>,
-    });
-  }, [categoryId, recordBehaviorEvent, selectedSubcategory, user?._id]);
+    }).catch(() => undefined);
+  }, [behaviorSubject, categoryId, recordBehaviorEvent, selectedSubcategory]);
 
   const handleProductPress = (productId: string) => {
     navigation.navigate('ProductDetail', { productId });
   };
 
   const renderProduct = ({ item, index }: { item: Product; index: number }) => (
-    <AnimatedProductCard
-      product={item}
-      index={index}
-      viewerUser={user}
-      onPress={() => handleProductPress(item._id)}
-    />
+    <AnimatedProductCard product={item} index={index} viewerUser={user} onPress={() => handleProductPress(item._id)} />
   );
 
   return (
@@ -93,36 +90,46 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
       {category?.subcategories && category.subcategories.length > 0 && (
         <Animated.View entering={FadeIn.delay(100).duration(300)}>
           <View style={[styles.subcategoriesContainer, { borderBottomColor: theme.colors.outlineVariant }]}>
-          <FlatList
-            horizontal
-            data={[{ _id: categoryId, name: 'All' } as { _id: string; name: string }, ...category.subcategories.map(sub => ({ _id: sub._id, name: sub.name }))]}
+            <FlatList
+              horizontal
+              data={[
+                { _id: categoryId, name: 'All' } as { _id: string; name: string },
+                ...category.subcategories.map((sub) => ({ _id: sub._id, name: sub.name })),
+              ]}
               renderItem={({ item, index }) => (
                 <Animated.View entering={FadeInDown.delay(index * 50).duration(200)}>
-              <Chip
-                mode={(selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id ? 'flat' : 'outlined'}
-                selected={(selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id}
-                onPress={() => setSelectedSubcategory(item._id === categoryId ? null : item._id)}
+                  <Chip
+                    mode={
+                      (selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id
+                        ? 'flat'
+                        : 'outlined'
+                    }
+                    selected={
+                      (selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id
+                    }
+                    onPress={() => setSelectedSubcategory(item._id === categoryId ? null : item._id)}
                     style={[
                       styles.subcategoryChip,
                       (selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id
                         ? { backgroundColor: theme.colors.primaryContainer }
-                        : {}
+                        : {},
                     ]}
                     textStyle={{
-                      color: (selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id
-                        ? theme.colors.primary
-                        : theme.colors.onSurfaceVariant
+                      color:
+                        (selectedSubcategory === null && item._id === categoryId) || selectedSubcategory === item._id
+                          ? theme.colors.primary
+                          : theme.colors.onSurfaceVariant,
                     }}
-              >
-                {item.name}
-              </Chip>
+                  >
+                    {item.name}
+                  </Chip>
                 </Animated.View>
-            )}
-            keyExtractor={(item) => item._id}
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={styles.subcategoriesList}
-          />
-        </View>
+              )}
+              keyExtractor={(item) => item._id}
+              showsHorizontalScrollIndicator={false}
+              contentContainerStyle={styles.subcategoriesList}
+            />
+          </View>
         </Animated.View>
       )}
 
@@ -166,7 +173,10 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
             No products found
           </Text>
-          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
             {hasCatalogAccess
               ? 'No catalog items are live in this category yet.'
               : 'No products are available in this category right now.'}
@@ -177,9 +187,7 @@ export default function CategoryProductsScreen({ route, navigation }: Props) {
               onPress={() => navigation.navigate('CreateProduct')}
             >
               <Icon name="plus" size={20} color={theme.colors.onPrimary} />
-              <Text style={{ color: theme.colors.onPrimary, fontWeight: '600', marginLeft: 8 }}>
-                Add Listing
-              </Text>
+              <Text style={{ color: theme.colors.onPrimary, fontWeight: '600', marginLeft: 8 }}>Add Listing</Text>
             </Pressable>
           )}
         </Animated.View>

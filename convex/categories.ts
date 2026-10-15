@@ -1,5 +1,6 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
+import { ensureAdminActor } from "./lib/platform";
 
 // Get all parent categories (no parentId)
 export const getParentCategories = query({
@@ -18,11 +19,8 @@ export const getAllCategories = query({
   args: {
     adminId: v.id("users"),
   },
-  handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can view all categories");
-    }
+  handler: async (ctx, _args) => {
+    const _admin = await ensureAdminActor(ctx);
 
     return await ctx.db.query("categories").collect();
   },
@@ -64,7 +62,9 @@ export const getCategoryWithSubcategories = query({
   args: { categoryId: v.id("categories") },
   handler: async (ctx, args) => {
     const category = await ctx.db.get(args.categoryId);
-    if (!category) return null;
+    if (!category) {
+      return null;
+    }
 
     const subcategories = await ctx.db
       .query("categories")
@@ -101,9 +101,7 @@ export const getCategoriesTree = query({
       .collect();
 
     // Get parent categories
-    const parents = allCategories
-      .filter((cat) => !cat.parentId)
-      .sort((a, b) => a.sortOrder - b.sortOrder);
+    const parents = allCategories.filter((cat) => !cat.parentId).sort((a, b) => a.sortOrder - b.sortOrder);
 
     // Build tree structure
     return parents.map((parent) => ({
@@ -135,10 +133,7 @@ export const createCategory = mutation({
     sortOrder: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can create categories");
-    }
+    const admin = await ensureAdminActor(ctx);
 
     // Check if slug already exists
     const existing = await ctx.db
@@ -151,9 +146,7 @@ export const createCategory = mutation({
     }
 
     const parent = args.parentId ? await ctx.db.get(args.parentId) : null;
-    const level =
-      args.level ??
-      (parent?.level === "l2" ? "l3" : parent ? "l2" : "l1");
+    const level = args.level ?? (parent?.level === "l2" ? "l3" : parent ? "l2" : "l1");
 
     return await ctx.db.insert("categories", {
       name: args.name,
@@ -163,7 +156,7 @@ export const createCategory = mutation({
       parentId: args.parentId,
       level,
       requiresApproval: args.requiresApproval ?? false,
-      approvedByUserId: args.requiresApproval ? undefined : args.adminId,
+      approvedByUserId: args.requiresApproval ? undefined : admin._id,
       approvedAt: args.requiresApproval ? undefined : Date.now(),
       isActive: true,
       sortOrder: args.sortOrder ?? 0,
@@ -189,15 +182,10 @@ export const updateCategory = mutation({
     sortOrder: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can update categories");
-    }
+    const _admin = await ensureAdminActor(ctx);
 
-    const { adminId, categoryId, ...updates } = args;
-    const filteredUpdates = Object.fromEntries(
-      Object.entries(updates).filter(([_, value]) => value !== undefined)
-    );
+    const { adminId: _adminId, categoryId, ...updates } = args;
+    const filteredUpdates = Object.fromEntries(Object.entries(updates).filter(([_, value]) => value !== undefined));
 
     // If updating slug, check it doesn't already exist
     if (updates.slug) {
@@ -227,10 +215,7 @@ export const deleteCategory = mutation({
     categoryId: v.id("categories"),
   },
   handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can delete categories");
-    }
+    const _admin = await ensureAdminActor(ctx);
 
     // Check for subcategories
     const subcategories = await ctx.db
@@ -259,11 +244,8 @@ export const deleteCategory = mutation({
 // Seed initial categories
 export const seedCategories = mutation({
   args: { adminId: v.id("users") },
-  handler: async (ctx, args) => {
-    const admin = await ctx.db.get(args.adminId);
-    if (!admin || admin.role !== "admin") {
-      throw new Error("Unauthorized: Only admins can seed categories");
-    }
+  handler: async (ctx, _args) => {
+    const admin = await ensureAdminActor(ctx);
 
     // Check if categories already exist
     const existing = await ctx.db.query("categories").first();
@@ -595,7 +577,7 @@ export const seedCategories = mutation({
         description: category.description,
         level: "l1",
         requiresApproval: false,
-        approvedByUserId: args.adminId,
+        approvedByUserId: admin._id,
         approvedAt: now,
         isActive: true,
         sortOrder: sortOrder++,
@@ -612,7 +594,7 @@ export const seedCategories = mutation({
           parentId,
           level: "l2",
           requiresApproval: false,
-          approvedByUserId: args.adminId,
+          approvedByUserId: admin._id,
           approvedAt: now,
           isActive: true,
           sortOrder: subSortOrder++,
@@ -632,7 +614,7 @@ export const seedCategories = mutation({
             parentId: subcategoryId,
             level: "l3",
             requiresApproval: false,
-            approvedByUserId: args.adminId,
+            approvedByUserId: admin._id,
             approvedAt: now,
             isActive: true,
             sortOrder: classificationSortOrder++,

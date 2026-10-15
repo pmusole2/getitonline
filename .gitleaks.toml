@@ -18,3 +18,9 @@ description = "Dummy token in the stock NestJS README badge"
 condition = "AND"
 paths = ['''(^|/)apps/api/README\.md$''']
 regexes = ['''^abc123def456$''']
+
+[[rules.allowlists]]
+description = "Synthetic bearer marker used to verify provider failures do not leak credentials"
+condition = "AND"
+paths = ['''(^|/)convex/lib/lencoAdapter\.test\.ts$''']
+regexes = ['''^synthetic-secret-bearer-998877$''']

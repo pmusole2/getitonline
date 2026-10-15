@@ -1,0 +1,25 @@
+{
+  "printWidth": 120,
+  "tabWidth": 2,
+  "semi": true,
+  "singleQuote": false,
+  "trailingComma": "es5",
+  "overrides": [
+    {
+      "files": "*.test.ts",
+      "options": {
+        "singleQuote": true,
+        "trailingComma": "all"
+      }
+    },
+    {
+      "files": "*.cjs",
+      "options": {
+        "tabWidth": 4,
+        "semi": false,
+        "singleQuote": true,
+        "trailingComma": "all"
+      }
+    }
+  ]
+}

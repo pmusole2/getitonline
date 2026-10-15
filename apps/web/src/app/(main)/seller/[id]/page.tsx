@@ -5,7 +5,6 @@ import { useParams } from "next/navigation";
 import { useQuery } from "convex/react";
 import { api } from "../../../../../../../convex/_generated/api";
 import { Id } from "../../../../../../../convex/_generated/dataModel";
-import { useAuth } from "@/hooks/useAuth";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
@@ -16,11 +15,9 @@ import { ROUTES } from "@/lib/constants";
 export default function SellerStorefrontPage() {
   const params = useParams();
   const sellerId = params.id as Id<"users">;
-  const { user } = useAuth();
 
   const storefront = useQuery(api.vendors.getVendorStorefront, {
     sellerId,
-    viewerUserId: user?._id,
   });
   const reviews = useQuery(api.reviews.getSellerReviews, { sellerId });
 

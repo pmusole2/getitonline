@@ -6,19 +6,15 @@ import { MotiView } from 'moti';
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Alert, Dimensions, Image, Modal, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Avatar, Button, Chip, Snackbar, Surface, Text, useTheme } from 'react-native-paper';
-import Animated, {
-  FadeIn,
-  FadeInUp,
-  useAnimatedStyle,
-  useSharedValue,
-  withSpring,
-} from 'react-native-reanimated';
+import Animated, { FadeIn, FadeInUp, useAnimatedStyle, useSharedValue, withSpring } from 'react-native-reanimated';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
 import { Skeleton } from '../../components/ui/Skeleton';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useGuestCart } from '../../context/GuestCartProvider';
+import { useBehaviorEventSubject } from '../../hooks/useBehaviorEventSubject';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
 import type { Id, Product, ProductCondition, RootStackParamList } from '../../types';
@@ -106,10 +102,7 @@ function getSelectedSellerUnitPrice(
     (sum, option) => sum + (option.priceDelta ?? 0),
     0,
   );
-  const addOnTotal = getSelectedAddOnDetails(product, selectedAddOns).reduce(
-    (sum, addOn) => sum + addOn.price,
-    0,
-  );
+  const addOnTotal = getSelectedAddOnDetails(product, selectedAddOns).reduce((sum, addOn) => sum + addOn.price, 0);
 
   return Math.max(0, product.price + variantTotal + addOnTotal);
 }
@@ -117,7 +110,12 @@ function getSelectedSellerUnitPrice(
 export default function ProductDetailScreen({ route, navigation }: Props) {
   const theme = useTheme();
   const { productId } = route.params;
-  const { user } = useAppAuth();
+  const auth = useAppAuth();
+  const { user } = auth;
+  const behaviorSubject = useBehaviorEventSubject(auth);
+  const currentBehaviorSubject = useRef(behaviorSubject);
+  // Update before old passive-effect cleanups; a changed or denied session drops obsolete dwell events.
+  currentBehaviorSubject.current = behaviorSubject;
   const { addItem: addGuestCartItem } = useGuestCart();
   const [currentImageIndex, setCurrentImageIndex] = useState(0);
   const [snackbarVisible, setSnackbarVisible] = useState(false);
@@ -129,12 +127,10 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   const [cartPromptVisible, setCartPromptVisible] = useState(false);
   const [detailsExpanded, setDetailsExpanded] = useState(true);
   const imagePreviewScrollRef = useRef<ScrollView>(null);
-  const scrollY = useSharedValue(0);
   const favoriteScale = useSharedValue(1);
 
   const product = useQuery(api.products.getProduct, {
     productId: productId as Id<'products'>,
-    viewerUserId: user?._id,
   });
   const deliveryQuote = useQuery(
     api.delivery.calculateDeliveryQuote,
@@ -151,12 +147,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     api.reviews.getProductReviews,
     product ? { productId: product._id, limit: 6 } : 'skip',
   );
-  const managesCurrentStoreProduct = Boolean(
-    canManageCatalog(user?.role) && product?.seller?.isCompanyStore
-  );
+  const managesCurrentStoreProduct = Boolean(canManageCatalog(user?.role) && product?.seller?.isCompanyStore);
+  // Favorite state is read only for a ready account; guests still see the public product.
+  const accountReady = useAccountAccess().status === 'ready';
   const isFavorited = useQuery(
     api.favorites.isFavorited,
-    user && product ? { userId: user._id, productId: product._id } : 'skip'
+    accountReady && product ? { productId: product._id } : 'skip',
   );
 
   const addToCart = useMutation(api.cart.addToCart);
@@ -165,7 +161,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   const recordBehaviorEvent = useMutation(api.notifications.recordBehaviorEvent);
   const startConversation = useMutation(api.conversations.startConversation);
   const variantCombinations = useMemo<VariantCombination[]>(
-    () => ((product?.variantCombinations ?? []) as VariantCombination[]),
+    () => (product?.variantCombinations ?? []) as VariantCombination[],
     [product?.variantCombinations],
   );
   const variantAttributes = useMemo<VariantAttribute[]>(() => {
@@ -192,12 +188,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     }));
   }, [product, variantCombinations]);
   const selectedVariant = useMemo(
-    () =>
-      resolveExactVariant(
-        variantCombinations,
-        variantAttributes,
-        selectedVariantOptions,
-      ),
+    () => resolveExactVariant(variantCombinations, variantAttributes, selectedVariantOptions),
     [selectedVariantOptions, variantAttributes, variantCombinations],
   );
   const displayImages = useMemo(
@@ -210,12 +201,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             selection: selectedVariantOptions,
           })
         : [],
-    [
-      product,
-      selectedVariantOptions,
-      variantAttributes,
-      variantCombinations,
-    ],
+    [product, selectedVariantOptions, variantAttributes, variantCombinations],
   );
   const selectedVariantSnapshot = useMemo<SelectedVariantSnapshot | undefined>(() => {
     if (!selectedVariant) return undefined;
@@ -233,7 +219,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     api.conversations.getExistingConversation,
     user && product && !managesCurrentStoreProduct && user._id !== product.sellerId
       ? { productId: product._id, buyerId: user._id, viewerId: user._id }
-      : 'skip'
+      : 'skip',
   );
 
   // Track if we've already incremented the view for this product
@@ -248,16 +234,28 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       incrementViews({ productId: product._id }).catch((err) => {
         console.log('Failed to increment view count:', err);
       });
-      recordBehaviorEvent({
-        userId: user?._id,
-        eventType: 'product_view',
-        productId: product._id,
-        categoryId: product.categoryId,
-      }).catch((err) => {
-        console.log('Failed to record product view:', err);
-      });
     }
-  }, [incrementViews, managesCurrentStoreProduct, product, recordBehaviorEvent, user]);
+  }, [incrementViews, managesCurrentStoreProduct, product, user]);
+
+  useEffect(() => {
+    const isOwnProduct = user?._id === product?.sellerId || managesCurrentStoreProduct;
+    if (!product || isOwnProduct || behaviorSubject === undefined) return;
+
+    void recordBehaviorEvent({
+      expectedClerkId: behaviorSubject,
+      eventType: 'product_view',
+      productId: product._id,
+      categoryId: product.categoryId,
+    }).catch(() => undefined);
+  }, [
+    behaviorSubject,
+    managesCurrentStoreProduct,
+    product?._id,
+    product?.categoryId,
+    product?.sellerId,
+    recordBehaviorEvent,
+    user?._id,
+  ]);
 
   useEffect(() => {
     setCurrentImageIndex(0);
@@ -282,14 +280,14 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
   useEffect(() => {
     const isOwnProduct = user?._id === product?.sellerId || managesCurrentStoreProduct;
-    if (!product || isOwnProduct) return undefined;
+    if (!product || isOwnProduct || behaviorSubject === undefined) return undefined;
 
     const startedAt = Date.now();
     return () => {
       const durationMs = Date.now() - startedAt;
-      if (durationMs < 1000) return;
+      if (durationMs < 1000 || currentBehaviorSubject.current !== behaviorSubject) return;
       recordBehaviorEvent({
-        userId: user?._id,
+        expectedClerkId: behaviorSubject,
         eventType: 'product_time_spent',
         productId: product._id,
         categoryId: product.categoryId,
@@ -298,7 +296,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
         console.log('Failed to record product time spent:', err);
       });
     };
-  }, [managesCurrentStoreProduct, product, recordBehaviorEvent, user?._id]);
+  }, [behaviorSubject, managesCurrentStoreProduct, product, recordBehaviorEvent, user?._id]);
 
   const favoriteAnimatedStyle = useAnimatedStyle(() => ({
     transform: [{ scale: favoriteScale.value }],
@@ -309,15 +307,12 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
     try {
       const hasCanonicalVariants = variantCombinations.length > 0;
-      const missingVariantNames = (hasCanonicalVariants ? variantAttributes : product.variants ?? [])
+      const missingVariantNames = (hasCanonicalVariants ? variantAttributes : (product.variants ?? []))
         .filter((variant) => !selectedVariantOptions[variant.name])
         .map((variant) => variant.name);
 
       if (missingVariantNames.length > 0) {
-        Alert.alert(
-          'Choose options',
-          `Select ${missingVariantNames.join(', ')} before adding this item to cart.`,
-        );
+        Alert.alert('Choose options', `Select ${missingVariantNames.join(', ')} before adding this item to cart.`);
         return;
       }
 
@@ -338,11 +333,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
       const addOnTotal = selectedAddOnDetails.reduce((sum, addOn) => sum + addOn.price, 0);
       const selectedSellerUnitPrice = hasCanonicalVariants
         ? Math.max(0, (selectedVariant?.price ?? product.price) + addOnTotal)
-        : getSelectedSellerUnitPrice(
-            product,
-            selectedVariantOptions,
-            selectedAddOns,
-          );
+        : getSelectedSellerUnitPrice(product, selectedVariantOptions, selectedAddOns);
       const customizationKey = createCartCustomizationKey({
         productId: product._id,
         selectedVariant: selectedVariantSnapshot,
@@ -352,7 +343,6 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
       if (user) {
         await addToCart({
-          userId: user._id,
           productId: product._id,
           quantity: 1,
           selectedShipping: { name: shippingOption.name, price: shippingOption.price },
@@ -393,7 +383,6 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     }
   };
 
-
   const handleToggleFavorite = async () => {
     if (!product) return;
 
@@ -408,7 +397,6 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
     try {
       await toggleFavorite({
-        userId: user._id,
         productId: product._id,
       });
     } catch (error: unknown) {
@@ -514,11 +502,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
   const addOnTotal = selectedAddOnDetails.reduce((sum, addOn) => sum + addOn.price, 0);
   const selectedSellerUnitPrice = hasCanonicalVariants
     ? Math.max(0, (selectedVariant?.price ?? product.price) + addOnTotal)
-    : getSelectedSellerUnitPrice(
-        product,
-        selectedVariantOptions,
-        selectedAddOns,
-      );
+    : getSelectedSellerUnitPrice(product, selectedVariantOptions, selectedAddOns);
   const selectedStock = selectedVariant?.stock ?? product.quantity;
   const canSelectVariantValue = (attributeName: string, value: string) => {
     if (!hasCanonicalVariants) return true;
@@ -532,9 +516,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     });
   };
   const displayPrice = calculateDisplayPrice(selectedSellerUnitPrice);
-  const compareAtDisplay = product.compareAtPrice
-    ? calculateDisplayPrice(product.compareAtPrice)
-    : undefined;
+  const compareAtDisplay = product.compareAtPrice ? calculateDisplayPrice(product.compareAtPrice) : undefined;
   const discountPercent =
     compareAtDisplay && compareAtDisplay > displayPrice
       ? Math.round(((compareAtDisplay - displayPrice) / compareAtDisplay) * 100)
@@ -558,9 +540,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
     product.material ? { label: 'Material', value: product.material } : null,
     product.countryOfOrigin ? { label: 'Country of origin', value: product.countryOfOrigin } : null,
     { label: 'Condition', value: currentCondition.label },
-    product.availabilityStatus
-      ? { label: 'Availability', value: product.availabilityStatus.replace(/_/g, ' ') }
-      : null,
+    product.availabilityStatus ? { label: 'Availability', value: product.availabilityStatus.replace(/_/g, ' ') } : null,
     { label: 'Stock', value: `${selectedStock} available` },
     warrantySummary ? { label: 'Warranty', value: warrantySummary } : null,
     ...(product.specifications ?? []).map((spec) => ({ label: spec.key, value: spec.value })),
@@ -605,15 +585,17 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                       setImagePreviewVisible(true);
                     }}
                   >
-                    <Image
-                      source={{ uri: image }}
-                      style={styles.image}
-                      resizeMode="contain"
-                    />
+                    <Image source={{ uri: image }} style={styles.image} resizeMode="contain" />
                   </Pressable>
                 ))
               ) : (
-                <View style={[styles.imageWrapper, styles.imagePlaceholder, { backgroundColor: theme.colors.surfaceVariant }]}>
+                <View
+                  style={[
+                    styles.imageWrapper,
+                    styles.imagePlaceholder,
+                    { backgroundColor: theme.colors.surfaceVariant },
+                  ]}
+                >
                   <Icon name="image-off" size={64} color={theme.colors.onSurfaceVariant} />
                   <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8 }}>
                     No images available
@@ -632,7 +614,10 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                       width: index === currentImageIndex ? 24 : 8,
                       backgroundColor: index === currentImageIndex ? theme.colors.primary : 'rgba(255,255,255,0.5)',
                     }}
-                    transition={{ width: { type: 'timing', duration: 200 }, backgroundColor: { type: 'timing', duration: 200 } }}
+                    transition={{
+                      width: { type: 'timing', duration: 200 },
+                      backgroundColor: { type: 'timing', duration: 200 },
+                    }}
                     style={styles.indicator}
                   />
                 ))}
@@ -721,9 +706,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
           <Animated.View entering={FadeInUp.delay(150).duration(400)} style={styles.tagsRow}>
             <Surface style={[styles.conditionTag, { backgroundColor: currentCondition.color }]} elevation={0}>
-              <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>
-                {currentCondition.label}
-              </Text>
+              <Text style={{ color: '#fff', fontWeight: '600', fontSize: 12 }}>{currentCondition.label}</Text>
             </Surface>
             {product.location && (
               <Chip mode="flat" compact icon="map-marker" style={styles.tag}>
@@ -737,14 +720,13 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
               icon={product.shippingOptions?.[0]?.price === 0 ? 'truck-check' : 'truck-delivery'}
               style={[
                 styles.tag,
-                product.shippingOptions?.[0]?.price === 0 && { backgroundColor: theme.colors.secondaryContainer }
+                product.shippingOptions?.[0]?.price === 0 && { backgroundColor: theme.colors.secondaryContainer },
               ]}
               textStyle={product.shippingOptions?.[0]?.price === 0 ? { color: theme.colors.secondary } : undefined}
             >
               {product.shippingOptions?.[0]?.price === 0
                 ? 'Free Delivery'
-                : `Delivery: K${product.shippingOptions?.[0]?.price?.toFixed(2) || '0.00'}`
-              }
+                : `Delivery: K${product.shippingOptions?.[0]?.price?.toFixed(2) || '0.00'}`}
             </Chip>
             {product.availabilityStatus ? (
               <Chip mode="flat" compact icon="warehouse" style={styles.tag}>
@@ -877,13 +859,22 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                     }}
                   >
                     <Icon
-                      name={addOn.isRequired || selectedAddOns[addOn.name] ? 'checkbox-marked-circle' : 'checkbox-blank-circle-outline'}
+                      name={
+                        addOn.isRequired || selectedAddOns[addOn.name]
+                          ? 'checkbox-marked-circle'
+                          : 'checkbox-blank-circle-outline'
+                      }
                       size={22}
-                      color={addOn.isRequired || selectedAddOns[addOn.name] ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                      color={
+                        addOn.isRequired || selectedAddOns[addOn.name]
+                          ? theme.colors.primary
+                          : theme.colors.onSurfaceVariant
+                      }
                     />
                     <View style={{ flex: 1 }}>
                       <Text variant="bodyMedium" style={{ color: theme.colors.onSurface }}>
-                        {addOn.name}{addOn.isRequired ? ' • Required' : ''}
+                        {addOn.name}
+                        {addOn.isRequired ? ' • Required' : ''}
                       </Text>
                       {addOn.description ? (
                         <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
@@ -912,10 +903,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
 
           {productDetailRows.length > 0 ? (
             <Animated.View entering={FadeInUp.delay(275).duration(400)} style={styles.section}>
-              <Pressable
-                style={styles.detailsToggle}
-                onPress={() => setDetailsExpanded((current) => !current)}
-              >
+              <Pressable style={styles.detailsToggle} onPress={() => setDetailsExpanded((current) => !current)}>
                 <Text variant="titleMedium" style={{ color: theme.colors.onSurface, fontWeight: '600' }}>
                   Product Details
                 </Text>
@@ -929,7 +917,10 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                 <Surface style={[styles.detailCard, { backgroundColor: theme.colors.surfaceVariant }]} elevation={0}>
                   {productDetailRows.map((row) => (
                     <View key={`${row.label}-${row.value}`} style={styles.detailTableRow}>
-                      <Text variant="bodySmall" style={[styles.detailTableLabel, { color: theme.colors.onSurfaceVariant }]}>
+                      <Text
+                        variant="bodySmall"
+                        style={[styles.detailTableLabel, { color: theme.colors.onSurfaceVariant }]}
+                      >
                         {row.label}
                       </Text>
                       <Text variant="bodyMedium" style={[styles.detailTableValue, { color: theme.colors.onSurface }]}>
@@ -995,9 +986,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                         color={theme.colors.primary}
                       />
                       <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 4 }}>
-                        {product.seller?.isCompanyStore
-                          ? 'Official Gettitonline store'
-                          : 'Approved vendor storefront'}
+                        {product.seller?.isCompanyStore ? 'Official Gettitonline store' : 'Approved vendor storefront'}
                       </Text>
                     </View>
                   </View>
@@ -1097,7 +1086,10 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
                 <Text variant="labelLarge" style={{ color: theme.colors.onPrimaryContainer, fontWeight: '600' }}>
                   Secure Escrow Payment
                 </Text>
-                <Text variant="bodySmall" style={{ color: theme.colors.onPrimaryContainer, marginTop: 2, opacity: 0.8 }}>
+                <Text
+                  variant="bodySmall"
+                  style={{ color: theme.colors.onPrimaryContainer, marginTop: 2, opacity: 0.8 }}
+                >
                   Your payment is protected until you confirm delivery
                 </Text>
               </View>
@@ -1145,10 +1137,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
         onRequestClose={() => setImagePreviewVisible(false)}
       >
         <View style={styles.imagePreviewBackdrop}>
-          <Pressable
-            style={styles.imagePreviewClose}
-            onPress={() => setImagePreviewVisible(false)}
-          >
+          <Pressable style={styles.imagePreviewClose} onPress={() => setImagePreviewVisible(false)}>
             <Icon name="close" size={26} color="#FFFFFF" />
           </Pressable>
 
@@ -1166,11 +1155,7 @@ export default function ProductDetailScreen({ route, navigation }: Props) {
             >
               {displayImages.map((image, index) => (
                 <View key={`${image}-${index}`} style={styles.imagePreviewSlide}>
-                  <Image
-                    source={{ uri: image }}
-                    style={styles.imagePreviewImage}
-                    resizeMode="contain"
-                  />
+                  <Image source={{ uri: image }} style={styles.imagePreviewImage} resizeMode="contain" />
                 </View>
               ))}
             </ScrollView>

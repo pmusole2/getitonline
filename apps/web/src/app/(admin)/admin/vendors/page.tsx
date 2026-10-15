@@ -3,7 +3,8 @@
 import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../../../../convex/_generated/api";
 import { Id } from "../../../../../../../convex/_generated/dataModel";
-import { useAuth } from "@/hooks/useAuth";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -19,19 +20,16 @@ import {
 import { toast } from "sonner";
 
 export default function AdminVendorsPage() {
-  const { user, isLoading: authLoading } = useAuth();
-  const applications = useQuery(
-    api.vendors.getPendingApplications,
-    user?._id ? { adminId: user._id } : "skip"
-  );
-  const reviewApplication = useMutation(api.vendors.reviewApplication);
+  const access = useAccountAccess();
+  const user = access.user;
 
-  if (authLoading || (user?.role === "admin" && applications === undefined)) {
+  if (access.status !== "ready" || !user) {
     return (
-      <div className="space-y-6">
-        <Skeleton className="h-8 w-56" />
-        <Skeleton className="h-96 w-full" />
-      </div>
+      <AccountAccessNotice
+        access={access}
+        heading="Staff workspace"
+        signInMessage="Please sign in to use this area."
+      />
     );
   }
 
@@ -48,9 +46,28 @@ export default function AdminVendorsPage() {
     );
   }
 
+  return <AdminVendorsPageContent key={user._id} user={user} />;
+}
+
+function AdminVendorsPageContent({ user }: { user: AccountUser }) {
+  const applications = useQuery(
+    api.vendors.getPendingApplications,
+    user?._id ? { adminId: user._id } : "skip",
+  );
+  const reviewApplication = useMutation(api.vendors.reviewApplication);
+
+  if (applications === undefined) {
+    return (
+      <div className="space-y-6">
+        <Skeleton className="h-8 w-56" />
+        <Skeleton className="h-96 w-full" />
+      </div>
+    );
+  }
+
   const handleReview = async (
     vendorProfileId: string,
-    decision: "approved" | "changes_requested" | "suspended"
+    decision: "approved" | "changes_requested" | "suspended",
   ) => {
     try {
       await reviewApplication({
@@ -102,7 +119,8 @@ export default function AdminVendorsPage() {
                       <div>
                         <p className="font-medium">{application.storeName}</p>
                         <p className="text-sm text-muted-foreground">
-                          {application.address.city}, {application.address.province}
+                          {application.address.city},{" "}
+                          {application.address.province}
                         </p>
                       </div>
                     </TableCell>

@@ -11,6 +11,7 @@ import { Text, View } from 'react-native';
 import { PaperProvider } from 'react-native-paper';
 import { SafeAreaProvider } from 'react-native-safe-area-context';
 
+import { ClientGate } from './src/components/ClientGate';
 import { getRuntimeConfig, type MissingPublicEnvVar } from './src/config/runtime';
 import { AuthProvider } from './src/context/AuthProvider';
 import { ConvexClientProvider } from './src/context/ConvexClientProvider';
@@ -218,11 +219,13 @@ function AppContent() {
 
   return (
     <PaperProvider theme={theme}>
-      <NavigationContainer ref={navigationRef} theme={navigationTheme}>
-        <PostAuthNavigationHandler />
-        <RootNavigator />
-        <StatusBar style={isDark ? 'light' : 'dark'} />
-      </NavigationContainer>
+      <ClientGate>
+        <NavigationContainer ref={navigationRef} theme={navigationTheme}>
+          <PostAuthNavigationHandler />
+          <RootNavigator />
+          <StatusBar style={isDark ? 'light' : 'dark'} />
+        </NavigationContainer>
+      </ClientGate>
     </PaperProvider>
   );
 }

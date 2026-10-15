@@ -2,10 +2,10 @@
 
 import { ChangeEvent, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
-import { useConvex, useMutation, useQuery } from "convex/react";
+import { useMutation, useQuery } from "convex/react";
 import { api } from "../../../../../../convex/_generated/api";
-import { Id } from "../../../../../../convex/_generated/dataModel";
-import { useAuth } from "@/hooks/useAuth";
+import { AccountAccessNotice } from "@/components/common/AccountAccessNotice";
+import { useAccountAccess, type AccountUser } from "@/hooks/useAccountAccess";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
@@ -42,12 +42,15 @@ import {
   Package,
   ShieldCheck,
   ShoppingBag,
-  Store,
 } from "lucide-react";
 import { formatDistanceToNow } from "date-fns";
 import { toast } from "sonner";
 import { formatZMW } from "@gettitonline/shared";
 import { ROUTES } from "@/lib/constants";
+import {
+  storageUploadMessage,
+  useStorageUpload,
+} from "@/hooks/useStorageUpload";
 import {
   canManageCatalog,
   canManageListings,
@@ -202,14 +205,26 @@ function ListingTable({
 }
 
 export default function SellDashboardPage() {
-  const { user, isSignedIn, isLoading: authLoading } = useAuth();
-  const convex = useConvex();
+  const access = useAccountAccess();
+  if (access.status !== "ready" || access.user === null) {
+    return (
+      <AccountAccessNotice
+        access={access}
+        heading="Sell on Gettitonline"
+        signInMessage="Sign in to apply as a vendor or manage your listings."
+      />
+    );
+  }
+  return <SellDashboardContent user={access.user} />;
+}
+
+function SellDashboardContent({ user }: { user: AccountUser }) {
   const vendorProfile = useQuery(
     api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : "skip"
+    user?._id && !user.isBanned ? {} : "skip"
   );
   const submitApplication = useMutation(api.vendors.submitApplication);
-  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const uploadFile = useStorageUpload();
 
   const isCompanyCatalogManager = canManageCatalog(user?.role);
   const isReviewerOnly = isReviewerRole(user?.role) && !isCompanyCatalogManager;
@@ -220,16 +235,16 @@ export default function SellDashboardPage() {
 
   const companyProducts = useQuery(
     api.products.getManagedCatalogProducts,
-    user?._id && isCompanyCatalogManager ? { actorUserId: user._id } : "skip"
+    user?._id && isCompanyCatalogManager ? {} : "skip"
   );
   const companyOrders = useQuery(
     api.orders.getManagedCatalogOrders,
-    user?._id && isCompanyCatalogManager ? { actorUserId: user._id } : "skip"
+    user?._id && isCompanyCatalogManager ? {} : "skip"
   );
   const vendorProducts = useQuery(
     api.products.getMyListings,
     user?._id && !isCompanyCatalogManager && vendorProfile?.status === "approved"
-      ? { actorUserId: user._id }
+      ? {}
       : "skip"
   );
   const vendorOrders = useQuery(
@@ -303,31 +318,16 @@ export default function SellDashboardPage() {
 
     try {
       setUploadingField(field);
-      const uploadUrl = await generateUploadUrl();
-      const response = await fetch(uploadUrl, {
-        method: "POST",
-        headers: {
-          "Content-Type": file.type,
-        },
-        body: file,
-      });
-
-      if (!response.ok) {
-        throw new Error("Upload failed");
-      }
-
-      const { storageId } = (await response.json()) as {
-        storageId: Id<"_storage">;
-      };
-      const publicUrl = await convex.query(api.storage.getUrl, { storageId });
-
-      if (!publicUrl) {
-        throw new Error("Uploaded asset URL is unavailable");
+      // The URL is used only once the file is registered to the signed-in owner.
+      const outcome = await uploadFile(file);
+      if (outcome.status !== "uploaded") {
+        toast.error(storageUploadMessage(outcome));
+        return;
       }
 
       setForm((current) => ({
         ...current,
-        [field]: publicUrl,
+        [field]: outcome.url,
       }));
       toast.success(field === "logoUrl" ? "Logo uploaded" : "Banner uploaded");
     } catch (error) {
@@ -361,7 +361,6 @@ export default function SellDashboardPage() {
 
     try {
       await submitApplication({
-        ownerUserId: user._id,
         storeName: form.storeName.trim(),
         description: form.description.trim(),
         logoUrl: normalizeOptionalUrl(form.logoUrl),
@@ -396,14 +395,12 @@ export default function SellDashboardPage() {
   };
 
   if (
-    authLoading ||
-    (isSignedIn &&
-      (vendorProfile === undefined ||
-        (isCompanyCatalogManager &&
-          (companyProducts === undefined || companyOrders === undefined)) ||
-        (vendorProfile?.status === "approved" &&
-          !isCompanyCatalogManager &&
-          (vendorProducts === undefined || vendorOrders === undefined))))
+    vendorProfile === undefined ||
+    (isCompanyCatalogManager &&
+      (companyProducts === undefined || companyOrders === undefined)) ||
+    (vendorProfile?.status === "approved" &&
+      !isCompanyCatalogManager &&
+      (vendorProducts === undefined || vendorOrders === undefined))
   ) {
     return (
       <div className="container space-y-6 py-6">
@@ -414,21 +411,6 @@ export default function SellDashboardPage() {
           <Skeleton className="h-32" />
         </div>
         <Skeleton className="h-96" />
-      </div>
-    );
-  }
-
-  if (!isSignedIn) {
-    return (
-      <div className="container flex flex-col items-center justify-center py-16">
-        <Store className="h-16 w-16 text-muted-foreground" />
-        <h1 className="mt-4 text-2xl font-bold">Sell on Gettitonline</h1>
-        <p className="mt-2 text-muted-foreground">
-          Sign in to apply as a vendor or manage your listings.
-        </p>
-        <Button asChild className="mt-6">
-          <Link href={ROUTES.SIGN_IN}>Sign In</Link>
-        </Button>
       </div>
     );
   }

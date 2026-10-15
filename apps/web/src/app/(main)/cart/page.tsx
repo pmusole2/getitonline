@@ -104,13 +104,13 @@ export default function CartPage() {
   // Get cart data
   const cart = useQuery(
     api.cart.getCart,
-    user?._id ? { userId: user._id } : "skip"
+    user?._id ? {} : "skip"
   );
 
   // Validate cart
   const validation = useQuery(
     api.cart.validateCart,
-    user?._id ? { userId: user._id } : "skip"
+    user?._id ? {} : "skip"
   );
 
   // Mutations
@@ -185,7 +185,6 @@ export default function CartPage() {
     try {
       await updateQuantity({
         cartItemId: item.cartItemId,
-        userId: user._id,
         quantity: newQuantity,
       });
     } catch (error: unknown) {
@@ -212,7 +211,6 @@ export default function CartPage() {
     try {
       await updateShipping({
         cartItemId: item.cartItemId,
-        userId: user._id,
         selectedShipping: { name: shippingName, price: shippingPrice },
       });
     } catch {
@@ -232,7 +230,7 @@ export default function CartPage() {
     setRemovingItems((prev) => new Set(prev).add(item.key));
 
     try {
-      await removeFromCart({ cartItemId: item.cartItemId, userId: user._id });
+      await removeFromCart({ cartItemId: item.cartItemId });
       toast.success("Item removed from cart");
     } catch {
       toast.error("Failed to remove item");
@@ -255,7 +253,7 @@ export default function CartPage() {
     if (!user) return;
 
     try {
-      await clearCart({ userId: user._id });
+      await clearCart({});
       toast.success("Cart cleared");
     } catch {
       toast.error("Failed to clear cart");

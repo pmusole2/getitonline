@@ -1,13 +1,45 @@
 import { defineSchema, defineTable } from "convex/server";
 import { v } from "convex/values";
+import { inboxPollStateValidator } from "./lib/paymentInboxPolling";
+import { financialPollStateValidator } from "./lib/paymentPolling";
+import {
+  acquiredReceiptValidator,
+  providerAccountingValidator,
+  receivedFundsValidator,
+} from "./lib/providerSettlementContracts";
+import { checkoutQuoteValidator } from "./lib/checkoutQuote";
+import { perOrderBreakdownValidator } from "./lib/paymentOperationContracts";
+import {
+  collectionDestinationValidator,
+  providerOperationStatusValidator,
+  providerReceiptValidator,
+  withdrawalDestinationValidator,
+} from "./lib/providerOperationContracts";
 import {
   aiModerationStatusValidator,
   productStatusValidator,
   userRoleValidator,
   vendorStatusValidator,
 } from "./lib/platform";
+import { speakerSideValidator } from "./lib/disputeAccess";
+import { webhookClassificationValidator, webhookEventKindValidator, webhookResultValidator } from "./lib/lencoWebhook";
 
 export default defineSchema({
+  // Verified exact-body identity only; no raw payload, provider selectors or PII.
+  lencoWebhookInbox: defineTable({
+    bodyDigest: v.string(),
+    eventKind: webhookEventKindValidator,
+    classification: webhookClassificationValidator,
+    ingestedAt: v.number(),
+    operationId: v.optional(v.id("paymentOperations")),
+    result: v.optional(webhookResultValidator),
+    lookupCompletedAt: v.optional(v.number()),
+    lookupResult: v.optional(webhookResultValidator),
+  })
+    .index("by_digest", ["bodyDigest"])
+    .index("by_classification", ["classification", "ingestedAt"])
+    .index("by_operation", ["operationId"]),
+
   // Users table
   users: defineTable({
     clerkId: v.string(),
@@ -97,21 +129,11 @@ export default defineSchema({
         })
       )
     ),
-    condition: v.union(
-      v.literal("new"),
-      v.literal("like_new"),
-      v.literal("good"),
-      v.literal("fair")
-    ),
+    condition: v.union(v.literal("new"), v.literal("like_new"), v.literal("good"), v.literal("fair")),
     quantity: v.number(),
     lowStockThreshold: v.optional(v.number()),
     availabilityStatus: v.optional(
-      v.union(
-        v.literal("in_stock"),
-        v.literal("low_stock"),
-        v.literal("out_of_stock"),
-        v.literal("preorder")
-      )
+      v.union(v.literal("in_stock"), v.literal("low_stock"), v.literal("out_of_stock"), v.literal("preorder"))
     ),
     preorder: v.optional(
       v.object({
@@ -158,11 +180,7 @@ export default defineSchema({
           ),
           price: v.number(),
           stock: v.number(),
-          status: v.union(
-            v.literal("active"),
-            v.literal("inactive"),
-            v.literal("out_of_stock")
-          ),
+          status: v.union(v.literal("active"), v.literal("inactive"), v.literal("out_of_stock")),
           primaryImage: v.optional(v.string()),
           galleryImages: v.optional(v.array(v.string())),
         })
@@ -204,11 +222,7 @@ export default defineSchema({
     packageWeightKg: v.optional(v.number()),
     warranty: v.optional(
       v.object({
-        type: v.union(
-          v.literal("manufacturer"),
-          v.literal("seller"),
-          v.literal("none")
-        ),
+        type: v.union(v.literal("manufacturer"), v.literal("seller"), v.literal("none")),
         durationDays: v.optional(v.number()),
         provider: v.optional(v.string()),
         terms: v.optional(v.string()),
@@ -274,6 +288,35 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
   }).index("by_key", ["key"]),
+
+  // Singleton runtime configuration: the minimum native build per platform, store links for the update
+  // screen, and the payment availability switch. Missing rows read as no minimum and payments off.
+  appConfig: defineTable({
+    key: v.literal("singleton"),
+    minimumBuilds: v.object({ ios: v.number(), android: v.number() }),
+    storeUrls: v.optional(v.object({ ios: v.optional(v.string()), android: v.optional(v.string()) })),
+    paymentsEnabled: v.boolean(),
+    // Optional Pinkie usage overrides. Reads validate again and keep the default for any malformed field.
+    aiLimits: v.optional(
+      v.object({
+        global: v.optional(v.object({ perDay: v.optional(v.number()), perMinute: v.optional(v.number()) })),
+        account: v.optional(v.object({ perDay: v.optional(v.number()), perMinute: v.optional(v.number()) })),
+        allGuests: v.optional(v.object({ perDay: v.optional(v.number()), perMinute: v.optional(v.number()) })),
+        guest: v.optional(v.object({ perDay: v.optional(v.number()), perMinute: v.optional(v.number()) })),
+      })
+    ),
+    updatedAt: v.number(),
+    updatedBy: v.optional(v.id("users")),
+  }).index("by_key", ["key"]),
+
+  // Pinkie provider-call counters. One row per (scope, key, window, windowStart); a new window is a new row.
+  aiUsage: defineTable({
+    scope: v.union(v.literal("global"), v.literal("account"), v.literal("allGuests"), v.literal("guest")),
+    key: v.string(),
+    window: v.union(v.literal("minute"), v.literal("day")),
+    windowStart: v.number(),
+    count: v.number(),
+  }).index("by_scope_key_window", ["scope", "key", "window", "windowStart"]),
 
   vendorProfiles: defineTable({
     ownerUserId: v.id("users"),
@@ -423,6 +466,8 @@ export default defineSchema({
       })
     ),
     pickupPointId: v.optional(v.id("pickupPoints")),
+    // Wallet purchase that funded this order, if any. Absent for legacy rows.
+    operationId: v.optional(v.id("paymentOperations")),
 
     shippingAddress: v.object({
       street: v.string(),
@@ -480,10 +525,69 @@ export default defineSchema({
     // Payout tracking
     sellerPayoutTransactionId: v.optional(v.id("transactions")),
     releasedAt: v.optional(v.number()),
+    // Wallet purchase that funded this hold, if any. Absent for legacy rows.
+    operationId: v.optional(v.id("paymentOperations")),
+    // Private Task4C approval and reciprocal effects. Pending approval never
+    // changes escrow status; absence on legacy rows is not proof of novelty.
+    lifecycleProof: v.optional(
+      v.object({
+        kind: v.union(v.literal("release"), v.literal("full_refund"), v.literal("partial_refund")),
+        operationId: v.id("paymentOperations"),
+        quoteKey: v.string(),
+        buyerId: v.id("users"),
+        sellerId: v.id("users"),
+        grossCents: v.number(),
+        refundCents: v.number(),
+        sellerCents: v.number(),
+        retainedPlatformCents: v.number(),
+        approvedBy: v.id("users"),
+        approvedAt: v.number(),
+        originalStatus: v.union(v.literal("held"), v.literal("disputed")),
+        // Immutable guard-derived source for disputed decisions. Older buyer
+        // completion and internal refund proofs retain their original shape.
+        disputeOrigin: v.optional(
+          v.union(
+            v.object({
+              kind: v.literal("reviewer_dispute"),
+              disputeId: v.id("disputes"),
+              resolutionType: v.union(v.literal("full_refund"), v.literal("partial_refund"), v.literal("no_refund")),
+              role: v.union(v.literal("moderator"), v.literal("admin")),
+            }),
+            v.object({
+              kind: v.literal("buyer_dispute"),
+              disputeId: v.id("disputes"),
+              resolutionType: v.union(v.literal("withdraw"), v.literal("received_item"), v.literal("issue_resolved")),
+            })
+          )
+        ),
+        state: v.union(
+          v.object({
+            kind: v.literal("pending"),
+            reason: v.union(v.literal("beneficiary_review"), v.literal("effect_review")),
+          }),
+          v.object({
+            kind: v.literal("applied"),
+            appliedAt: v.number(),
+            effects: v.array(
+              v.object({
+                recipient: v.union(v.literal("buyer"), v.literal("seller")),
+                walletId: v.id("wallets"),
+                ledgerId: v.id("walletTransactions"),
+                cents: v.number(),
+                balanceBeforeCents: v.number(),
+                balanceAfterCents: v.number(),
+              })
+            ),
+            counts: v.optional(v.object({ buyerBefore: v.number(), sellerBefore: v.number() })),
+          })
+        ),
+      })
+    ),
 
     createdAt: v.number(),
     updatedAt: v.number(),
   })
+    .index("by_operation", ["operationId"])
     .index("by_order", ["orderId"])
     .index("by_buyer", ["buyerId"])
     .index("by_seller", ["sellerId"])
@@ -559,6 +663,8 @@ export default defineSchema({
     ),
     isSystemMessage: v.boolean(),
     aiRephraseAccepted: v.optional(v.boolean()),
+    // Recorded when the message is written, from the verified actor and the dispute. Older messages have none.
+    speakerSide: v.optional(speakerSideValidator),
     createdAt: v.number(),
   })
     .index("by_dispute", ["disputeId"])
@@ -694,9 +800,7 @@ export default defineSchema({
     title: v.string(),
     message: v.string(),
     aiSuggestion: v.optional(v.string()),
-    channels: v.array(
-      v.union(v.literal("in_app"), v.literal("mobile_push"), v.literal("web_push"))
-    ),
+    channels: v.array(v.union(v.literal("in_app"), v.literal("mobile_push"), v.literal("web_push"))),
     maxPerUserPerDay: v.number(),
     isAutomatic: v.boolean(),
     createdByUserId: v.id("users"),
@@ -740,8 +844,7 @@ export default defineSchema({
     lastTransactionAt: v.optional(v.number()),
     createdAt: v.number(),
     updatedAt: v.number(),
-  })
-    .index("by_user", ["userId"]),
+  }).index("by_user", ["userId"]),
 
   // Wallet transactions table
   walletTransactions: defineTable({
@@ -783,18 +886,19 @@ export default defineSchema({
     orderId: v.optional(v.id("orders")),
     escrowId: v.optional(v.id("escrow")),
     paymentAccountId: v.optional(v.id("paymentAccounts")),
+    // Wallet purchase that wrote this entry, if any. Absent for legacy rows.
+    operationId: v.optional(v.id("paymentOperations")),
+
+    // Reciprocal Task4A reversal and provider lineage, absent on legacy rows.
+    reversalOfId: v.optional(v.id("walletTransactions")),
+    providerReference: v.optional(v.string()),
 
     // External references
     reference: v.string(), // Internal transaction reference
     externalReference: v.optional(v.string()), // Lenco transaction ID
 
     // Status
-    status: v.union(
-      v.literal("pending"),
-      v.literal("completed"),
-      v.literal("failed"),
-      v.literal("cancelled")
-    ),
+    status: v.union(v.literal("pending"), v.literal("completed"), v.literal("failed"), v.literal("cancelled")),
     failureReason: v.optional(v.string()),
 
     // Description
@@ -808,14 +912,257 @@ export default defineSchema({
     completedAt: v.optional(v.number()),
     updatedAt: v.number(),
   })
+    .index("by_operation", ["operationId"])
+    .index("by_external_reference", ["externalReference"])
+    .index("by_provider_reference", ["providerReference"])
+    .index("by_reversal", ["reversalOfId"])
     .index("by_wallet", ["walletId"])
     .index("by_user", ["userId"])
     .index("by_reference", ["reference"])
     .index("by_order", ["orderId"])
+    .index("by_escrow", ["escrowId"])
     .index("by_type", ["type"])
     .index("by_status", ["status"])
     .index("by_created", ["createdAt"])
     .index("by_user_created", ["userId", "createdAt"]),
+
+  // Per-inbox acquisition schedule; immutable association, no receipt or PII.
+  paymentInboxPolls: defineTable({
+    inboxId: v.id("lencoWebhookInbox"),
+    operationId: v.id("paymentOperations"),
+    bodyDigest: v.string(),
+    eventKind: webhookEventKindValidator,
+    classification: webhookClassificationValidator,
+    origin: v.number(),
+    generation: v.number(),
+    nextIndex: v.number(),
+    dispatchedCount: v.number(),
+    dueAt: v.number(),
+    state: inboxPollStateValidator,
+    jobId: v.optional(v.id("_scheduled_functions")),
+  }).index("by_inbox", ["inboxId"]),
+
+  // Per-operation bounded financial schedule; no provider payload or actor data.
+  paymentFinancialPolls: defineTable({
+    operationId: v.id("paymentOperations"),
+    origin: v.number(),
+    generation: v.number(),
+    nextIndex: v.number(),
+    dispatchedCount: v.number(),
+    dueAt: v.number(),
+    state: financialPollStateValidator,
+    jobId: v.optional(v.id("_scheduled_functions")),
+  }).index("by_operation", ["operationId"]),
+
+  // Durable money operations. The wallet_purchase branch is the accepted Task3A
+  // atomic purchase, preserved exactly. The top_up_collection and
+  // withdrawal_transfer branches are the Task3B1 provider-initiation slice:
+  // verified-owner initiation with durable request identity, one POST claim,
+  // atomic withdrawal reservation, and typed receipt facts. Task4A adds
+  // consumed acquisition/accounting proof for these two provider branches.
+  // The checkout_collection branch is the Task3B2 slice: one atomic mutation
+  // reserves orders, stock, promo and loyalty and claims exactly one
+  // collection POST; Task4B settles it through the same writer, capturing
+  // reservations once on trusted success and releasing them once on trusted
+  // failure.
+  paymentOperations: defineTable(
+    v.union(
+      v.object({
+        ownerId: v.id("users"),
+        requestId: v.string(),
+        kind: v.literal("wallet_purchase"),
+        status: v.literal("succeeded"),
+        source: v.union(v.literal("cart"), v.literal("pending_orders")),
+        requestIdentity: v.string(),
+        quoteKey: v.string(),
+        quoteSnapshot: checkoutQuoteValidator,
+        orderBreakdowns: v.array(perOrderBreakdownValidator),
+        orderIds: v.array(v.id("orders")),
+        cartItemIds: v.optional(v.array(v.id("cartItems"))),
+        totalAmountCents: v.number(),
+        walletReference: v.string(),
+        // Exact debit ledger row written by this purchase. Optional only so the
+        // operation can be inserted before its ledger id is known; a committed
+        // success always carries the link. No backfill for legacy rows.
+        walletTransactionId: v.optional(v.id("walletTransactions")),
+        debitAmountCents: v.number(),
+        walletBalanceAfterCents: v.number(),
+        loyaltyPoints: v.optional(v.number()),
+        promoCodeId: v.optional(v.id("promoCodes")),
+        accountingAppliedAt: v.number(),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+      }),
+      v.object({
+        ownerId: v.id("users"),
+        requestId: v.string(),
+        kind: v.literal("top_up_collection"),
+        status: providerOperationStatusValidator,
+        requestIdentity: v.string(),
+        providerReference: v.string(),
+        amountCents: v.number(),
+        currency: v.literal("ZMW"),
+        destinationKey: v.string(),
+        collectionDestination: collectionDestinationValidator,
+        // Linked pending collection companion. Optional only so the operation
+        // can be inserted before its companion id is known.
+        transactionId: v.optional(v.id("transactions")),
+        attemptedAt: v.optional(v.number()),
+        receipt: v.optional(providerReceiptValidator),
+        providerId: v.optional(v.string()),
+        // Superseded or conflicting receipt evidence preserved separately: the
+        // primary receipt stays while each structurally distinct earlier or
+        // incoming fact is retained for later reconciliation. Absent means
+        // only that no separate history was retained; it never proves no
+        // conflict was seen or any funding, and presence alone never proves
+        // a conflict either. No backfill for old rows.
+        receiptObservations: v.optional(v.array(providerReceiptValidator)),
+        failureCode: v.optional(v.string()),
+        reviewNeeded: v.optional(v.boolean()),
+        acquisitions: v.optional(v.array(acquiredReceiptValidator)),
+        accounting: v.optional(providerAccountingValidator),
+        receivedFunds: v.optional(receivedFundsValidator),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+      }),
+      v.object({
+        ownerId: v.id("users"),
+        requestId: v.string(),
+        kind: v.literal("withdrawal_transfer"),
+        status: providerOperationStatusValidator,
+        requestIdentity: v.string(),
+        providerReference: v.string(),
+        amountCents: v.number(),
+        currency: v.literal("ZMW"),
+        destinationKey: v.string(),
+        withdrawalDestination: withdrawalDestinationValidator,
+        paymentAccountId: v.id("paymentAccounts"),
+        configuredDebitAccountId: v.string(),
+        walletId: v.id("wallets"),
+        walletTransactionId: v.id("walletTransactions"),
+        walletReference: v.optional(v.string()),
+        debitAmountCents: v.number(),
+        walletBalanceAfterCents: v.number(),
+        attemptedAt: v.optional(v.number()),
+        receipt: v.optional(providerReceiptValidator),
+        providerId: v.optional(v.string()),
+        // Superseded or conflicting receipt evidence preserved separately: the
+        // primary receipt stays while each structurally distinct earlier or
+        // incoming fact is retained for later reconciliation. Absent means
+        // only that no separate history was retained; it never proves no
+        // conflict was seen or any funding, and presence alone never proves
+        // a conflict either. No backfill for old rows.
+        receiptObservations: v.optional(v.array(providerReceiptValidator)),
+        failureCode: v.optional(v.string()),
+        reviewNeeded: v.optional(v.boolean()),
+        acquisitions: v.optional(v.array(acquiredReceiptValidator)),
+        accounting: v.optional(providerAccountingValidator),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+      }),
+      v.object({
+        ownerId: v.id("users"),
+        requestId: v.string(),
+        kind: v.literal("checkout_collection"),
+        status: providerOperationStatusValidator,
+        source: v.union(v.literal("cart"), v.literal("pending_orders")),
+        requestIdentity: v.string(),
+        quoteKey: v.string(),
+        quoteSnapshot: checkoutQuoteValidator,
+        orderBreakdowns: v.array(perOrderBreakdownValidator),
+        orderIds: v.array(v.id("orders")),
+        cartItemIds: v.optional(v.array(v.id("cartItems"))),
+        // Raw stored selectors for the captured owned cart rows, taken after
+        // quote validation and before writes. Task4 consumes these for
+        // cleanup; cart rows stay until trusted success.
+        rawCartSnapshot: v.optional(
+          v.array(
+            v.object({
+              cartItemId: v.id("cartItems"),
+              ownerId: v.id("users"),
+              productId: v.id("products"),
+              quantity: v.number(),
+              variantId: v.string(),
+              variantSku: v.string(),
+              options: v.array(v.object({ name: v.string(), value: v.string() })),
+              addOns: v.array(v.string()),
+              shippingName: v.string(),
+            })
+          )
+        ),
+        providerReference: v.string(),
+        amountCents: v.number(),
+        currency: v.literal("ZMW"),
+        destinationKey: v.string(),
+        collectionDestination: collectionDestinationValidator,
+        // Linked pending collection companion. Optional only so the operation
+        // can be inserted before its companion id is known. This companion
+        // is pending evidence only, never funding proof.
+        transactionId: v.optional(v.id("transactions")),
+        // Exactly-once reservation links for later Task4 capture/release.
+        promoRedemptionId: v.optional(v.id("promoCodeRedemptions")),
+        loyaltyTransactionId: v.optional(v.id("loyaltyTransactions")),
+        loyaltyAccountId: v.optional(v.id("loyaltyAccounts")),
+        loyaltyPoints: v.optional(v.number()),
+        // Durable minimal typed non-PII completed-discount proof written by
+        // the same settlement writer at capture/release. Only effect ids,
+        // amounts, points, the first order, and the receipt/quote binding:
+        // no personal or behavior data. Survives legitimate Clerk erasure of
+        // loyalty history; consumed by the accounting validator, replay,
+        // recovery, projection, and coverage. Absent on discount-free
+        // checkouts and on legacy rows, which hold for reconciliation.
+        completedDiscountProof: v.optional(
+          v.object({
+            receiptId: v.string(),
+            quoteKey: v.string(),
+            appliedAt: v.number(),
+            firstOrderId: v.id("orders"),
+            promo: v.optional(
+              v.object({
+                redemptionId: v.id("promoCodeRedemptions"),
+                promoCodeId: v.id("promoCodes"),
+                orderId: v.id("orders"),
+                discountCents: v.number(),
+              })
+            ),
+            loyalty: v.optional(
+              v.object({
+                transactionId: v.id("loyaltyTransactions"),
+                accountId: v.id("loyaltyAccounts"),
+                orderId: v.id("orders"),
+                points: v.number(),
+              })
+            ),
+          })
+        ),
+        attemptedAt: v.optional(v.number()),
+        receipt: v.optional(providerReceiptValidator),
+        providerId: v.optional(v.string()),
+        // Superseded or conflicting receipt evidence preserved separately: the
+        // primary receipt stays while each structurally distinct earlier or
+        // incoming fact is retained for later reconciliation. Absent means
+        // only that no separate history was retained; it never proves no
+        // conflict was seen or any funding, and presence alone never proves
+        // a conflict either. No backfill for old rows.
+        receiptObservations: v.optional(v.array(providerReceiptValidator)),
+        failureCode: v.optional(v.string()),
+        reviewNeeded: v.optional(v.boolean()),
+        // Task4B consumed acquisition/accounting proof for this checkout
+        // branch. A bare terminal label without this marker is never funding
+        // proof; the same writer sets it exactly once on trusted capture or
+        // release. No backfill for old rows.
+        acquisitions: v.optional(v.array(acquiredReceiptValidator)),
+        accounting: v.optional(providerAccountingValidator),
+        receivedFunds: v.optional(receivedFundsValidator),
+        createdAt: v.number(),
+        updatedAt: v.number(),
+      })
+    )
+  )
+    .index("by_owner_request", ["ownerId", "requestId"])
+    .index("by_owner", ["ownerId"])
+    .index("by_provider_reference", ["providerReference"])
+    .index("by_provider_id", ["providerId"]),
 
   // Transactions table (Lenco payment gateway records)
   transactions: defineTable({
@@ -828,6 +1175,8 @@ export default defineSchema({
     reference: v.string(), // Our internal reference
     lencoTransactionId: v.optional(v.string()), // Lenco's transaction ID
     lencoCollectionId: v.optional(v.string()), // Lenco collection ID
+    // Top-up collection that wrote this companion, if any. Absent for legacy rows.
+    operationId: v.optional(v.id("paymentOperations")),
 
     // Payment details
     type: v.union(
@@ -835,20 +1184,10 @@ export default defineSchema({
       v.literal("transfer"), // Outgoing payment (seller payout)
       v.literal("refund") // Refund to buyer
     ),
-    paymentMethod: v.union(
-      v.literal("mobile_money"),
-      v.literal("card"),
-      v.literal("bank_transfer")
-    ),
+    paymentMethod: v.union(v.literal("mobile_money"), v.literal("card"), v.literal("bank_transfer")),
 
     // Mobile money specific
-    mobileMoneyProvider: v.optional(
-      v.union(
-        v.literal("mtn"),
-        v.literal("airtel"),
-        v.literal("zamtel")
-      )
-    ),
+    mobileMoneyProvider: v.optional(v.union(v.literal("mtn"), v.literal("airtel"), v.literal("zamtel"))),
     mobileNumber: v.optional(v.string()),
 
     // Card specific (masked for security)
@@ -889,6 +1228,7 @@ export default defineSchema({
     createdAt: v.number(),
     updatedAt: v.number(),
   })
+    .index("by_operation", ["operationId"])
     .index("by_order", ["orderId"])
     .index("by_user", ["userId"])
     .index("by_reference", ["reference"])
@@ -904,19 +1244,10 @@ export default defineSchema({
     userId: v.id("users"),
 
     // Account type
-    type: v.union(
-      v.literal("mobile_money"),
-      v.literal("bank_account")
-    ),
+    type: v.union(v.literal("mobile_money"), v.literal("bank_account")),
 
     // Mobile money details
-    mobileMoneyProvider: v.optional(
-      v.union(
-        v.literal("mtn"),
-        v.literal("airtel"),
-        v.literal("zamtel")
-      )
-    ),
+    mobileMoneyProvider: v.optional(v.union(v.literal("mtn"), v.literal("airtel"), v.literal("zamtel"))),
     mobileNumber: v.optional(v.string()),
 
     // Bank account details
@@ -927,6 +1258,15 @@ export default defineSchema({
 
     // Lenco recipient ID (for transfers)
     lencoRecipientId: v.optional(v.string()),
+
+    // Provider directory id for bank accounts, as returned by the validated
+    // bank directory (never a bankCode alias). Set together with
+    // providerResolvedAt by server-side resolution only.
+    bankId: v.optional(v.string()),
+    // When the provider last resolved this account. A resolution marker for
+    // withdrawal use, not an external ownership or KYC assertion. Legacy
+    // rows without this marker cannot back a withdrawal.
+    providerResolvedAt: v.optional(v.number()),
 
     // Status
     isDefault: v.boolean(),
@@ -959,12 +1299,7 @@ export default defineSchema({
     zoneId: v.optional(v.id("deliveryZones")),
     name: v.string(),
     code: v.string(),
-    type: v.union(
-      v.literal("standard"),
-      v.literal("express"),
-      v.literal("same_day"),
-      v.literal("pickup")
-    ),
+    type: v.union(v.literal("standard"), v.literal("express"), v.literal("same_day"), v.literal("pickup")),
     baseFee: v.number(),
     perKgFee: v.optional(v.number()),
     freeAboveSubtotal: v.optional(v.number()),
@@ -1063,12 +1398,7 @@ export default defineSchema({
     evidenceUrls: v.optional(v.array(v.string())),
     resolution: v.optional(
       v.object({
-        type: v.union(
-          v.literal("refund"),
-          v.literal("replacement"),
-          v.literal("store_credit"),
-          v.literal("rejected")
-        ),
+        type: v.union(v.literal("refund"), v.literal("replacement"), v.literal("store_credit"), v.literal("rejected")),
         amount: v.optional(v.number()),
         notes: v.optional(v.string()),
         resolvedByUserId: v.optional(v.id("users")),
@@ -1119,11 +1449,7 @@ export default defineSchema({
     sellerId: v.optional(v.id("users")),
     categoryId: v.optional(v.id("categories")),
     productIds: v.array(v.id("products")),
-    discountType: v.union(
-      v.literal("percent"),
-      v.literal("fixed_amount"),
-      v.literal("compare_at")
-    ),
+    discountType: v.union(v.literal("percent"), v.literal("fixed_amount"), v.literal("compare_at")),
     discountValue: v.optional(v.number()),
     startsAt: v.number(),
     endsAt: v.optional(v.number()),
@@ -1141,12 +1467,7 @@ export default defineSchema({
     code: v.string(),
     title: v.string(),
     description: v.optional(v.string()),
-    scope: v.union(
-      v.literal("platform"),
-      v.literal("seller"),
-      v.literal("category"),
-      v.literal("product")
-    ),
+    scope: v.union(v.literal("platform"), v.literal("seller"), v.literal("category"), v.literal("product")),
     sellerId: v.optional(v.id("users")),
     categoryId: v.optional(v.id("categories")),
     productId: v.optional(v.id("products")),
@@ -1174,22 +1495,25 @@ export default defineSchema({
     orderId: v.optional(v.id("orders")),
     discountAmount: v.number(),
     redeemedAt: v.number(),
+    // Wallet purchase that captured this redemption, if any. Absent for legacy rows.
+    operationId: v.optional(v.id("paymentOperations")),
+    // Reservation lifecycle consumed by checkout collection: reserved rows
+    // hold a promo slot for an unresolved operation, captured rows are final,
+    // released rows no longer count. Absent means legacy captured. No
+    // backfill: old rows keep counting as captured.
+    status: v.optional(v.union(v.literal("reserved"), v.literal("captured"), v.literal("released"))),
   })
     .index("by_promo_code", ["promoCodeId"])
     .index("by_user", ["userId"])
-    .index("by_order", ["orderId"]),
+    .index("by_order", ["orderId"])
+    .index("by_operation", ["operationId"]),
 
   loyaltyAccounts: defineTable({
     userId: v.id("users"),
     pointsBalance: v.number(),
     lifetimeEarned: v.number(),
     lifetimeRedeemed: v.number(),
-    tier: v.union(
-      v.literal("bronze"),
-      v.literal("silver"),
-      v.literal("gold"),
-      v.literal("platinum")
-    ),
+    tier: v.union(v.literal("bronze"), v.literal("silver"), v.literal("gold"), v.literal("platinum")),
     createdAt: v.number(),
     updatedAt: v.number(),
   })
@@ -1199,20 +1523,23 @@ export default defineSchema({
   loyaltyTransactions: defineTable({
     accountId: v.id("loyaltyAccounts"),
     userId: v.id("users"),
-    type: v.union(
-      v.literal("earn"),
-      v.literal("redeem"),
-      v.literal("expire"),
-      v.literal("adjust")
-    ),
+    type: v.union(v.literal("earn"), v.literal("redeem"), v.literal("expire"), v.literal("adjust")),
     points: v.number(),
     orderId: v.optional(v.id("orders")),
     reason: v.string(),
+    // Wallet purchase that captured these points, if any. Absent for legacy rows.
+    operationId: v.optional(v.id("paymentOperations")),
+    // Reservation lifecycle consumed by checkout collection: reserved rows
+    // hold debited points for an unresolved operation, captured rows are
+    // final, released rows no longer count. Absent means legacy captured. No
+    // backfill: old rows keep counting as captured.
+    status: v.optional(v.union(v.literal("reserved"), v.literal("captured"), v.literal("released"))),
     createdAt: v.number(),
   })
     .index("by_account", ["accountId"])
     .index("by_user", ["userId"])
     .index("by_order", ["orderId"])
+    .index("by_operation", ["operationId"])
     .index("by_created", ["createdAt"]),
 
   // Conversations table (pre-purchase messaging between buyer and seller)
@@ -1222,11 +1549,7 @@ export default defineSchema({
     sellerId: v.id("users"), // The product owner
 
     // Conversation status
-    status: v.union(
-      v.literal("active"),
-      v.literal("archived"),
-      v.literal("blocked")
-    ),
+    status: v.union(v.literal("active"), v.literal("archived"), v.literal("blocked")),
 
     // Optional link to order if purchase was made
     orderId: v.optional(v.id("orders")),
@@ -1277,4 +1600,12 @@ export default defineSchema({
     .index("by_conversation", ["conversationId"])
     .index("by_conversation_created", ["conversationId", "createdAt"])
     .index("by_sender", ["senderId"]),
+
+  // Ownership of a file in Convex storage. A stored file with no row is legacy and resolves publicly.
+  storageFiles: defineTable({
+    storageId: v.id("_storage"),
+    ownerUserId: v.id("users"),
+    purpose: v.union(v.literal("public"), v.literal("private")),
+    createdAt: v.number(),
+  }).index("by_storage_id", ["storageId"]),
 });

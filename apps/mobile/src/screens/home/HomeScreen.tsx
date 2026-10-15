@@ -13,6 +13,7 @@ import { AnimatedProductCard, ProductGrid } from '../../components/ui/AnimatedPr
 import { TabHeader } from '../../components/ui/Header';
 import { CategoryChipSkeleton, ListSkeleton } from '../../components/ui/Skeleton';
 import { ASSISTANT_NAME } from '../../config/assistant';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useGuestCart } from '../../context/GuestCartProvider';
 import { useAIRecommendations } from '../../hooks/useAIRecommendations';
@@ -35,6 +36,8 @@ export default function HomeScreen() {
   const theme = useTheme();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { user } = useAppAuth();
+  // The signed-in cart and notifications are read only for a ready account; guests still see the public home.
+  const accountReady = useAccountAccess().status === 'ready';
   const { summary: guestCartSummary } = useGuestCart();
   const [refreshing, setRefreshing] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -59,14 +62,14 @@ export default function HomeScreen() {
   // Get cart item count
   const cart = useQuery(
     api.cart.getCart,
-    user ? { userId: user._id } : 'skip'
+    accountReady ? {} : 'skip'
   );
   const cartCount = user ? cart?.itemCount || 0 : guestCartSummary.itemCount;
 
   // Get notification count
   const notifications = useQuery(
     api.notifications.getUserNotifications,
-    user ? { userId: user._id } : 'skip'
+    accountReady ? {} : 'skip'
   );
   const unreadCount = notifications?.filter((n: Notification) => !n.isRead).length || 0;
 

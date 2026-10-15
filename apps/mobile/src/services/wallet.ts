@@ -1,8 +1,6 @@
 /**
- * Wallet Service - Handles wallet-related API calls
+ * Wallet types and read/display helpers
  */
-
-import { apiService } from './api';
 
 // Types
 export type MobileMoneyProvider = 'mtn' | 'airtel' | 'zamtel';
@@ -99,10 +97,7 @@ export function getTransactionSourceLabel(source: string): string {
   return labels[source] || source.replace(/_/g, ' ');
 }
 
-export function getTransactionIcon(
-  type: WalletTransaction['type'],
-  source: string,
-): string {
+export function getTransactionIcon(type: WalletTransaction['type'], source: string): string {
   if (source.includes('withdrawal')) return 'bank-transfer-out';
   if (source.includes('top_up')) return 'bank-transfer-in';
   if (source === 'sale' || source === 'escrow_release') return 'cash-plus';
@@ -119,10 +114,7 @@ export function getTransactionIcon(
   return icons[type] || 'cash';
 }
 
-export function getTransactionColor(
-  type: WalletTransaction['type'],
-  status: WalletTransaction['status'],
-): string {
+export function getTransactionColor(type: WalletTransaction['type'], status: WalletTransaction['status']): string {
   if (status === 'failed' || status === 'cancelled') return '#EF4444';
   if (status === 'pending') return '#F59E0B';
 
@@ -135,157 +127,3 @@ export function getTransactionColor(
   };
   return colors[type] || '#6B7280';
 }
-
-// Wallet service class
-class WalletService {
-  /**
-   * Get wallet balance
-   */
-  async getBalance(userId: string): Promise<WalletBalance> {
-    return apiService.get<WalletBalance>(`/wallet/balance/${userId}`);
-  }
-
-  /**
-   * Get wallet activity (recent transactions + stats)
-   */
-  async getActivity(userId: string): Promise<WalletActivity> {
-    return apiService.get<WalletActivity>(`/wallet/activity/${userId}`);
-  }
-
-  /**
-   * Get wallet transactions
-   */
-  async getTransactions(
-    userId: string,
-    limit?: number,
-    type?: WalletTransaction['type'],
-  ): Promise<WalletTransaction[]> {
-    let url = `/wallet/transactions/${userId}`;
-    const params = new URLSearchParams();
-    if (limit) params.append('limit', limit.toString());
-    if (type) params.append('type', type);
-    if (params.toString()) url += `?${params.toString()}`;
-    return apiService.get<WalletTransaction[]>(url);
-  }
-
-  /**
-   * Withdraw to mobile money
-   */
-  async withdrawToMobileMoney(
-    userId: string,
-    amount: number,
-    phone: string,
-    provider: MobileMoneyProvider,
-    description?: string,
-  ): Promise<WithdrawalResponse> {
-    return apiService.post<WithdrawalResponse>('/wallet/withdraw/mobile-money', {
-      userId,
-      amount,
-      phone,
-      provider,
-      description,
-    });
-  }
-
-  /**
-   * Withdraw to bank account
-   */
-  async withdrawToBank(
-    userId: string,
-    amount: number,
-    bankCode: string,
-    accountNumber: string,
-    accountName: string,
-    description?: string,
-  ): Promise<WithdrawalResponse> {
-    return apiService.post<WithdrawalResponse>('/wallet/withdraw/bank', {
-      userId,
-      amount,
-      bankCode,
-      accountNumber,
-      accountName,
-      description,
-    });
-  }
-
-  /**
-   * Top up wallet
-   */
-  async topUp(
-    userId: string,
-    amount: number,
-    paymentMethod: 'mobile_money' | 'card',
-    mobileNumber?: string,
-    provider?: MobileMoneyProvider,
-    email?: string,
-  ): Promise<TopUpResponse> {
-    return apiService.post<TopUpResponse>('/wallet/top-up', {
-      userId,
-      amount,
-      paymentMethod,
-      mobileNumber,
-      provider,
-      email,
-    });
-  }
-
-  /**
-   * Pay for order using wallet
-   */
-  async payWithWallet(
-    userId: string,
-    orderId: string,
-    amount: number,
-  ): Promise<WalletPaymentResponse> {
-    return apiService.post<WalletPaymentResponse>('/wallet/pay', {
-      userId,
-      orderId,
-      amount,
-    });
-  }
-
-  /**
-   * Ensure wallet exists
-   */
-  async ensureWallet(userId: string): Promise<{ walletId: string }> {
-    return apiService.post<{ walletId: string }>(`/wallet/ensure/${userId}`, {});
-  }
-
-  /**
-   * Check if user can pay with wallet
-   */
-  async canPayWithWallet(
-    userId: string,
-    amount: number,
-  ): Promise<{
-    canPay: boolean;
-    reason?: string;
-    currentBalance?: number;
-    shortfall?: number;
-    balanceAfterPayment?: number;
-  }> {
-    // This is handled via Convex directly for real-time data
-    const balance = await this.getBalance(userId);
-    if (!balance.hasWallet) {
-      return { canPay: false, reason: 'No wallet found' };
-    }
-    if (balance.isFrozen) {
-      return { canPay: false, reason: 'Wallet is frozen' };
-    }
-    if (balance.balance < amount) {
-      return {
-        canPay: false,
-        reason: 'Insufficient balance',
-        currentBalance: balance.balance,
-        shortfall: amount - balance.balance,
-      };
-    }
-    return {
-      canPay: true,
-      currentBalance: balance.balance,
-      balanceAfterPayment: balance.balance - amount,
-    };
-  }
-}
-
-export const walletService = new WalletService();

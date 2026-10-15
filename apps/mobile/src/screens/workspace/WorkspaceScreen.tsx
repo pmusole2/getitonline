@@ -2,16 +2,12 @@ import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useQuery } from 'convex/react';
 import React, { useMemo } from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Button, Chip, Surface, Text, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { TabHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
@@ -56,13 +52,7 @@ function countByStatus<T extends { status: string }>(items: T[]) {
   }, {});
 }
 
-function ModuleCard({
-  item,
-  onPress,
-}: {
-  item: WorkspaceModule;
-  onPress: () => void;
-}) {
+function ModuleCard({ item, onPress }: { item: WorkspaceModule; onPress: () => void }) {
   const theme = useTheme();
   const accentColor =
     item.accent === 'primary'
@@ -85,10 +75,7 @@ function ModuleCard({
     <Pressable
       onPress={onPress}
       disabled={item.disabled}
-      style={({ pressed }) => [
-        styles.modulePressable,
-        { opacity: item.disabled ? 0.5 : pressed ? 0.86 : 1 },
-      ]}
+      style={({ pressed }) => [styles.modulePressable, { opacity: item.disabled ? 0.5 : pressed ? 0.86 : 1 }]}
     >
       <Surface style={[styles.moduleCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
         <View style={[styles.moduleIcon, { backgroundColor: containerColor }]}>
@@ -113,13 +100,18 @@ function ModuleCard({
 }
 
 export default function WorkspaceScreen() {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Workspace" />;
+  }
+  return <WorkspaceContent />;
+}
+
+function WorkspaceContent() {
   const theme = useTheme();
   const navigation = useNavigation<Navigation>();
   const { user } = useAppAuth();
-  const vendorProfile = useQuery(
-    api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : 'skip',
-  );
+  const vendorProfile = useQuery(api.vendors.getMyVendorProfile, user?._id && !user.isBanned ? {} : 'skip');
   const storefront = useQuery(api.platform.getStorefront);
 
   const isAdmin = isAdminRole(user?.role);
@@ -128,25 +120,18 @@ export default function WorkspaceScreen() {
   const hasSellerSurface = canAccessSellerSurface(user?.role);
   const hasListingAccess = canManageListings(user?.role, vendorProfile?.status ?? null);
 
-  const companyListings = useQuery(
-    api.products.getManagedCatalogProducts,
-    user?._id && isCatalogManager ? { actorUserId: user._id } : 'skip',
-  );
+  const companyListings = useQuery(api.products.getManagedCatalogProducts, user?._id && isCatalogManager ? {} : 'skip');
   const vendorListings = useQuery(
     api.products.getMyListings,
-    user?._id && !isCatalogManager && hasListingAccess
-      ? { actorUserId: user._id }
-      : 'skip',
+    user?._id && !isCatalogManager && hasListingAccess ? {} : 'skip',
   );
   const pendingReviewListings = useQuery(
     api.products.getPendingReviewListings,
-    user?._id && isReviewer
-      ? { reviewerId: user._id, status: 'pending_review' }
-      : 'skip',
+    user?._id && isReviewer ? { reviewerId: user._id, status: 'pending_review' } : 'skip',
   );
 
   const listings = useMemo(
-    () => (isCatalogManager ? companyListings ?? [] : vendorListings ?? []),
+    () => (isCatalogManager ? (companyListings ?? []) : (vendorListings ?? [])),
     [companyListings, isCatalogManager, vendorListings],
   );
   const listingCounts = useMemo(() => countByStatus(listings), [listings]);
@@ -297,11 +282,7 @@ export default function WorkspaceScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-      <TabHeader
-        title="Workspace"
-        subtitle="Seller, staff, and admin operations"
-        showAIAssistant
-      />
+      <TabHeader title="Workspace" subtitle="Seller, staff, and admin operations" showAIAssistant />
 
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.content}>
         <Surface style={[styles.heroCard, { backgroundColor: theme.colors.surface }]} elevation={1}>
@@ -319,11 +300,9 @@ export default function WorkspaceScreen() {
                       ? 'Seller workspace'
                       : 'Vendor onboarding'}
               </Text>
-              <Text
-                variant="bodySmall"
-                style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, lineHeight: 18 }}
-              >
-                Mobile operations are grouped here so each role can move from listing to order, support, payout, and admin tasks without digging through Profile.
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4, lineHeight: 18 }}>
+                Mobile operations are grouped here so each role can move from listing to order, support, payout, and
+                admin tasks without digging through Profile.
               </Text>
             </View>
           </View>
@@ -388,7 +367,8 @@ export default function WorkspaceScreen() {
                 Seller approval required
               </Text>
               <Text variant="bodySmall" style={{ color: theme.colors.onSecondaryContainer, marginTop: 4 }}>
-                Complete vendor onboarding from the workspace to unlock PRD-compliant listings, orders, payouts, and promotions.
+                Complete vendor onboarding from the workspace to unlock PRD-compliant listings, orders, payouts, and
+                promotions.
               </Text>
             </View>
           </Surface>
@@ -401,11 +381,7 @@ export default function WorkspaceScreen() {
             </Text>
             <View style={styles.modulesGrid}>
               {sellerModules.map((module) => (
-                <ModuleCard
-                  key={module.title}
-                  item={module}
-                  onPress={() => openModule(module)}
-                />
+                <ModuleCard key={module.title} item={module} onPress={() => openModule(module)} />
               ))}
             </View>
           </View>
@@ -418,11 +394,7 @@ export default function WorkspaceScreen() {
             </Text>
             <View style={styles.modulesGrid}>
               {reviewerModules.map((module) => (
-                <ModuleCard
-                  key={module.title}
-                  item={module}
-                  onPress={() => openModule(module)}
-                />
+                <ModuleCard key={module.title} item={module} onPress={() => openModule(module)} />
               ))}
             </View>
           </View>
@@ -435,11 +407,7 @@ export default function WorkspaceScreen() {
             </Text>
             <View style={styles.modulesGrid}>
               {adminModules.map((module) => (
-                <ModuleCard
-                  key={module.title}
-                  item={module}
-                  onPress={() => openModule(module)}
-                />
+                <ModuleCard key={module.title} item={module} onPress={() => openModule(module)} />
               ))}
             </View>
           </View>

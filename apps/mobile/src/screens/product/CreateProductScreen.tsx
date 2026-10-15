@@ -13,29 +13,17 @@ import {
   Switch,
   View,
 } from 'react-native';
-import {
-  Button,
-  Chip,
-  ProgressBar,
-  Surface,
-  Text,
-  TextInput,
-  useTheme,
-} from 'react-native-paper';
+import { Button, Chip, ProgressBar, Surface, Text, TextInput, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useImageUpload } from '../../hooks/useImageUpload';
 import { calculateDisplayPrice } from '../../hooks/useOrderTotal';
 import { formatPrice } from '../../theme';
-import type {
-  CategoryTreeChild,
-  CategoryTreeItem,
-  Id,
-  ProductCondition,
-  RootStackParamList,
-} from '../../types';
+import type { CategoryTreeChild, CategoryTreeItem, Id, ProductCondition, RootStackParamList } from '../../types';
 import { canManageCatalog, canManageListings } from '../../utils/roles';
 import { ProductVariantEditor } from './ProductVariantEditor';
 import {
@@ -58,15 +46,7 @@ const MAX_IMAGE_SIZE_BYTES = 5 * 1024 * 1024;
 const MIN_IMAGE_DIMENSION = 1000;
 const IMAGE_MIME_TYPES = ['image/jpeg', 'image/jpg', 'image/png'] as const;
 
-const steps = [
-  'Media',
-  'Taxonomy',
-  'Details',
-  'Pricing',
-  'Specs',
-  'Delivery',
-  'Review',
-] as const;
+const steps = ['Media', 'Taxonomy', 'Details', 'Pricing', 'Specs', 'Delivery', 'Review'] as const;
 
 const conditions: Array<{ value: ProductCondition; label: string; description: string; icon: string }> = [
   { value: 'new', label: 'New', description: 'Brand new and unused', icon: 'star-circle' },
@@ -186,14 +166,19 @@ function filterNamedItems<T extends { name: string }>(items: T[], query: string)
   return items.filter((item) => textMatchesQuery(item.name, query));
 }
 
-export default function CreateProductScreen({ navigation }: Props) {
+export default function CreateProductScreen(props: Props) {
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Create Listing" />;
+  }
+  return <CreateProductContent {...props} />;
+}
+
+function CreateProductContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const storefront = useQuery(api.platform.getStorefront);
-  const vendorProfile = useQuery(
-    api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : 'skip',
-  );
+  const vendorProfile = useQuery(api.vendors.getMyVendorProfile, user?._id && !user.isBanned ? {} : 'skip');
   const categories = useQuery(api.categories.getCategoriesTree);
   const createProduct = useMutation(api.products.createProduct);
 
@@ -225,13 +210,9 @@ export default function CreateProductScreen({ navigation }: Props) {
   const [keyFeaturesText, setKeyFeaturesText] = useState('');
   const [specifications, setSpecifications] = useState<SpecificationInput[]>([]);
   const [variantAttributes, setVariantAttributes] = useState<VariantAttribute[]>([]);
-  const [variantPatches, setVariantPatches] = useState<
-    Record<string, VariantCombinationPatch>
-  >({});
+  const [variantPatches, setVariantPatches] = useState<Record<string, VariantCombinationPatch>>({});
   const [colorMedia, setColorMedia] = useState<Record<string, string[]>>({});
-  const [combinationMedia, setCombinationMedia] = useState<
-    Record<string, string[]>
-  >({});
+  const [combinationMedia, setCombinationMedia] = useState<Record<string, string[]>>({});
   const [addOnsText, setAddOnsText] = useState('');
   const [weightKg, setWeightKg] = useState('');
   const [lengthCm, setLengthCm] = useState('');
@@ -278,16 +259,11 @@ export default function CreateProductScreen({ navigation }: Props) {
   const hasIncompleteSpecification = useMemo(
     () =>
       specifications.some(
-        (spec) =>
-          Boolean(spec.key.trim() || spec.value.trim()) &&
-          (!spec.key.trim() || !spec.value.trim()),
+        (spec) => Boolean(spec.key.trim() || spec.value.trim()) && (!spec.key.trim() || !spec.value.trim()),
       ),
     [specifications],
   );
-  const productImageUrls = useMemo(
-    () => upload.images.map((image) => image.url),
-    [upload.images],
-  );
+  const productImageUrls = useMemo(() => upload.images.map((image) => image.url), [upload.images]);
   const variantCombinations = useMemo(
     () =>
       reconcileVariantCombinations({
@@ -338,9 +314,7 @@ export default function CreateProductScreen({ navigation }: Props) {
     }
     if (quantityValue < 0) errors.push('Stock quantity cannot be negative.');
     if (variantAttributes.length > 0) {
-      errors.push(
-        ...variantValidationIssues.map((issue) => issue.message),
-      );
+      errors.push(...variantValidationIssues.map((issue) => issue.message));
     }
     if (!deliveryName.trim()) errors.push('Delivery option name is required.');
     if (!deliveryEta.trim()) errors.push('Delivery ETA is required.');
@@ -410,9 +384,7 @@ export default function CreateProductScreen({ navigation }: Props) {
 
   const updateSpecification = (index: number, field: keyof SpecificationInput, value: string) => {
     setSpecifications((current) =>
-      current.map((spec, specIndex) =>
-        specIndex === index ? { ...spec, [field]: value } : spec,
-      ),
+      current.map((spec, specIndex) => (specIndex === index ? { ...spec, [field]: value } : spec)),
     );
   };
 
@@ -459,7 +431,6 @@ export default function CreateProductScreen({ navigation }: Props) {
           : undefined;
 
       await createProduct({
-        actorUserId: user._id,
         categoryId: categoryId as Id<'categories'>,
         subcategoryId: subcategoryId as Id<'categories'>,
         classificationId: classificationId as Id<'categories'>,
@@ -489,9 +460,7 @@ export default function CreateProductScreen({ navigation }: Props) {
           isPreorder,
         },
         variantAttributes: variantAttributes.length > 0 ? variantAttributes : undefined,
-        variantCombinations: persistedVariantCombinations.length > 0
-          ? persistedVariantCombinations
-          : undefined,
+        variantCombinations: persistedVariantCombinations.length > 0 ? persistedVariantCombinations : undefined,
         addOns,
         dimensions: productDimensions,
         weightKg: parseOptionalNumber(weightKg),
@@ -508,9 +477,7 @@ export default function CreateProductScreen({ navigation }: Props) {
         material: material.trim() || undefined,
         color: deriveProductColor(variantAttributes, color),
         specifications: validSpecifications,
-        location: city.trim() || province.trim()
-          ? { city: city.trim(), province: province.trim() }
-          : undefined,
+        location: city.trim() || province.trim() ? { city: city.trim(), province: province.trim() } : undefined,
         shippingOptions: [
           {
             name: deliveryName.trim(),
@@ -556,7 +523,10 @@ export default function CreateProductScreen({ navigation }: Props) {
           <Text variant="titleMedium" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
             Vendor approval required
           </Text>
-          <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
             Apply from Workspace before adding products.
           </Text>
         </View>
@@ -572,10 +542,7 @@ export default function CreateProductScreen({ navigation }: Props) {
         onBackPress={() => navigation.goBack()}
         variant="gradient"
       />
-      <KeyboardAvoidingView
-        style={styles.container}
-        behavior={Platform.OS === 'ios' ? 'padding' : undefined}
-      >
+      <KeyboardAvoidingView style={styles.container} behavior={Platform.OS === 'ios' ? 'padding' : undefined}>
         <View style={styles.progressWrap}>
           <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
             Step {stepIndex + 1} of {steps.length}: {steps[stepIndex]}
@@ -592,7 +559,8 @@ export default function CreateProductScreen({ navigation }: Props) {
             <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
               <SectionTitle icon="image-multiple-outline" title="Product Images" />
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, lineHeight: 20 }}>
-                Upload {MIN_IMAGES}-{MAX_IMAGES} JPG/PNG images. Each image must be at least 1000x1000 and 5 MB or smaller.
+                Upload {MIN_IMAGES}-{MAX_IMAGES} JPG/PNG images. Each image must be at least 1000x1000 and 5 MB or
+                smaller.
               </Text>
               {upload.validationErrors.map((message) => (
                 <Text key={message} variant="bodySmall" style={{ color: theme.colors.error, marginTop: 8 }}>
@@ -614,7 +582,11 @@ export default function CreateProductScreen({ navigation }: Props) {
                     <Pressable style={styles.removeImageButton} onPress={() => upload.removeImage(index)}>
                       <Icon name="close" size={16} color="#FFFFFF" />
                     </Pressable>
-                    {index === 0 && <Chip compact style={styles.primaryBadge}>Primary</Chip>}
+                    {index === 0 && (
+                      <Chip compact style={styles.primaryBadge}>
+                        Primary
+                      </Chip>
+                    )}
                   </View>
                 ))}
                 {upload.images.length < MAX_IMAGES && (
@@ -657,7 +629,9 @@ export default function CreateProductScreen({ navigation }: Props) {
                 onChangeText={setCategorySearch}
                 style={styles.input}
                 left={<TextInput.Icon icon="magnify" />}
-                right={categorySearch ? <TextInput.Icon icon="close" onPress={() => setCategorySearch('')} /> : undefined}
+                right={
+                  categorySearch ? <TextInput.Icon icon="close" onPress={() => setCategorySearch('')} /> : undefined
+                }
               />
               <TaxonomyGroup
                 title="L1 Category"
@@ -681,7 +655,8 @@ export default function CreateProductScreen({ navigation }: Props) {
               />
               {selectedL2 && (selectedL2.classifications?.length ?? 0) === 0 ? (
                 <Text variant="bodySmall" style={{ color: theme.colors.error, marginTop: 10 }}>
-                  This L2 category has no active L3 classifications. Ask an admin to complete the taxonomy before listing here.
+                  This L2 category has no active L3 classifications. Ask an admin to complete the taxonomy before
+                  listing here.
                 </Text>
               ) : null}
             </Surface>
@@ -691,11 +666,33 @@ export default function CreateProductScreen({ navigation }: Props) {
             <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
               <SectionTitle icon="text-box-outline" title="Product Details" />
               <View style={styles.row}>
-                <TextInput label="Brand" mode="outlined" value={brand} onChangeText={setBrand} style={styles.flexInput} />
-                <TextInput label="SKU" mode="outlined" value={sku} onChangeText={setSku} style={styles.flexInput} autoCapitalize="characters" />
+                <TextInput
+                  label="Brand"
+                  mode="outlined"
+                  value={brand}
+                  onChangeText={setBrand}
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="SKU"
+                  mode="outlined"
+                  value={sku}
+                  onChangeText={setSku}
+                  style={styles.flexInput}
+                  autoCapitalize="characters"
+                />
               </View>
-              <TextInput label="Title" mode="outlined" value={title} onChangeText={setTitle} maxLength={150} style={styles.input} />
-              <Text variant="labelSmall" style={styles.counterText}>{title.length}/150</Text>
+              <TextInput
+                label="Title"
+                mode="outlined"
+                value={title}
+                onChangeText={setTitle}
+                maxLength={150}
+                style={styles.input}
+              />
+              <Text variant="labelSmall" style={styles.counterText}>
+                {title.length}/150
+              </Text>
               <TextInput
                 label="Short description"
                 mode="outlined"
@@ -705,7 +702,9 @@ export default function CreateProductScreen({ navigation }: Props) {
                 multiline
                 style={styles.input}
               />
-              <Text variant="labelSmall" style={styles.counterText}>{shortDescription.length}/300</Text>
+              <Text variant="labelSmall" style={styles.counterText}>
+                {shortDescription.length}/300
+              </Text>
               <TextInput
                 label="Full description"
                 mode="outlined"
@@ -726,16 +725,30 @@ export default function CreateProductScreen({ navigation }: Props) {
                     style={[
                       styles.optionCard,
                       {
-                        backgroundColor: condition === item.value ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
+                        backgroundColor:
+                          condition === item.value ? theme.colors.primaryContainer : theme.colors.surfaceVariant,
                         borderColor: condition === item.value ? theme.colors.primary : 'transparent',
                       },
                     ]}
                   >
-                    <Icon name={item.icon} size={22} color={condition === item.value ? theme.colors.primary : theme.colors.onSurfaceVariant} />
-                    <Text variant="labelLarge" style={{ color: condition === item.value ? theme.colors.primary : theme.colors.onSurface, marginTop: 6 }}>
+                    <Icon
+                      name={item.icon}
+                      size={22}
+                      color={condition === item.value ? theme.colors.primary : theme.colors.onSurfaceVariant}
+                    />
+                    <Text
+                      variant="labelLarge"
+                      style={{
+                        color: condition === item.value ? theme.colors.primary : theme.colors.onSurface,
+                        marginTop: 6,
+                      }}
+                    >
                       {item.label}
                     </Text>
-                    <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: 'center' }}>
+                    <Text
+                      variant="bodySmall"
+                      style={{ color: theme.colors.onSurfaceVariant, marginTop: 2, textAlign: 'center' }}
+                    >
                       {item.description}
                     </Text>
                   </Pressable>
@@ -748,29 +761,47 @@ export default function CreateProductScreen({ navigation }: Props) {
             <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
               <SectionTitle icon="cash-register" title="Pricing and Inventory" />
               <View style={styles.row}>
-                <TextInput label="Price (ZMW)" mode="outlined" value={price} onChangeText={setPrice} keyboardType="decimal-pad" style={styles.flexInput} />
-                <TextInput label="Compare-at" mode="outlined" value={compareAtPrice} onChangeText={setCompareAtPrice} keyboardType="decimal-pad" style={styles.flexInput} />
+                <TextInput
+                  label="Price (ZMW)"
+                  mode="outlined"
+                  value={price}
+                  onChangeText={setPrice}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="Compare-at"
+                  mode="outlined"
+                  value={compareAtPrice}
+                  onChangeText={setCompareAtPrice}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
               </View>
               <Surface style={[styles.infoCard, { backgroundColor: theme.colors.primaryContainer }]} elevation={0}>
                 <Icon name="information-outline" size={20} color={theme.colors.primary} />
                 <Text variant="bodySmall" style={{ color: theme.colors.onPrimaryContainer, flex: 1 }}>
-                  Buyers will see {formatPrice(calculateDisplayPrice(parseMoney(price)))} before delivery, discounts, and checkout fees.
+                  Buyers will see {formatPrice(calculateDisplayPrice(parseMoney(price)))} before delivery, discounts,
+                  and checkout fees.
                 </Text>
               </Surface>
               <View style={styles.row}>
                 <TextInput
-                  label={
-                    variantAttributes.length > 0
-                      ? 'Default stock per new variant'
-                      : 'Stock quantity'
-                  }
+                  label={variantAttributes.length > 0 ? 'Default stock per new variant' : 'Stock quantity'}
                   mode="outlined"
                   value={quantity}
                   onChangeText={setQuantity}
                   keyboardType="number-pad"
                   style={styles.flexInput}
                 />
-                <TextInput label="Low-stock alert" mode="outlined" value={lowStockThreshold} onChangeText={setLowStockThreshold} keyboardType="number-pad" style={styles.flexInput} />
+                <TextInput
+                  label="Low-stock alert"
+                  mode="outlined"
+                  value={lowStockThreshold}
+                  onChangeText={setLowStockThreshold}
+                  keyboardType="number-pad"
+                  style={styles.flexInput}
+                />
               </View>
               <Text variant="labelMedium" style={[styles.groupLabel, { color: theme.colors.onSurfaceVariant }]}>
                 Availability
@@ -812,7 +843,9 @@ export default function CreateProductScreen({ navigation }: Props) {
                 numberOfLines={6}
                 style={styles.input}
               />
-              <Text variant="labelSmall" style={styles.counterText}>{keyFeatures.length}/5 features</Text>
+              <Text variant="labelSmall" style={styles.counterText}>
+                {keyFeatures.length}/5 features
+              </Text>
               <View style={styles.specBuilderHeader}>
                 <View style={{ flex: 1 }}>
                   <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
@@ -839,7 +872,10 @@ export default function CreateProductScreen({ navigation }: Props) {
                 ))}
               </View>
               {specifications.length === 0 ? (
-                <Surface style={[styles.emptySpecsCard, { backgroundColor: theme.colors.surfaceVariant }]} elevation={0}>
+                <Surface
+                  style={[styles.emptySpecsCard, { backgroundColor: theme.colors.surfaceVariant }]}
+                  elevation={0}
+                >
                   <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, textAlign: 'center' }}>
                     No custom specification fields added yet.
                   </Text>
@@ -918,17 +954,63 @@ export default function CreateProductScreen({ navigation }: Props) {
                 style={styles.input}
               />
               <View style={styles.row}>
-                <TextInput label="Weight kg" mode="outlined" value={weightKg} onChangeText={setWeightKg} keyboardType="decimal-pad" style={styles.flexInput} />
-                <TextInput label="Origin" mode="outlined" value={countryOfOrigin} onChangeText={setCountryOfOrigin} style={styles.flexInput} />
+                <TextInput
+                  label="Weight kg"
+                  mode="outlined"
+                  value={weightKg}
+                  onChangeText={setWeightKg}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="Origin"
+                  mode="outlined"
+                  value={countryOfOrigin}
+                  onChangeText={setCountryOfOrigin}
+                  style={styles.flexInput}
+                />
               </View>
               <View style={styles.row}>
-                <TextInput label="Length cm" mode="outlined" value={lengthCm} onChangeText={setLengthCm} keyboardType="decimal-pad" style={styles.flexInput} />
-                <TextInput label="Width cm" mode="outlined" value={widthCm} onChangeText={setWidthCm} keyboardType="decimal-pad" style={styles.flexInput} />
-                <TextInput label="Height cm" mode="outlined" value={heightCm} onChangeText={setHeightCm} keyboardType="decimal-pad" style={styles.flexInput} />
+                <TextInput
+                  label="Length cm"
+                  mode="outlined"
+                  value={lengthCm}
+                  onChangeText={setLengthCm}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="Width cm"
+                  mode="outlined"
+                  value={widthCm}
+                  onChangeText={setWidthCm}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="Height cm"
+                  mode="outlined"
+                  value={heightCm}
+                  onChangeText={setHeightCm}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
               </View>
               <View style={styles.row}>
-                <TextInput label="Model" mode="outlined" value={modelNumber} onChangeText={setModelNumber} style={styles.flexInput} />
-                <TextInput label="Material" mode="outlined" value={material} onChangeText={setMaterial} style={styles.flexInput} />
+                <TextInput
+                  label="Model"
+                  mode="outlined"
+                  value={modelNumber}
+                  onChangeText={setModelNumber}
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="Material"
+                  mode="outlined"
+                  value={material}
+                  onChangeText={setMaterial}
+                  style={styles.flexInput}
+                />
               </View>
               <TextInput
                 label="Color (single-option products)"
@@ -936,10 +1018,7 @@ export default function CreateProductScreen({ navigation }: Props) {
                 value={color}
                 onChangeText={setColor}
                 style={styles.input}
-                disabled={variantAttributes.some(
-                  (attribute) =>
-                    attribute.name.trim().toLocaleLowerCase() === 'color',
-                )}
+                disabled={variantAttributes.some((attribute) => attribute.name.trim().toLocaleLowerCase() === 'color')}
               />
             </Surface>
           )}
@@ -958,18 +1037,63 @@ export default function CreateProductScreen({ navigation }: Props) {
                 ))}
               </View>
               <View style={styles.row}>
-                <TextInput label="Warranty days" mode="outlined" value={warrantyDays} onChangeText={setWarrantyDays} keyboardType="number-pad" style={styles.flexInput} />
-                <TextInput label="Provider" mode="outlined" value={warrantyProvider} onChangeText={setWarrantyProvider} style={styles.flexInput} />
+                <TextInput
+                  label="Warranty days"
+                  mode="outlined"
+                  value={warrantyDays}
+                  onChangeText={setWarrantyDays}
+                  keyboardType="number-pad"
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="Provider"
+                  mode="outlined"
+                  value={warrantyProvider}
+                  onChangeText={setWarrantyProvider}
+                  style={styles.flexInput}
+                />
               </View>
-              <TextInput label="Warranty terms" mode="outlined" value={warrantyTerms} onChangeText={setWarrantyTerms} multiline style={styles.input} />
+              <TextInput
+                label="Warranty terms"
+                mode="outlined"
+                value={warrantyTerms}
+                onChangeText={setWarrantyTerms}
+                multiline
+                style={styles.input}
+              />
               <View style={styles.row}>
                 <TextInput label="City" mode="outlined" value={city} onChangeText={setCity} style={styles.flexInput} />
-                <TextInput label="Province" mode="outlined" value={province} onChangeText={setProvince} style={styles.flexInput} />
+                <TextInput
+                  label="Province"
+                  mode="outlined"
+                  value={province}
+                  onChangeText={setProvince}
+                  style={styles.flexInput}
+                />
               </View>
-              <TextInput label="Delivery option" mode="outlined" value={deliveryName} onChangeText={setDeliveryName} style={styles.input} />
+              <TextInput
+                label="Delivery option"
+                mode="outlined"
+                value={deliveryName}
+                onChangeText={setDeliveryName}
+                style={styles.input}
+              />
               <View style={styles.row}>
-                <TextInput label="Delivery fee" mode="outlined" value={deliveryFee} onChangeText={setDeliveryFee} keyboardType="decimal-pad" style={styles.flexInput} />
-                <TextInput label="ETA" mode="outlined" value={deliveryEta} onChangeText={setDeliveryEta} style={styles.flexInput} />
+                <TextInput
+                  label="Delivery fee"
+                  mode="outlined"
+                  value={deliveryFee}
+                  onChangeText={setDeliveryFee}
+                  keyboardType="decimal-pad"
+                  style={styles.flexInput}
+                />
+                <TextInput
+                  label="ETA"
+                  mode="outlined"
+                  value={deliveryEta}
+                  onChangeText={setDeliveryEta}
+                  style={styles.flexInput}
+                />
               </View>
             </Surface>
           )}
@@ -977,9 +1101,15 @@ export default function CreateProductScreen({ navigation }: Props) {
           {stepIndex === 6 && (
             <Surface style={[styles.card, { backgroundColor: theme.colors.surface }]} elevation={1}>
               <SectionTitle icon="clipboard-check-outline" title="Review Listing" />
-              <ReviewRow label="Taxonomy" value={[selectedL1?.name, selectedL2?.name, selectedL3?.name].filter(Boolean).join(' / ') || 'Missing'} />
+              <ReviewRow
+                label="Taxonomy"
+                value={[selectedL1?.name, selectedL2?.name, selectedL3?.name].filter(Boolean).join(' / ') || 'Missing'}
+              />
               <ReviewRow label="Brand / SKU" value={`${brand || 'Missing'} / ${sku || 'Missing'}`} />
-              <ReviewRow label="Price" value={`${formatPrice(parseMoney(price))}${parseOptionalNumber(compareAtPrice) ? ` compare at ${formatPrice(parseMoney(compareAtPrice))}` : ''}`} />
+              <ReviewRow
+                label="Price"
+                value={`${formatPrice(parseMoney(price))}${parseOptionalNumber(compareAtPrice) ? ` compare at ${formatPrice(parseMoney(compareAtPrice))}` : ''}`}
+              />
               <ReviewRow label="Stock" value={`${quantity || '0'} units • ${availabilityStatus}`} />
               <ReviewRow
                 label="Variants"
@@ -989,13 +1119,26 @@ export default function CreateProductScreen({ navigation }: Props) {
                     : 'No structured variants'
                 }
               />
-              <ReviewRow label="Images" value={`${upload.images.length} images • primary white background ${primaryWhiteBackground ? 'confirmed' : 'missing'}`} />
-              <ReviewRow label="Specifications" value={`${validSpecifications.length} custom field${validSpecifications.length === 1 ? '' : 's'}`} />
-              <ReviewRow label="Delivery" value={`${deliveryName || 'Missing'} • ${deliveryEta || 'Missing'} • ${formatPrice(parseMoney(deliveryFee))}`} />
+              <ReviewRow
+                label="Images"
+                value={`${upload.images.length} images • primary white background ${primaryWhiteBackground ? 'confirmed' : 'missing'}`}
+              />
+              <ReviewRow
+                label="Specifications"
+                value={`${validSpecifications.length} custom field${validSpecifications.length === 1 ? '' : 's'}`}
+              />
+              <ReviewRow
+                label="Delivery"
+                value={`${deliveryName || 'Missing'} • ${deliveryEta || 'Missing'} • ${formatPrice(parseMoney(deliveryFee))}`}
+              />
               {validationErrors.length > 0 ? (
                 <Surface style={[styles.errorCard, { backgroundColor: theme.colors.errorContainer }]} elevation={0}>
                   {validationErrors.map((error) => (
-                    <Text key={error} variant="bodySmall" style={{ color: theme.colors.onErrorContainer, marginBottom: 4 }}>
+                    <Text
+                      key={error}
+                      variant="bodySmall"
+                      style={{ color: theme.colors.onErrorContainer, marginBottom: 4 }}
+                    >
                       {error}
                     </Text>
                   ))}

@@ -42,6 +42,7 @@ import { useQuery } from "convex/react";
 import { api } from "../../../../../convex/_generated/api";
 import { cn } from "@/lib/utils";
 import { useGuestCart } from "@/providers/GuestCartProvider";
+import { resolveAccountAccess } from "@gettitonline/shared";
 import {
   canAccessSellerSurface,
   canManageCatalog,
@@ -50,13 +51,17 @@ import {
 
 export function Header() {
   const pathname = usePathname();
-  const { isSignedIn, user, clerkUser, signOut } = useAuth();
+  const { isLoading, isSignedIn, syncFailed, user, clerkUser, signOut } = useAuth();
   const { summary: guestCartSummary } = useGuestCart();
+
+  // Protected queries run only for a ready account. Banned, unsynced, and pending accounts issue none of them.
+  const accountReady =
+    resolveAccountAccess({ isLoading, isSignedIn, syncFailed, user }) === "ready";
 
   // Get cart count
   const signedInCartCount = useQuery(
     api.cart.getCartCount,
-    user?._id ? { userId: user._id } : "skip"
+    accountReady ? {} : "skip"
   );
   const cartCount = isSignedIn
     ? signedInCartCount ?? 0
@@ -65,11 +70,11 @@ export function Header() {
   // Get unread notifications count
   const unreadCount = useQuery(
     api.notifications.getUnreadCount,
-    user?._id ? { userId: user._id } : "skip"
+    accountReady ? {} : "skip"
   );
   const vendorProfile = useQuery(
     api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : "skip"
+    accountReady ? {} : "skip"
   );
 
   const canAccessAdminDashboard =

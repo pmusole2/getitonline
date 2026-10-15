@@ -7,7 +7,14 @@ import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ProductGrid } from "@/components/product/ProductGrid";
 import { ROUTES } from "@/lib/constants";
-import { formatZMW } from "@gettitonline/shared";
+import { aiFailureMessage, formatZMW } from "@gettitonline/shared";
+import {
+  assertVisualSearchFile,
+  encodeVisualSearchImage,
+  VisualSearchImageError,
+} from "../../../../../packages/shared/src/ai/aiSearchImage";
+import { useAiActions } from "@/hooks/useAiActions";
+import { useAiConsentGate } from "@/hooks/useAiConsentGate";
 import { useQuery } from "convex/react";
 import {
   Camera,
@@ -70,10 +77,9 @@ function formatPromotionDiscount(promotion: {
   return "Limited offer";
 }
 
-async function fileToSearchDataUrl(file: File) {
-  if (!file.type.startsWith("image/")) {
-    throw new Error("Select an image file.");
-  }
+async function fileToSearchDataUrl(file: File): Promise<string> {
+  // Refused before decoding, so an oversized or non-image file costs no memory.
+  assertVisualSearchFile(file);
 
   const objectUrl = URL.createObjectURL(file);
 
@@ -85,21 +91,23 @@ async function fileToSearchDataUrl(file: File) {
       element.src = objectUrl;
     });
 
-    const maxWidth = 512;
-    const scale = Math.min(1, maxWidth / image.naturalWidth);
-    const width = Math.max(1, Math.round(image.naturalWidth * scale));
-    const height = Math.max(1, Math.round(image.naturalHeight * scale));
-    const canvas = document.createElement("canvas");
-    canvas.width = width;
-    canvas.height = height;
+    // The shared encoder bounds both edges and lowers quality until the data URL fits the backend limit.
+    return encodeVisualSearchImage(
+      { width: image.naturalWidth, height: image.naturalHeight },
+      (size, quality) => {
+        const canvas = document.createElement("canvas");
+        canvas.width = size.width;
+        canvas.height = size.height;
 
-    const context = canvas.getContext("2d");
-    if (!context) {
-      throw new Error("Could not prepare image search.");
-    }
+        const context = canvas.getContext("2d");
+        if (!context) {
+          throw new Error("Could not prepare image search.");
+        }
 
-    context.drawImage(image, 0, 0, width, height);
-    return canvas.toDataURL("image/jpeg", 0.7);
+        context.drawImage(image, 0, 0, size.width, size.height);
+        return canvas.toDataURL("image/jpeg", quality);
+      },
+    );
   } finally {
     URL.revokeObjectURL(objectUrl);
   }
@@ -111,6 +119,8 @@ export default function HomePage() {
   const [searchQuery, setSearchQuery] = useState("");
   const [imageSearchLoading, setImageSearchLoading] = useState(false);
   const [imageSearchError, setImageSearchError] = useState<string | null>(null);
+  const ai = useAiActions();
+  const aiGate = useAiConsentGate(ai.subject);
 
   const categories = useQuery(api.categories.getParentCategories);
   const recentProducts = useQuery(api.products.getRecentProducts, { limit: 8 });
@@ -151,6 +161,37 @@ export default function HomePage() {
     }
   };
 
+  const runImageSearch = async (file: File) => {
+    setImageSearchLoading(true);
+    setImageSearchError(null);
+
+    try {
+      const imageDataUrl = await fileToSearchDataUrl(file);
+      const result = await ai.visualSearch({ imageDataUrl });
+      // A result for a previous account must not navigate the new account to its search.
+      if (!ai.isCurrent()) return;
+      const visualQuery = result.query.trim();
+
+      if (!visualQuery) {
+        setImageSearchError("Image search could not find search words in this photo. Try a text search instead.");
+        return;
+      }
+
+      router.push(`${ROUTES.SEARCH}?q=${encodeURIComponent(visualQuery)}`);
+    } catch (error: unknown) {
+      // A photo that cannot be prepared is explained as it is. A result for a previous account shows nothing.
+      const message =
+        error instanceof VisualSearchImageError
+          ? error.message
+          : aiFailureMessage(error);
+      if (message !== null && ai.isCurrent()) {
+        setImageSearchError(`${message} Try a text search instead.`);
+      }
+    } finally {
+      setImageSearchLoading(false);
+    }
+  };
+
   const handleImageSearch = async (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -159,34 +200,11 @@ export default function HomePage() {
       return;
     }
 
-    setImageSearchLoading(true);
-    setImageSearchError(null);
-
     try {
-      const imageDataUrl = await fileToSearchDataUrl(file);
-      const apiBaseUrl = process.env.NEXT_PUBLIC_API_URL || "http://localhost:3001";
-      const response = await fetch(`${apiBaseUrl}/ai/visual-search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ imageDataUrl }),
-      });
-
-      if (!response.ok) {
-        throw new Error("Image search failed.");
-      }
-
-      const result = (await response.json()) as { query?: unknown };
-      const visualQuery =
-        typeof result.query === "string" ? result.query.trim() : "";
-
-      if (!visualQuery) {
-        throw new Error("No search query generated.");
-      }
-
-      router.push(`${ROUTES.SEARCH}?q=${encodeURIComponent(visualQuery)}`);
-    } catch {
-      setImageSearchError(
-        "Image search is unavailable. Try a text search instead."
+      await aiGate.runWithConsent(
+        "image_search",
+        () => runImageSearch(file),
+        () => setImageSearchError("Image search is off until you allow AI features. Try a text search instead."),
       );
     } finally {
       setImageSearchLoading(false);
@@ -195,6 +213,7 @@ export default function HomePage() {
 
   return (
     <main className="bg-background">
+      {aiGate.consentDialog}
       <section className="border-b bg-muted/25 py-6">
         <div className="container space-y-6">
           <form onSubmit={handleSearch} className="flex flex-col gap-3 sm:flex-row">

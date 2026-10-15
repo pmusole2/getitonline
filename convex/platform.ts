@@ -1,10 +1,7 @@
 import { v } from "convex/values";
 import { mutation, query } from "./_generated/server";
-import {
-  DEFAULT_COMPANY_DISPLAY_NAME,
-  ensureAdminActor,
-  getPlatformSettings,
-} from "./lib/platform";
+import { DEFAULT_COMPANY_DISPLAY_NAME, ensureAdminActor, getPlatformSettings } from "./lib/platform";
+import { requireRole } from "./lib/auth";
 
 export const getStorefront = query({
   args: {},
@@ -12,8 +9,7 @@ export const getStorefront = query({
     const settings = await getPlatformSettings(ctx);
 
     return {
-      companyDisplayName:
-        settings?.companyDisplayName ?? DEFAULT_COMPANY_DISPLAY_NAME,
+      companyDisplayName: settings?.companyDisplayName ?? DEFAULT_COMPANY_DISPLAY_NAME,
       companySellerUserId: settings?.companySellerUserId ?? null,
       isConfigured: Boolean(settings?.companySellerUserId),
     };
@@ -21,20 +17,15 @@ export const getStorefront = query({
 });
 
 export const getPlatformSettingsForAdmin = query({
-  args: {
-    adminId: v.id("users"),
-  },
-  handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+  args: {},
+  handler: async (ctx) => {
+    await requireRole(ctx, ["admin"]);
 
     const settings = await getPlatformSettings(ctx);
-    const companySeller = settings?.companySellerUserId
-      ? await ctx.db.get(settings.companySellerUserId)
-      : null;
+    const companySeller = settings?.companySellerUserId ? await ctx.db.get(settings.companySellerUserId) : null;
 
     return {
-      companyDisplayName:
-        settings?.companyDisplayName ?? DEFAULT_COMPANY_DISPLAY_NAME,
+      companyDisplayName: settings?.companyDisplayName ?? DEFAULT_COMPANY_DISPLAY_NAME,
       companySellerUserId: settings?.companySellerUserId ?? null,
       companySeller,
       isConfigured: Boolean(settings?.companySellerUserId),
@@ -49,7 +40,7 @@ export const updatePlatformSettings = mutation({
     companyDisplayName: v.string(),
   },
   handler: async (ctx, args) => {
-    await ensureAdminActor(ctx, args.adminId);
+    const _admin = await ensureAdminActor(ctx);
 
     const companySeller = await ctx.db.get(args.companySellerUserId);
     if (!companySeller) {

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { View, StyleSheet, ScrollView, Alert, Pressable } from 'react-native';
 import { Text, TextInput, Button, useTheme, Avatar, Surface } from 'react-native-paper';
 import Animated, { FadeIn, FadeInDown } from 'react-native-reanimated';
@@ -8,33 +8,43 @@ import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import type { RootStackParamList } from '../../types';
 import { useAppAuth } from '../../context/AuthProvider';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
-import { MotiView } from 'moti';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { StackHeader } from '../../components/ui/Header';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'EditProfile'>;
+type Account = NonNullable<ReturnType<typeof useAppAuth>['user']>;
 
-export default function EditProfileScreen({ navigation }: Props) {
-  const theme = useTheme();
+export default function EditProfileScreen(props: Props) {
+  const access = useAccountAccess();
   const { user } = useAppAuth();
+  if (access.status !== 'ready' || !user) {
+    return <AccountAccessNotice access={access} title="Edit Profile" />;
+  }
+  // Keyed by account, so another account never inherits this draft, and losing access drops the draft with the content.
+  return <EditProfileContent key={user._id} {...props} user={user} />;
+}
 
-  const [firstName, setFirstName] = useState('');
-  const [lastName, setLastName] = useState('');
-  const [phone, setPhone] = useState('');
+function EditProfileContent({ navigation, user }: Props & { user: Account }) {
+  const theme = useTheme();
+
+  const [firstName, setFirstName] = useState(user.firstName);
+  const [lastName, setLastName] = useState(user.lastName);
+  const [phone, setPhone] = useState(user.phone || '');
   const [loading, setLoading] = useState(false);
 
   const updateProfile = useMutation(api.users.updateProfile);
 
+  // A save that finishes after this screen has unmounted must not report success or navigate for another session.
+  const mounted = useRef(true);
   useEffect(() => {
-    if (user) {
-      setFirstName(user.firstName);
-      setLastName(user.lastName);
-      setPhone(user.phone || '');
-    }
-  }, [user]);
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   const handleSave = async () => {
-    if (!user) return;
-
     if (!firstName.trim() || !lastName.trim()) {
       Alert.alert('Error', 'First name and last name are required');
       return;
@@ -44,48 +54,23 @@ export default function EditProfileScreen({ navigation }: Props) {
 
     try {
       await updateProfile({
-        userId: user._id,
         firstName: firstName.trim(),
         lastName: lastName.trim(),
         phone: phone.trim() || undefined,
       });
 
-      Alert.alert('Success', 'Profile updated successfully', [
-        { text: 'OK', onPress: () => navigation.goBack() },
-      ]);
+      if (!mounted.current) return;
+      Alert.alert('Success', 'Profile updated successfully', [{ text: 'OK', onPress: () => navigation.goBack() }]);
     } catch (error: unknown) {
+      if (!mounted.current) return;
       const errorMessage = error instanceof Error ? error.message : 'Failed to update profile';
       Alert.alert('Error', errorMessage);
     } finally {
-      setLoading(false);
+      if (mounted.current) {
+        setLoading(false);
+      }
     }
   };
-
-  if (!user) {
-    return (
-      <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
-        <StackHeader
-          title="Edit Profile"
-          onBackPress={() => navigation.goBack()}
-          variant="gradient"
-        />
-        <View style={[styles.centered, { flex: 1 }]}>
-          <MotiView
-            from={{ opacity: 0, scale: 0.9 }}
-            animate={{ opacity: 1, scale: 1 }}
-            transition={{ opacity: { type: 'timing', duration: 400 }, scale: { type: 'timing', duration: 400 } }}
-          >
-            <View style={[styles.emptyIcon, { backgroundColor: theme.colors.surfaceVariant }]}>
-              <Icon name="account-off-outline" size={48} color={theme.colors.onSurfaceVariant} />
-            </View>
-          </MotiView>
-          <Text variant="bodyLarge" style={{ color: theme.colors.onSurfaceVariant, marginTop: 16 }}>
-          Please sign in to edit your profile
-        </Text>
-        </View>
-      </View>
-    );
-  }
 
   return (
     <View style={[styles.container, { backgroundColor: theme.colors.background }]}>
@@ -100,19 +85,17 @@ export default function EditProfileScreen({ navigation }: Props) {
       <ScrollView showsVerticalScrollIndicator={false} contentContainerStyle={styles.scrollContent}>
         {/* Avatar Section */}
         <Animated.View entering={FadeIn.duration(400)} style={styles.avatarSection}>
-        <View style={styles.avatarContainer}>
-          <Avatar.Text
-            size={100}
-            label={`${firstName[0] || '?'}${lastName[0] || '?'}`}
-            style={{ backgroundColor: theme.colors.primary }}
+          <View style={styles.avatarContainer}>
+            <Avatar.Text
+              size={100}
+              label={`${firstName[0] || '?'}${lastName[0] || '?'}`}
+              style={{ backgroundColor: theme.colors.primary }}
               labelStyle={{ fontWeight: '600' }}
-          />
-            <Pressable
-              style={[styles.editAvatarButton, { backgroundColor: theme.colors.primaryContainer }]}
-            >
+            />
+            <Pressable style={[styles.editAvatarButton, { backgroundColor: theme.colors.primaryContainer }]}>
               <Icon name="camera" size={20} color={theme.colors.primary} />
             </Pressable>
-        </View>
+          </View>
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12 }}>
             Tap to change profile photo
           </Text>
@@ -129,56 +112,56 @@ export default function EditProfileScreen({ navigation }: Props) {
               <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8 }}>
                 First Name *
               </Text>
-        <TextInput
-          mode="outlined"
-          value={firstName}
-          onChangeText={setFirstName}
-          autoCapitalize="words"
-          style={styles.input}
+              <TextInput
+                mode="outlined"
+                value={firstName}
+                onChangeText={setFirstName}
+                autoCapitalize="words"
+                style={styles.input}
                 outlineStyle={styles.inputOutline}
                 left={<TextInput.Icon icon="account-outline" />}
-        />
+              />
             </View>
 
             <View style={styles.inputGroup}>
               <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8 }}>
                 Last Name *
               </Text>
-        <TextInput
-          mode="outlined"
-          value={lastName}
-          onChangeText={setLastName}
-          autoCapitalize="words"
-          style={styles.input}
+              <TextInput
+                mode="outlined"
+                value={lastName}
+                onChangeText={setLastName}
+                autoCapitalize="words"
+                style={styles.input}
                 outlineStyle={styles.inputOutline}
                 left={<TextInput.Icon icon="account-outline" />}
-        />
+              />
             </View>
 
             <View style={styles.inputGroup}>
               <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8 }}>
                 Phone Number
               </Text>
-        <TextInput
-          mode="outlined"
-          value={phone}
-          onChangeText={setPhone}
-          keyboardType="phone-pad"
-          placeholder="+260..."
-          style={styles.input}
+              <TextInput
+                mode="outlined"
+                value={phone}
+                onChangeText={setPhone}
+                keyboardType="phone-pad"
+                placeholder="+260..."
+                style={styles.input}
                 outlineStyle={styles.inputOutline}
                 left={<TextInput.Icon icon="phone-outline" />}
-        />
+              />
             </View>
 
             <View style={styles.inputGroup}>
               <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant, marginBottom: 8 }}>
                 Email Address
               </Text>
-        <TextInput
-          mode="outlined"
-          value={user.email}
-          disabled
+              <TextInput
+                mode="outlined"
+                value={user.email}
+                disabled
                 style={[styles.input, styles.disabledInput]}
                 outlineStyle={styles.inputOutline}
                 left={<TextInput.Icon icon="email-outline" />}
@@ -195,7 +178,7 @@ export default function EditProfileScreen({ navigation }: Props) {
           <Surface
             style={[
               styles.verificationCard,
-              { backgroundColor: user.isVerified ? theme.colors.secondaryContainer : theme.colors.surfaceVariant }
+              { backgroundColor: user.isVerified ? theme.colors.secondaryContainer : theme.colors.surfaceVariant },
             ]}
             elevation={0}
           >
@@ -203,7 +186,11 @@ export default function EditProfileScreen({ navigation }: Props) {
               <View
                 style={[
                   styles.verificationIcon,
-                  { backgroundColor: user.isVerified ? theme.colors.secondary + '30' : theme.colors.onSurfaceVariant + '20' }
+                  {
+                    backgroundColor: user.isVerified
+                      ? theme.colors.secondary + '30'
+                      : theme.colors.onSurfaceVariant + '20',
+                  },
                 ]}
               >
                 <Icon
@@ -217,7 +204,7 @@ export default function EditProfileScreen({ navigation }: Props) {
                   variant="titleSmall"
                   style={{
                     color: user.isVerified ? theme.colors.onSecondaryContainer : theme.colors.onSurfaceVariant,
-                    fontWeight: '600'
+                    fontWeight: '600',
                   }}
                 >
                   {user.isVerified ? 'Verified Account' : 'Account Not Verified'}
@@ -226,7 +213,7 @@ export default function EditProfileScreen({ navigation }: Props) {
                   variant="bodySmall"
                   style={{
                     color: user.isVerified ? theme.colors.onSecondaryContainer : theme.colors.onSurfaceVariant,
-                    opacity: 0.8
+                    opacity: 0.8,
                   }}
                 >
                   {user.isVerified
@@ -234,39 +221,33 @@ export default function EditProfileScreen({ navigation }: Props) {
                     : 'Verification helps build trust and speeds up support checks'}
                 </Text>
               </View>
-              {!user.isVerified && (
-                <Icon name="chevron-right" size={20} color={theme.colors.onSurfaceVariant} />
-              )}
+              {!user.isVerified && <Icon name="chevron-right" size={20} color={theme.colors.onSurfaceVariant} />}
             </View>
           </Surface>
         </Animated.View>
 
         {/* Save Button */}
         <Animated.View entering={FadeInDown.delay(300).duration(400)} style={styles.buttonContainer}>
-        <Button
-          mode="contained"
-          onPress={handleSave}
-          loading={loading}
-          disabled={loading || !firstName.trim() || !lastName.trim()}
-          style={styles.saveButton}
-          contentStyle={styles.saveButtonContent}
+          <Button
+            mode="contained"
+            onPress={handleSave}
+            loading={loading}
+            disabled={loading || !firstName.trim() || !lastName.trim()}
+            style={styles.saveButton}
+            contentStyle={styles.saveButtonContent}
             icon="content-save"
-        >
-          Save Changes
-        </Button>
+          >
+            Save Changes
+          </Button>
         </Animated.View>
       </ScrollView>
-      </View>
+    </View>
   );
 }
 
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-  },
-  centered: {
-    justifyContent: 'center',
-    alignItems: 'center',
   },
   scrollContent: {
     paddingBottom: 40,
@@ -332,12 +313,5 @@ const styles = StyleSheet.create({
   },
   saveButtonContent: {
     paddingVertical: 8,
-  },
-  emptyIcon: {
-    width: 100,
-    height: 100,
-    borderRadius: 50,
-    justifyContent: 'center',
-    alignItems: 'center',
   },
 });

@@ -1,25 +1,13 @@
 import type { GuestCartItem } from '@gettitonline/shared';
 import React from 'react';
 import { View, StyleSheet, ScrollView, Alert, Pressable, Image } from 'react-native';
-import {
-  Text,
-  useTheme,
-  Button,
-  IconButton,
-  Divider,
-  Surface,
-} from 'react-native-paper';
-import Animated, {
-  FadeIn,
-  FadeInDown,
-  FadeOutLeft,
-  Layout,
-  SlideInRight,
-} from 'react-native-reanimated';
+import { Text, useTheme, Button, IconButton, Divider, Surface } from 'react-native-paper';
+import Animated, { FadeInDown, FadeOutLeft, Layout, SlideInRight } from 'react-native-reanimated';
 import { useQuery, useMutation } from 'convex/react';
 import { api } from '../../../../../convex/_generated/api';
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
-import type { RootStackParamList, Id } from '../../types';
+import type { RootStackParamList, Id, Product } from '../../types';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { useGuestCart } from '../../context/GuestCartProvider';
 import { formatPrice } from '../../theme';
@@ -29,6 +17,7 @@ import { MotiView } from 'moti';
 import { Skeleton } from '../../components/ui/Skeleton';
 import { StackHeader } from '../../components/ui/Header';
 import { ASSISTANT_NAME } from '../../config/assistant';
+import { useCartRecommendations } from '../../hooks/useCartRecommendations';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'Cart'>;
 
@@ -86,9 +75,21 @@ interface CartLineItem {
   };
 }
 
-export default function CartScreen({ navigation }: Props) {
+function formatRecommendationPrice(product: Pick<Product, 'price' | 'variantCombinations'>): string {
+  const prices = (product.variantCombinations ?? [])
+    .filter((variant) => variant.status === 'active' && Number.isSafeInteger(variant.stock) && variant.stock > 0)
+    .map((variant) => variant.price);
+  const minimum = prices.length > 0 ? Math.min(...prices) : product.price;
+  const hasRange = prices.length > 0 && minimum !== Math.max(...prices);
+
+  return `${hasRange ? 'From ' : ''}${formatPrice(calculateDisplayPrice(minimum))}`;
+}
+
+export default function CartScreen({ navigation }: Props): React.JSX.Element {
   const theme = useTheme();
   const { user, setPostAuthDestination } = useAppAuth();
+  // The signed-in cart is read only for a ready account; guests keep their local cart.
+  const accountReady = useAccountAccess().status === 'ready';
   const {
     items: guestCartItems,
     summary: guestCartSummary,
@@ -99,10 +100,7 @@ export default function CartScreen({ navigation }: Props) {
     hasPendingMerge,
   } = useGuestCart();
 
-  const cart = useQuery(
-    api.cart.getCart,
-    user ? { userId: user._id } : 'skip'
-  );
+  const cart = useQuery(api.cart.getCart, accountReady ? {} : 'skip');
 
   const updateQuantity = useMutation(api.cart.updateCartQuantity);
   const removeFromCart = useMutation(api.cart.removeFromCart);
@@ -142,17 +140,17 @@ export default function CartScreen({ navigation }: Props) {
         product: item.product,
       }));
 
+  const recommendations = useCartRecommendations({
+    items: activeItems,
+    enabled: guestCartHydrated && !hasPendingMerge && (!user || (accountReady && cart !== undefined)),
+  });
+
   const itemCount = user ? cart?.items?.length || 0 : guestCartSummary.itemCount;
-  const subtotal = calculateDisplayPrice(
-    user ? cart?.subtotal || 0 : guestCartSummary.subtotal
-  );
+  const subtotal = calculateDisplayPrice(user ? cart?.subtotal || 0 : guestCartSummary.subtotal);
   const shippingTotal = user ? cart?.shippingTotal || 0 : guestCartSummary.shippingTotal;
   const total = subtotal + shippingTotal;
 
-  const handleQuantityChange = async (
-    item: CartLineItem,
-    newQuantity: number
-  ) => {
+  const handleQuantityChange = async (item: CartLineItem, newQuantity: number) => {
     if (newQuantity < 1) return;
 
     if (!user) {
@@ -167,7 +165,6 @@ export default function CartScreen({ navigation }: Props) {
     try {
       await updateQuantity({
         cartItemId: item.cartItemId,
-        userId: user._id,
         quantity: newQuantity,
       });
     } catch (error) {
@@ -187,7 +184,7 @@ export default function CartScreen({ navigation }: Props) {
     }
 
     try {
-      await removeFromCart({ cartItemId: item.cartItemId, userId: user._id });
+      await removeFromCart({ cartItemId: item.cartItemId });
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Failed to remove item';
       Alert.alert('Error', errorMessage);
@@ -200,26 +197,22 @@ export default function CartScreen({ navigation }: Props) {
       return;
     }
 
-    Alert.alert(
-      'Clear Cart',
-      'Are you sure you want to remove all items from your cart?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Clear',
-          style: 'destructive',
-          onPress: async () => {
-            if (!user) return;
-            try {
-              await clearCart({ userId: user._id });
-            } catch (error) {
-              const errorMessage = error instanceof Error ? error.message : 'Failed to clear cart';
-              Alert.alert('Error', errorMessage);
-            }
-          },
+    Alert.alert('Clear Cart', 'Are you sure you want to remove all items from your cart?', [
+      { text: 'Cancel', style: 'cancel' },
+      {
+        text: 'Clear',
+        style: 'destructive',
+        onPress: async () => {
+          if (!user) return;
+          try {
+            await clearCart({});
+          } catch (error) {
+            const errorMessage = error instanceof Error ? error.message : 'Failed to clear cart';
+            Alert.alert('Error', errorMessage);
+          }
         },
-      ]
-    );
+      },
+    ]);
   };
 
   const handleCheckout = () => {
@@ -271,32 +264,32 @@ export default function CartScreen({ navigation }: Props) {
           variant="gradient"
         />
         <View style={[styles.centered, { flex: 1 }]}>
-        <MotiView
-          from={{ opacity: 0, scale: 0.9 }}
-          animate={{ opacity: 1, scale: 1 }}
-          transition={{ opacity: { type: 'timing', duration: 400 }, scale: { type: 'timing', duration: 400 } }}
-        >
-          <View style={[styles.emptyIcon, { backgroundColor: theme.colors.surfaceVariant }]}>
-            <Icon name="cart-outline" size={64} color={theme.colors.onSurfaceVariant} />
-          </View>
-        </MotiView>
-        <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginTop: 24 }}>
-          Your cart is empty
-        </Text>
-        <Text
-          variant="bodyMedium"
-          style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
-        >
-          Add products to your cart to get started
-        </Text>
-        <Button
-          mode="contained"
-          onPress={() => navigation.navigate('Browse' as never)}
-          style={styles.browseButton}
-          icon="shopping"
-        >
-          Browse Products
-        </Button>
+          <MotiView
+            from={{ opacity: 0, scale: 0.9 }}
+            animate={{ opacity: 1, scale: 1 }}
+            transition={{ opacity: { type: 'timing', duration: 400 }, scale: { type: 'timing', duration: 400 } }}
+          >
+            <View style={[styles.emptyIcon, { backgroundColor: theme.colors.surfaceVariant }]}>
+              <Icon name="cart-outline" size={64} color={theme.colors.onSurfaceVariant} />
+            </View>
+          </MotiView>
+          <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginTop: 24 }}>
+            Your cart is empty
+          </Text>
+          <Text
+            variant="bodyMedium"
+            style={{ color: theme.colors.onSurfaceVariant, marginTop: 8, textAlign: 'center' }}
+          >
+            Add products to your cart to get started
+          </Text>
+          <Button
+            mode="contained"
+            onPress={() => navigation.navigate('Browse' as never)}
+            style={styles.browseButton}
+            icon="shopping"
+          >
+            Browse Products
+          </Button>
         </View>
       </View>
     );
@@ -326,14 +319,20 @@ export default function CartScreen({ navigation }: Props) {
               <Surface style={[styles.cartItem, { backgroundColor: theme.colors.surface }]} elevation={2}>
                 <View style={styles.itemContent}>
                   {/* Product Image */}
-                    {(item.selectedVariant?.image || item.product.images[0]) ? (
-                      <Image
-                        source={{ uri: item.selectedVariant?.image || item.product.images[0] }}
-                        style={styles.itemImage}
-                        resizeMode="contain"
-                      />
+                  {item.selectedVariant?.image || item.product.images[0] ? (
+                    <Image
+                      source={{ uri: item.selectedVariant?.image || item.product.images[0] }}
+                      style={styles.itemImage}
+                      resizeMode="contain"
+                    />
                   ) : (
-                    <View style={[styles.itemImage, styles.imagePlaceholder, { backgroundColor: theme.colors.surfaceVariant }]}>
+                    <View
+                      style={[
+                        styles.itemImage,
+                        styles.imagePlaceholder,
+                        { backgroundColor: theme.colors.surfaceVariant },
+                      ]}
+                    >
                       <Icon name="image" size={24} color={theme.colors.onSurfaceVariant} />
                     </View>
                   )}
@@ -350,7 +349,10 @@ export default function CartScreen({ navigation }: Props) {
                     <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
                       Store: {item.product.sellerName}
                     </Text>
-                    <Text variant="titleMedium" style={{ color: theme.colors.primary, marginTop: 4, fontWeight: '700' }}>
+                    <Text
+                      variant="titleMedium"
+                      style={{ color: theme.colors.primary, marginTop: 4, fontWeight: '700' }}
+                    >
                       {formatPrice(calculateDisplayPrice(item.lineUnitPrice))}
                     </Text>
                     {item.selectedVariantOptions && item.selectedVariantOptions.length > 0 ? (
@@ -360,7 +362,9 @@ export default function CartScreen({ navigation }: Props) {
                     ) : null}
                     {item.selectedVariant?.attributes && item.selectedVariant.attributes.length > 0 ? (
                       <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 2 }}>
-                        {item.selectedVariant.attributes.map((attribute) => `${attribute.name}: ${attribute.value}`).join(' • ')}
+                        {item.selectedVariant.attributes
+                          .map((attribute) => `${attribute.name}: ${attribute.value}`)
+                          .join(' • ')}
                       </Text>
                     ) : null}
                     {item.selectedVariant?.sku ? (
@@ -383,7 +387,10 @@ export default function CartScreen({ navigation }: Props) {
                           onPress={() => handleQuantityChange(item, item.quantity - 1)}
                           disabled={item.quantity <= 1}
                         />
-                        <Text variant="titleMedium" style={{ color: theme.colors.onSurface, minWidth: 24, textAlign: 'center' }}>
+                        <Text
+                          variant="titleMedium"
+                          style={{ color: theme.colors.onSurface, minWidth: 24, textAlign: 'center' }}
+                        >
                           {item.quantity}
                         </Text>
                         <IconButton
@@ -425,11 +432,48 @@ export default function CartScreen({ navigation }: Props) {
                   {ASSISTANT_NAME}'s Recommendation
                 </Text>
                 <Text variant="bodySmall" style={{ color: theme.colors.onTertiaryContainer, opacity: 0.8 }}>
-                  Based on your cart, you might also need brake fluid
+                  {recommendations.status === 'guest'
+                    ? 'Sign in for cart recommendations'
+                    : recommendations.status === 'loading' || recommendations.status === 'idle'
+                      ? 'Finding suggestions for your cart...'
+                      : recommendations.status === 'consent_required'
+                        ? 'Ask Pinkie for suggestions based on your cart.'
+                        : recommendations.status === 'error'
+                          ? recommendations.error
+                          : recommendations.status === 'ready'
+                            ? 'Suggested for your cart'
+                            : 'No suitable recommendations for this cart right now.'}
                 </Text>
               </View>
-              <Icon name="chevron-right" size={20} color={theme.colors.tertiary} />
             </View>
+            {recommendations.status === 'guest' ? (
+              <Button onPress={() => navigation.navigate('Auth')}>Sign In</Button>
+            ) : recommendations.status === 'consent_required' ? (
+              <Button onPress={() => void recommendations.askPinkie()}>Ask Pinkie</Button>
+            ) : recommendations.status === 'error' ? (
+              <Button onPress={recommendations.refresh}>Try Again</Button>
+            ) : null}
+            {recommendations.products
+              .filter((product) => !activeItems.some((item) => item.productId === product._id))
+              .map((product) => (
+                <Pressable
+                  key={product._id}
+                  accessibilityRole="button"
+                  accessibilityLabel={`View ${product.title}`}
+                  onPress={() => navigation.navigate('ProductDetail', { productId: product._id })}
+                  style={styles.recommendationRow}
+                >
+                  <View style={{ flex: 1 }}>
+                    <Text variant="titleSmall" style={{ color: theme.colors.onTertiaryContainer }}>
+                      {product.title}
+                    </Text>
+                    <Text variant="bodyMedium" style={{ color: theme.colors.onTertiaryContainer }}>
+                      {formatRecommendationPrice(product)}
+                    </Text>
+                  </View>
+                  <Icon name="chevron-right" size={20} color={theme.colors.tertiary} />
+                </Pressable>
+              ))}
           </Surface>
         </Animated.View>
 
@@ -468,7 +512,10 @@ export default function CartScreen({ navigation }: Props) {
         </Animated.View>
 
         {/* Secure Checkout Info */}
-        <Animated.View entering={FadeInDown.delay(activeItems.length * 80 + 300).duration(400)} style={styles.securityInfo}>
+        <Animated.View
+          entering={FadeInDown.delay(activeItems.length * 80 + 300).duration(400)}
+          style={styles.securityInfo}
+        >
           <Icon name="shield-check" size={16} color={theme.colors.primary} />
           <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginLeft: 6 }}>
             Secure escrow payment protection
@@ -587,6 +634,12 @@ const styles = StyleSheet.create({
   aiContent: {
     flexDirection: 'row',
     alignItems: 'center',
+  },
+  recommendationRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    marginTop: 12,
+    paddingVertical: 8,
   },
   summaryCard: {
     marginHorizontal: 16,

@@ -4,6 +4,7 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { useQuery } from 'convex/react';
 import { Button, Text, useTheme } from 'react-native-paper';
 import type { RootStackParamList } from '../types';
+import { resolveAccountAccess } from '@gettitonline/shared';
 import { useAppAuth } from '../context/AuthProvider';
 import { api } from '../../../../convex/_generated/api';
 
@@ -61,19 +62,11 @@ function AuthSyncErrorScreen({
   const theme = useTheme();
 
   return (
-    <View
-      style={[styles.errorContainer, { backgroundColor: theme.colors.background }]}
-    >
-      <Text
-        variant="headlineSmall"
-        style={[styles.errorTitle, { color: theme.colors.onSurface }]}
-      >
+    <View style={[styles.errorContainer, { backgroundColor: theme.colors.background }]}>
+      <Text variant="headlineSmall" style={[styles.errorTitle, { color: theme.colors.onSurface }]}>
         Account setup did not finish
       </Text>
-      <Text
-        variant="bodyMedium"
-        style={[styles.errorMessage, { color: theme.colors.onSurfaceVariant }]}
-      >
+      <Text variant="bodyMedium" style={[styles.errorMessage, { color: theme.colors.onSurfaceVariant }]}>
         {message}
       </Text>
       <Button mode="contained" onPress={onRetry} style={styles.errorButton}>
@@ -87,18 +80,10 @@ function AuthSyncErrorScreen({
 }
 
 export function RootNavigator() {
-  const {
-    authSyncError,
-    isLoading,
-    isSignedIn,
-    retryUserSync,
-    signOut,
-    user,
-  } = useAppAuth();
-  const vendorProfile = useQuery(
-    api.vendors.getMyVendorProfile,
-    user?._id ? { ownerUserId: user._id } : 'skip'
-  );
+  const { authSyncError, isLoading, isSignedIn, retryUserSync, signOut, user } = useAppAuth();
+  // The vendor status is read only for a ready account, with the same readiness rules the protected screens use.
+  const accountStatus = resolveAccountAccess({ isLoading, isSignedIn, syncFailed: authSyncError !== null, user });
+  const vendorProfile = useQuery(api.vendors.getMyVendorProfile, accountStatus === 'ready' ? {} : 'skip');
   const hasListingAccess = canManageListings(user?.role, vendorProfile?.status ?? null);
 
   if (isLoading) {
@@ -106,13 +91,7 @@ export function RootNavigator() {
   }
 
   if (authSyncError && isSignedIn && !user) {
-    return (
-      <AuthSyncErrorScreen
-        message={authSyncError}
-        onRetry={retryUserSync}
-        onSignOut={signOut}
-      />
-    );
+    return <AuthSyncErrorScreen message={authSyncError} onRetry={retryUserSync} onSignOut={signOut} />;
   }
 
   return (
@@ -128,10 +107,7 @@ export function RootNavigator() {
         fullScreenGestureEnabled: true,
       }}
     >
-      <Stack.Screen
-        name="Main"
-        component={isSignedIn ? MainTabNavigator : GuestTabNavigator}
-      />
+      <Stack.Screen name="Main" component={isSignedIn ? MainTabNavigator : GuestTabNavigator} />
       <Stack.Screen
         name="ProductDetail"
         component={ProductDetailScreen}
@@ -139,18 +115,9 @@ export function RootNavigator() {
           animation: 'slide_from_bottom',
         }}
       />
-      <Stack.Screen
-        name="SellerProfile"
-        component={SellerProfileScreen}
-      />
-      <Stack.Screen
-        name="StoresDirectory"
-        component={StoresDirectoryScreen}
-      />
-      <Stack.Screen
-        name="Favorites"
-        component={FavoritesScreen}
-      />
+      <Stack.Screen name="SellerProfile" component={SellerProfileScreen} />
+      <Stack.Screen name="StoresDirectory" component={StoresDirectoryScreen} />
+      <Stack.Screen name="Favorites" component={FavoritesScreen} />
       <Stack.Screen
         name="Search"
         component={SearchScreen}
@@ -158,10 +125,7 @@ export function RootNavigator() {
           animation: 'fade',
         }}
       />
-      <Stack.Screen
-        name="CategoryProducts"
-        component={CategoryProductsScreen}
-      />
+      <Stack.Screen name="CategoryProducts" component={CategoryProductsScreen} />
       <Stack.Screen
         name="Cart"
         component={CartScreen}
@@ -206,14 +170,8 @@ export function RootNavigator() {
               />
             </>
           )}
-          <Stack.Screen
-            name="OrderDetail"
-            component={OrderDetailScreen}
-          />
-          <Stack.Screen
-            name="DisputeDetail"
-            component={DisputeDetailScreen}
-          />
+          <Stack.Screen name="OrderDetail" component={OrderDetailScreen} />
+          <Stack.Screen name="DisputeDetail" component={DisputeDetailScreen} />
           <Stack.Screen
             name="CreateDispute"
             component={CreateDisputeScreen}
@@ -222,62 +180,20 @@ export function RootNavigator() {
               gestureDirection: 'vertical',
             }}
           />
-          <Stack.Screen
-            name="Chat"
-            component={ChatScreen}
-          />
-          <Stack.Screen
-            name="Settings"
-            component={SettingsScreen}
-          />
-          <Stack.Screen
-            name="AdminStores"
-            component={AdminStoresScreen}
-          />
-          <Stack.Screen
-            name="AdminDashboard"
-            component={AdminDashboardScreen}
-          />
-          <Stack.Screen
-            name="AdminOrders"
-            component={AdminOrdersScreen}
-          />
-          <Stack.Screen
-            name="AdminEscrow"
-            component={AdminEscrowScreen}
-          />
-          <Stack.Screen
-            name="AdminTransactions"
-            component={AdminTransactionsScreen}
-          />
-          <Stack.Screen
-            name="AdminCategories"
-            component={AdminCategoriesScreen}
-          />
-          <Stack.Screen
-            name="AdminUsers"
-            component={AdminUsersScreen}
-          />
-          <Stack.Screen
-            name="AdminDelivery"
-            component={AdminDeliveryScreen}
-          />
-          <Stack.Screen
-            name="AdminPromotions"
-            component={AdminPromotionsScreen}
-          />
-          <Stack.Screen
-            name="SellerOperations"
-            component={SellerOperationsScreen}
-          />
-          <Stack.Screen
-            name="Workspace"
-            component={WorkspaceScreen}
-          />
-          <Stack.Screen
-            name="ListingReview"
-            component={ListingReviewScreen}
-          />
+          <Stack.Screen name="Chat" component={ChatScreen} />
+          <Stack.Screen name="Settings" component={SettingsScreen} />
+          <Stack.Screen name="AdminStores" component={AdminStoresScreen} />
+          <Stack.Screen name="AdminDashboard" component={AdminDashboardScreen} />
+          <Stack.Screen name="AdminOrders" component={AdminOrdersScreen} />
+          <Stack.Screen name="AdminEscrow" component={AdminEscrowScreen} />
+          <Stack.Screen name="AdminTransactions" component={AdminTransactionsScreen} />
+          <Stack.Screen name="AdminCategories" component={AdminCategoriesScreen} />
+          <Stack.Screen name="AdminUsers" component={AdminUsersScreen} />
+          <Stack.Screen name="AdminDelivery" component={AdminDeliveryScreen} />
+          <Stack.Screen name="AdminPromotions" component={AdminPromotionsScreen} />
+          <Stack.Screen name="SellerOperations" component={SellerOperationsScreen} />
+          <Stack.Screen name="Workspace" component={WorkspaceScreen} />
+          <Stack.Screen name="ListingReview" component={ListingReviewScreen} />
           <Stack.Screen
             name="EditProfile"
             component={EditProfileScreen}
@@ -294,22 +210,10 @@ export function RootNavigator() {
               gestureDirection: 'vertical',
             }}
           />
-          <Stack.Screen
-            name="Notifications"
-            component={NotificationsScreen}
-          />
-          <Stack.Screen
-            name="Conversations"
-            component={ConversationsListScreen}
-          />
-          <Stack.Screen
-            name="ConversationChat"
-            component={ConversationChatScreen}
-          />
-          <Stack.Screen
-            name="Disputes"
-            component={DisputesListScreen}
-          />
+          <Stack.Screen name="Notifications" component={NotificationsScreen} />
+          <Stack.Screen name="Conversations" component={ConversationsListScreen} />
+          <Stack.Screen name="ConversationChat" component={ConversationChatScreen} />
+          <Stack.Screen name="Disputes" component={DisputesListScreen} />
           <Stack.Screen
             name="Wallet"
             component={WalletScreen}

@@ -1,24 +1,16 @@
 import type { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useQuery } from 'convex/react';
 import React from 'react';
-import {
-  ActivityIndicator,
-  Pressable,
-  ScrollView,
-  StyleSheet,
-  View,
-} from 'react-native';
+import { ActivityIndicator, Pressable, ScrollView, StyleSheet, View } from 'react-native';
 import { Chip, Surface, Text, useTheme } from 'react-native-paper';
 import Icon from 'react-native-vector-icons/MaterialCommunityIcons';
 import { api } from '../../../../../convex/_generated/api';
 import { StackHeader } from '../../components/ui/Header';
+import { AccountAccessNotice } from '../../components/auth/AccountAccessNotice';
+import { useAccountAccess } from '../../components/auth/useAccountAccess';
 import { useAppAuth } from '../../context/AuthProvider';
 import { formatPrice } from '../../theme';
-import type {
-  DisputeCategory,
-  DisputeStatus,
-  RootStackParamList,
-} from '../../types';
+import type { DisputeCategory, DisputeStatus, RootStackParamList } from '../../types';
 
 type Props = NativeStackScreenProps<RootStackParamList, 'AdminDashboard'>;
 type QuickActionRoute =
@@ -65,34 +57,38 @@ function getDisputeStatusColor(status: DisputeStatus) {
   }
 }
 
-export default function AdminDashboardScreen({ navigation }: Props) {
+function formatFinanceValue(value: number | null): string {
+  return value === null ? 'Unavailable' : formatPrice(value);
+}
+
+export default function AdminDashboardScreen(props: Props) {
+  // Admin data is read only for a ready account, so no admin query runs while the account is loading or unavailable.
+  const access = useAccountAccess();
+  if (access.status !== 'ready') {
+    return <AccountAccessNotice access={access} title="Admin Dashboard" />;
+  }
+  return <AdminDashboardContent {...props} />;
+}
+
+function AdminDashboardContent({ navigation }: Props) {
   const theme = useTheme();
   const { user } = useAppAuth();
   const isAdmin = user?.role === 'admin';
 
-  const orderStats = useQuery(
-    api.orders.getOrderStats,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
-  );
-  const escrowStats = useQuery(
-    api.escrow.getEscrowStats,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
-  );
-  const disputeStats = useQuery(
-    api.disputes.getDisputeStats,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
-  );
+  const orderStats = useQuery(api.orders.getOrderStats, user?._id && isAdmin ? { adminId: user._id } : 'skip');
+  const escrowStats = useQuery(api.escrow.getEscrowStats, user?._id && isAdmin ? { adminId: user._id } : 'skip');
+  const disputeStats = useQuery(api.disputes.getDisputeStats, user?._id && isAdmin ? { adminId: user._id } : 'skip');
   const transactionStats = useQuery(
     api.transactions.getTransactionStats,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
+    user?._id && isAdmin ? { adminId: user._id } : 'skip',
   );
   const financialSummary = useQuery(
     api.transactions.getPlatformFinancialSummary,
-    user?._id && isAdmin ? { adminId: user._id } : 'skip'
+    user?._id && isAdmin ? { adminId: user._id } : 'skip',
   );
   const openDisputes = useQuery(
     api.disputes.getOpenDisputes,
-    user?._id && isAdmin ? { moderatorId: user._id } : 'skip'
+    user?._id && isAdmin ? { moderatorId: user._id } : 'skip',
   );
   const pendingListings = useQuery(
     api.products.getPendingReviewListings,
@@ -298,24 +294,12 @@ export default function AdminDashboardScreen({ navigation }: Props) {
               <Text variant="titleLarge" style={{ color: theme.colors.onSurface }}>
                 Marketplace pulse
               </Text>
-              <Text
-                variant="bodyMedium"
-                style={{ color: theme.colors.onSurfaceVariant, marginTop: 6 }}
-              >
+              <Text variant="bodyMedium" style={{ color: theme.colors.onSurfaceVariant, marginTop: 6 }}>
                 Track orders, escrow exposure, and disputes from the mobile admin surface.
               </Text>
             </View>
-            <View
-              style={[
-                styles.heroIcon,
-                { backgroundColor: theme.colors.primaryContainer },
-              ]}
-            >
-              <Icon
-                name="view-dashboard-outline"
-                size={28}
-                color={theme.colors.primary}
-              />
+            <View style={[styles.heroIcon, { backgroundColor: theme.colors.primaryContainer }]}>
+              <Icon name="view-dashboard-outline" size={28} color={theme.colors.primary} />
             </View>
           </View>
 
@@ -326,12 +310,7 @@ export default function AdminDashboardScreen({ navigation }: Props) {
                 style={[styles.statCard, { backgroundColor: theme.colors.surfaceVariant }]}
                 elevation={0}
               >
-                <View
-                  style={[
-                    styles.statIcon,
-                    { backgroundColor: `${stat.tone}20` },
-                  ]}
-                >
+                <View style={[styles.statIcon, { backgroundColor: `${stat.tone}20` }]}>
                   <Icon name={stat.icon} size={18} color={stat.tone} />
                 </View>
                 <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 12 }}>
@@ -371,25 +350,15 @@ export default function AdminDashboardScreen({ navigation }: Props) {
               ]}
             >
               <View style={styles.actionHeader}>
-                <View
-                  style={[
-                    styles.actionIcon,
-                    { backgroundColor: theme.colors.primaryContainer },
-                  ]}
-                >
+                <View style={[styles.actionIcon, { backgroundColor: theme.colors.primaryContainer }]}>
                   <Icon name={action.icon} size={20} color={theme.colors.primary} />
                 </View>
-                {action.badge ? (
-                  <Chip compact>{action.badge}</Chip>
-                ) : null}
+                {action.badge ? <Chip compact>{action.badge}</Chip> : null}
               </View>
               <Text variant="titleSmall" style={{ color: theme.colors.onSurface, marginTop: 16 }}>
                 {action.title}
               </Text>
-              <Text
-                variant="bodySmall"
-                style={{ color: theme.colors.onSurfaceVariant, marginTop: 6, lineHeight: 20 }}
-              >
+              <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 6, lineHeight: 20 }}>
                 {action.description}
               </Text>
             </Pressable>
@@ -405,16 +374,32 @@ export default function AdminDashboardScreen({ navigation }: Props) {
           </Text>
         </View>
 
+        {!financialSummary.completeness.complete && (
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+            Financial summary needs review. Unavailable values are not zero.
+          </Text>
+        )}
+        {!financialSummary.completeness.fees && (
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+            Provider fees are unknown; net platform profit is unavailable.
+          </Text>
+        )}
+        {financialSummary.review.pendingEscrows > 0 && (
+          <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant }}>
+            Financial approval is pending; funds remain in custody until applied.
+          </Text>
+        )}
+
         <View style={styles.financeGrid}>
           <Surface style={[styles.financeCard, { backgroundColor: theme.colors.surface }]} elevation={0}>
             <Text variant="labelMedium" style={{ color: theme.colors.onSurfaceVariant }}>
               Gross Received
             </Text>
             <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginTop: 6 }}>
-              {formatPrice(financialSummary.totalGrossReceived)}
+              {formatFinanceValue(financialSummary.totalGrossReceived)}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-              Escrow + released marketplace inflows
+              Proven marketplace escrow funding
             </Text>
           </Surface>
 
@@ -423,10 +408,10 @@ export default function AdminDashboardScreen({ navigation }: Props) {
               Net Platform Profit
             </Text>
             <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginTop: 6 }}>
-              {formatPrice(financialSummary.netPlatformProfit)}
+              {formatFinanceValue(financialSummary.netPlatformProfit)}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-              Fees after gateway costs
+              Earned fees after provider costs
             </Text>
           </Surface>
 
@@ -435,10 +420,10 @@ export default function AdminDashboardScreen({ navigation }: Props) {
               Held In Escrow
             </Text>
             <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginTop: 6 }}>
-              {formatPrice(financialSummary.heldInEscrow)}
+              {formatFinanceValue(financialSummary.heldInEscrow)}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-              Seller funds not yet released
+              Gross buyer funds in custody
             </Text>
           </Surface>
 
@@ -447,7 +432,7 @@ export default function AdminDashboardScreen({ navigation }: Props) {
               Refunded To Buyers
             </Text>
             <Text variant="titleLarge" style={{ color: theme.colors.onSurface, marginTop: 6 }}>
-              {formatPrice(financialSummary.refundedToBuyers)}
+              {formatFinanceValue(financialSummary.refundedToBuyers)}
             </Text>
             <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
               Buyer refunds already processed
@@ -462,7 +447,8 @@ export default function AdminDashboardScreen({ navigation }: Props) {
                 Transaction Health
               </Text>
               <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
-                {transactionStats.total.toLocaleString()} total transactions • {formatPrice(transactionStats.totalVolume)} successful volume
+                {transactionStats.total.toLocaleString()} total transactions •{' '}
+                {formatPrice(transactionStats.totalVolume)} successful volume
               </Text>
             </View>
             <View style={[styles.transactionIcon, { backgroundColor: theme.colors.primaryContainer }]}>
@@ -552,9 +538,7 @@ export default function AdminDashboardScreen({ navigation }: Props) {
               return (
                 <Pressable
                   key={dispute._id}
-                  onPress={() =>
-                    navigation.navigate('DisputeDetail', { disputeId: dispute._id })
-                  }
+                  onPress={() => navigation.navigate('DisputeDetail', { disputeId: dispute._id })}
                   style={({ pressed }) => [
                     styles.disputeCard,
                     {
@@ -568,18 +552,11 @@ export default function AdminDashboardScreen({ navigation }: Props) {
                       <Text variant="titleSmall" style={{ color: theme.colors.onSurface }}>
                         {dispute.title}
                       </Text>
-                      <Text
-                        variant="bodySmall"
-                        style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}
-                      >
+                      <Text variant="bodySmall" style={{ color: theme.colors.onSurfaceVariant, marginTop: 4 }}>
                         {buyerName} vs {sellerName}
                       </Text>
                     </View>
-                    <Chip
-                      compact
-                      style={{ backgroundColor: `${statusColor}20` }}
-                      textStyle={{ color: statusColor }}
-                    >
+                    <Chip compact style={{ backgroundColor: `${statusColor}20` }} textStyle={{ color: statusColor }}>
                       {disputeStatusCopy[dispute.status]}
                     </Chip>
                   </View>
