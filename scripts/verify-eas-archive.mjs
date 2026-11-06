@@ -17,8 +17,8 @@
 // an empty upload set, or a file that changed during inspection) is a FAIL with rule 'incomplete-inspection', never a
 // pass. A symbolic link is followed to its real path: a target that is a regular file inside the target root is scanned
 // under the link's path, and any other target is a 'path-escape' FAIL. Each text file is opened with O_NOFOLLOW and
-// O_NONBLOCK, and its opened descriptor must be the same regular file that lstat saw (same device and inode) before any
-// byte is read; a replacement by a link, FIFO or different file is 'changed-during-inspection'. Platforms without
+// O_NONBLOCK, and its opened descriptor must match lstat identity (device, inode, size, mtime) before any byte is read;
+// a replacement by a link, FIFO or different file is 'changed-during-inspection'. Platforms without
 // O_NOFOLLOW fail closed ('no-nofollow'). Binary files (NUL bytes in the first 8 KiB) are recorded as 'skipped-binary'.
 //
 // Exit codes: 0 = no FAIL findings, 1 = at least one FAIL finding, 2 = usage or read error.
