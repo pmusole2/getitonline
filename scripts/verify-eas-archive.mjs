@@ -17,8 +17,8 @@
 // an empty upload set, or a file that changed during inspection) is a FAIL with rule 'incomplete-inspection', never a
 // pass. A symbolic link is followed to its real path: a target that is a regular file inside the target root is scanned
 // under the link's path, and any other target is a 'path-escape' FAIL. Each text file is opened with O_NOFOLLOW and
-// O_NONBLOCK, and its opened descriptor must be the same regular file that lstat saw (same device and inode) before any
-// byte is read; a replacement by a link, FIFO or different file is 'changed-during-inspection'. Platforms without
+// O_NONBLOCK, and its opened descriptor must match lstat identity (device, inode, size, mtime) before any byte is read;
+// a replacement by a link, FIFO or different file is 'changed-during-inspection'. Platforms without
 // O_NOFOLLOW fail closed ('no-nofollow'). Binary files (NUL bytes in the first 8 KiB) are recorded as 'skipped-binary'.
 //
 // Exit codes: 0 = no FAIL findings, 1 = at least one FAIL finding, 2 = usage or read error.
@@ -484,9 +484,16 @@ async function inspectFile(file, limits, budget) {
   }
   try {
     // The identity check runs before any byte is read. The opened descriptor must be the same regular file that lstat
-    // saw, so a replacement by a link, a FIFO or a different file is refused without reading it.
+    // saw, so a replacement by a link, a FIFO or a different file is refused without reading it. This is a bounded
+    // metadata comparison, not full TOCTOU protection: a rewrite that keeps device, inode, size and mtime is not detected.
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) {
+    if (
+      !opened.isFile() ||
+      opened.dev !== info.dev ||
+      opened.ino !== info.ino ||
+      opened.size !== info.size ||
+      opened.mtimeMs !== info.mtimeMs
+    ) {
       return { incomplete: 'changed-during-inspection' };
     }
     // O_NOFOLLOW covers only the last path component. A parent directory replaced by a link after resolution sends the
