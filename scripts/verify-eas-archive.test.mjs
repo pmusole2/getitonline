@@ -1052,6 +1052,20 @@ test('a file replaced by a different regular file between lstat and open fails',
   assert.equal(findingsWith(run.report, 'incomplete-inspection')[0]?.reason, 'changed-during-inspection');
 });
 
+test('a file with different size is detected even if inode matches', async () => {
+  const root = await makeFixture(VICTIM_TREE);
+  const run = await runRace({
+    target: root,
+    victimRoot: root,
+    rel: VICTIM_REL,
+    hook: 'lstat',
+    action: 'to-other-file',
+    replacementText: 'export const replaced = 2222;\n',
+  });
+  assert.equal(run.report?.passed, false);
+  assert.equal(findingsWith(run.report, 'incomplete-inspection')[0]?.reason, 'changed-during-inspection');
+});
+
 test('every text file is opened with a no-follow, non-blocking flag set when nothing changes', async () => {
   const root = await makeFixture(VICTIM_TREE);
   const run = await runRace({ target: root, victimRoot: root, rel: VICTIM_REL });

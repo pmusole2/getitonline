@@ -486,7 +486,13 @@ async function inspectFile(file, limits, budget) {
     // The identity check runs before any byte is read. The opened descriptor must be the same regular file that lstat
     // saw, so a replacement by a link, a FIFO or a different file is refused without reading it.
     const opened = await handle.stat();
-    if (!opened.isFile() || opened.dev !== info.dev || opened.ino !== info.ino) {
+    if (
+      !opened.isFile() ||
+      opened.dev !== info.dev ||
+      opened.ino !== info.ino ||
+      opened.size !== info.size ||
+      opened.mtimeMs !== info.mtimeMs
+    ) {
       return { incomplete: 'changed-during-inspection' };
     }
     // O_NOFOLLOW covers only the last path component. A parent directory replaced by a link after resolution sends the
