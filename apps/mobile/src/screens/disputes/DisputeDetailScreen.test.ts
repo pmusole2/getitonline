@@ -1033,8 +1033,10 @@ test('whole decimal partial refund travels from actual reviewer UI through funde
   const r = rig(true);
   r.setResource(disputeId);
   let applied: unknown;
+  let resolution: Promise<unknown> | undefined;
   r.implementations.set('disputes:resolveDispute', async (args) => {
-    applied = await invokeFakeFunction(disputesModule.resolveDispute, reviewerCtx, args);
+    resolution = invokeFakeFunction(disputesModule.resolveDispute, reviewerCtx, args);
+    applied = await resolution;
     return applied;
   });
   try {
@@ -1043,6 +1045,11 @@ test('whole decimal partial refund travels from actual reviewer UI through funde
     await enterPartialRefund(r, ' 25.01 ');
     assert.equal(r.buttons.get('Submit')?.disabled, false);
     await r.press('Submit');
+    // Submit is fire-and-forget; React act does not await the registered handler's asynchronous funding proof.
+    await act(async () => {
+      assert.ok(resolution, 'the reviewer submit must start the registered resolution');
+      await resolution;
+    });
     assert.deepEqual(r.calls, [
       {
         name: 'disputes:resolveDispute',

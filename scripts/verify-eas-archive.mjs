@@ -484,7 +484,8 @@ async function inspectFile(file, limits, budget) {
   }
   try {
     // The identity check runs before any byte is read. The opened descriptor must be the same regular file that lstat
-    // saw, so a replacement by a link, a FIFO or a different file is refused without reading it.
+    // saw, so a replacement by a link, a FIFO or a different file is refused without reading it. This is a bounded
+    // metadata comparison, not full TOCTOU protection: a rewrite that keeps device, inode, size and mtime is not detected.
     const opened = await handle.stat();
     if (
       !opened.isFile() ||

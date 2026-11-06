@@ -7,7 +7,7 @@ import { execFile, spawnSync } from 'node:child_process';
 import { Buffer } from 'node:buffer';
 import process from 'node:process';
 import { constants as fsConstants } from 'node:fs';
-import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from 'node:fs/promises';
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -826,7 +826,7 @@ const NOFOLLOW_FLAG = fsConstants.O_NOFOLLOW ?? 0;
 const NONBLOCK_FLAG = fsConstants.O_NONBLOCK ?? 0;
 const RACE_CHILD = `
 import { execFileSync } from 'node:child_process';
-import { open, rename, symlink, unlink, writeFile } from 'node:fs/promises';
+import { open, rename, symlink, unlink, utimes, writeFile } from 'node:fs/promises';
 import { dirname, join, sep } from 'node:path';
 const spec = JSON.parse(process.env.RACE_SPEC);
 const { fsOps, inspect, buildReport } = await import(spec.scriptUrl);
@@ -864,6 +864,17 @@ const actions = {
     } finally {
       await fd.close();
     }
+    await utimes(victim, spec.preservedMtimeSeconds, spec.preservedMtimeSeconds);
+  },
+  // Overwrites bytes in place without changing the size, then sets a fixed mtime so the change is deterministic.
+  'same-size-rewrite': async (victim) => {
+    const fd = await open(victim, 'r+');
+    try {
+      await fd.write(spec.replacementText, 0, 'utf-8');
+    } finally {
+      await fd.close();
+    }
+    await utimes(victim, spec.newMtimeSeconds, spec.newMtimeSeconds);
   },
   'dir-to-external-link': async (victim) => {
     const parent = dirname(victim);
@@ -1061,9 +1072,14 @@ test('a file replaced by a different regular file between lstat and open fails',
   assert.equal(findingsWith(run.report, 'incomplete-inspection')[0]?.reason, 'changed-during-inspection');
 });
 
-test('size change is detected when inode is preserved (regression for Linux inode reuse)', async () => {
+// Fixed mtimes (seconds) isolate size and mtime detection without relying on the clock.
+const OLD_MTIME_SECONDS = 1_600_000_000;
+const NEW_MTIME_SECONDS = 1_700_000_000;
+
+test('size change is detected when device, inode and mtime are preserved (in-place truncate and rewrite)', async () => {
   const root = await makeFixture(VICTIM_TREE);
   const victimPath = join(root, VICTIM_REL);
+  await utimes(victimPath, OLD_MTIME_SECONDS, OLD_MTIME_SECONDS);
   const beforeStat = await stat(victimPath);
   const run = await runRace({
     target: root,
@@ -1072,12 +1088,37 @@ test('size change is detected when inode is preserved (regression for Linux inod
     hook: 'lstat',
     action: 'truncate-and-change',
     replacementText: 'export const replaced = 2222;\n',
+    preservedMtimeSeconds: OLD_MTIME_SECONDS,
   });
   const afterStat = await stat(victimPath);
   assert.equal(afterStat.dev, beforeStat.dev, 'device must match (same filesystem)');
   assert.equal(afterStat.ino, beforeStat.ino, 'inode must match (in-place mutation)');
   assert.notEqual(afterStat.size, beforeStat.size, 'size must differ (content changed)');
-  assert.equal(run.report?.passed, false, 'verifier must fail on size change despite inode match');
+  assert.equal(afterStat.mtimeMs, beforeStat.mtimeMs, 'mtime must match so size detection is exercised independently');
+  assert.equal(run.report?.passed, false, 'verifier must fail on a size change with the same device and inode');
+  assert.equal(findingsWith(run.report, 'incomplete-inspection')[0]?.reason, 'changed-during-inspection');
+});
+
+test('same-size rewrite is detected when only mtime changes (device, inode and size preserved)', async () => {
+  const root = await makeFixture(VICTIM_TREE);
+  const victimPath = join(root, VICTIM_REL);
+  await utimes(victimPath, OLD_MTIME_SECONDS, OLD_MTIME_SECONDS);
+  const beforeStat = await stat(victimPath);
+  const run = await runRace({
+    target: root,
+    victimRoot: root,
+    rel: VICTIM_REL,
+    hook: 'lstat',
+    action: 'same-size-rewrite',
+    replacementText: 'export const victim = 2;\n',
+    newMtimeSeconds: NEW_MTIME_SECONDS,
+  });
+  const afterStat = await stat(victimPath);
+  assert.equal(afterStat.dev, beforeStat.dev, 'device must match (same filesystem)');
+  assert.equal(afterStat.ino, beforeStat.ino, 'inode must match (in-place rewrite)');
+  assert.equal(afterStat.size, beforeStat.size, 'size must match (same-size rewrite)');
+  assert.notEqual(afterStat.mtimeMs, beforeStat.mtimeMs, 'mtime must differ (the only metadata that changed)');
+  assert.equal(run.report?.passed, false, 'verifier must fail on a same-size rewrite detected by mtime');
   assert.equal(findingsWith(run.report, 'incomplete-inspection')[0]?.reason, 'changed-during-inspection');
 });
 
